@@ -486,6 +486,24 @@ function normalizeCredential(cred: unknown): OAuthCredentials | null {
       };
     }
   }
+  if (candidate.codebuddy && typeof candidate.codebuddy === "object") {
+    const raw = candidate.codebuddy;
+    const clean = (value: unknown, max: number): string | undefined => {
+      if (typeof value !== "string") return undefined;
+      const trimmed = value.trim();
+      return trimmed && trimmed.length <= max && !/[\x00-\x1f\x7f]/.test(trimmed) ? trimmed : undefined;
+    };
+    const uid = clean(raw.uid, 256);
+    const enterpriseId = clean(raw.enterpriseId, 256);
+    const domain = clean(raw.domain, 256);
+    if (uid || enterpriseId || domain) {
+      normalized.codebuddy = {
+        ...(uid ? { uid } : {}),
+        ...(enterpriseId ? { enterpriseId } : {}),
+        ...(domain ? { domain } : {}),
+      };
+    }
+  }
   return normalized;
 }
 

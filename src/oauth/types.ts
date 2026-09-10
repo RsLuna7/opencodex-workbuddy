@@ -42,6 +42,12 @@ export type OAuthCredentials = {
   apiBaseUrl?: string;
   /** Never returned by management APIs; persisted only inside the protected auth-store boundary. */
   kiro?: KiroOAuthMetadata;
+  /** CodeBuddy CN routing headers (uid / enterprise / domain). Not a secret beyond the tokens. */
+  codebuddy?: {
+    uid?: string;
+    enterpriseId?: string;
+    domain?: string;
+  };
 };
 
 /** One logged-in account inside a provider's account set (multiauth). */

@@ -124,6 +124,7 @@ const TOOL_CAPABLE_ADAPTERS = new Set([
   "azure",
   "kiro",
   "mimo-free",
+  "codebuddy",
   "command-code",
 ]);
 

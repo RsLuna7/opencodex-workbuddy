@@ -589,6 +589,9 @@ const THINKING_BUDGET_MODELS = [
 ];
 const OPENCODE_GO_THINKING_BUDGET_MODELS = ["qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus"];
 const DEEPSEEK_THINKING_MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"];
+/** V4.1 Flash beta id: thinking-mode replay, but not the V4 text-only noVision set. */
+const DEEPSEEK_V41_FLASH_BETA = "deepseek-v4.1-flash-expires-on-0910";
+const DEEPSEEK_REASONING_REPLAY_MODELS = [...DEEPSEEK_THINKING_MODELS, DEEPSEEK_V41_FLASH_BETA];
 /*
  * DeepSeek's experimental vision preview (released 2026-08-21, api-docs.deepseek.com):
  * text+image input on the V4 Flash base. DeepSeek positions it as a preview id;
@@ -1548,6 +1551,47 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     note: "Nous Research subscription gateway. OAuth device login with your own Portal account; mixed paid + :free models discovered live (fallback seed 2026-08-10: tencent/hy3:free, poolside/laguna-s-2.1:free, stepfun/step-3.7-flash:free, poolside/laguna-xs-2.1:free).",
   },
   {
+    id: "workbuddy",
+    alias: "codebuddy",
+    label: "WorkBuddy",
+    adapter: "codebuddy",
+    baseUrl: "https://copilot.tencent.com/v2",
+    authKind: "oauth",
+    oauthId: "workbuddy",
+    featured: true,
+    dashboardUrl: "https://www.codebuddy.cn",
+    defaultModel: "auto",
+    models: [
+      "auto",
+      "hy4-preview",
+      "hy3",
+      "deepseek-v4.1-flash",
+      "glm-5.3",
+      "glm-5.3-flash",
+      "glm-5.2",
+      "glm-5v-turbo",
+      "minimax-m2.5",
+      "kimi-k2.5",
+    ],
+    liveModels: true,
+    modelDiscovery: {
+      path: "enterprises/personal/models",
+      maxModels: 128,
+      filter: {
+        noneOf: [{ path: ["tags"], containsAny: ["text-to-image"] }],
+      },
+    },
+    defaultMaxOutputTokens: 32_768,
+    extraMetadataAliases: ["codebuddy"],
+    staticHeaders: {
+      "X-Product": "SaaS",
+      "X-IDE-Name": "CodeBuddyIDE",
+      "X-Requested-With": "XMLHttpRequest",
+      "User-Agent": "CodeBuddyIDE",
+    },
+    note: "Tencent CodeBuddy / WorkBuddy China-site account. Browser login (or paste an access token). Unofficial IDE endpoint — Tencent may change or restrict it. Do not send confidential material.",
+  },
+  {
     id: "openai-apikey",
     label: "OpenAI API",
     adapter: "openai-responses",
@@ -2047,10 +2091,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelReasoningEfforts: Object.fromEntries(DEEPSEEK_THINKING_MODELS.map(id => [id, deepseekThinkingEffortsFor(id)])),
     modelReasoningEffortMap: Object.fromEntries(DEEPSEEK_THINKING_MODELS.map(id => [id, deepseekReasoningMapFor(id)])),
     modelSupportsReasoningSummaries: Object.fromEntries(DEEPSEEK_THINKING_MODELS.map(id => [id, true])),
-    preserveReasoningContentModels: DEEPSEEK_THINKING_MODELS,
+    preserveReasoningContentModels: DEEPSEEK_REASONING_REPLAY_MODELS,
     // Issue #88: every DeepSeek API model is text-only input (no image support upstream) — the
     // vision sidecar describes attached images for them, and the catalog advertises image input
     // on their behalf (same treatment as opencode-go's DeepSeek V4 entries above).
+    // V4.1 Flash beta advertises native image input; keep it off this sidecar list.
     noVisionModels: ["deepseek-chat", "deepseek-reasoner", ...DEEPSEEK_THINKING_MODELS],
   },
   // llama-3.3-70b was deprecated by Cerebras on 2026-02-16. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.

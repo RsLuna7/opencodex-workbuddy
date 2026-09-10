@@ -41,6 +41,7 @@ import { loginCursor, refreshCursorToken } from "./cursor";
 import { loginGithubCopilot, refreshGithubCopilotToken, validateCopilotApiBaseUrl } from "./github-copilot";
 import { loginCommandCode, refreshCommandCodeToken } from "./command-code";
 import { loginMetaMuse, refreshMetaMuseToken } from "./meta-muse";
+import { applyCodebuddyAccountHeaders, CODEBUDDY_PROVIDER_ID, loginCodebuddy, refreshCodebuddyToken } from "./codebuddy";
 import { loginOrcaRouter, orcaRouterInferenceBaseUrl, refreshOrcaRouterKey } from "./orcarouter";
 import { ANTIGRAVITY_REQUEST_UA } from "../adapters/google-antigravity-wire";
 import { deriveOAuthDefaultModel, deriveOAuthProviderConfig } from "../providers/derive";
@@ -273,6 +274,13 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
     // on it — same posture as anthropic, for the same reason: the vendor restricts use
     // outside its own client, so every exchange stays attributable to a user action.
     defaultRefreshPolicy: "disabled",
+  },
+  workbuddy: {
+    login: (ctrl) => loginCodebuddy(ctrl),
+    refresh: (rt, signal, credential) => refreshCodebuddyToken(rt, signal, credential),
+    providerConfig: oauthConfig("workbuddy"),
+    defaultModel: oauthDefaultModel("workbuddy"),
+    defaultRefreshPolicy: "lazy-only",
   },
   nous: {
     // Nous Portal device-grant login (RFC 8628) against portal.nousresearch.com.
@@ -1194,6 +1202,9 @@ export function buildModelsRequest(
     return { url: discoveryUrl(`${base}/v1/models?limit=1000`), headers };
   }
   if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+  if (providerName === CODEBUDDY_PROVIDER_ID) {
+    applyCodebuddyAccountHeaders(headers, getCredential(CODEBUDDY_PROVIDER_ID));
+  }
   return { url: discoveryUrl(`${effectiveProvider.baseUrl}/models`), headers };
 }
 

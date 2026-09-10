@@ -1405,6 +1405,7 @@ export function catalogHintsFromModelsApiItem(providerName: string, item: Provid
       item.context_size,
       item.max_model_len,
       item.max_context_length,
+      item.maxInputTokens,
       // llama.cpp reports the served context under `meta`: `n_ctx` is what the
       // server was actually started with, `n_ctx_train` the model's trained
       // maximum. Prefer the served value — routing must not promise a window the
@@ -1413,12 +1414,13 @@ export function catalogHintsFromModelsApiItem(providerName: string, item: Provid
       plainRecord(item.meta)?.n_ctx,
       plainRecord(item.meta)?.n_ctx_train,
     );
-  const maxInputTokens = positiveSafeInteger(limits?.max_input_tokens, item.max_input_tokens);
+  const maxInputTokens = positiveSafeInteger(limits?.max_input_tokens, item.max_input_tokens, item.maxInputTokens);
   const maxOutputTokens = positiveSafeInteger(
     capabilityRecord?.max_output_tokens,
     limits?.max_output_tokens,
     metadata?.max_output_tokens,
     item.max_output_tokens,
+    item.maxOutputTokens,
   );
   // Some OpenAI-compatible catalogs expose the selectable ladder under
   // `reasoning_parameters.efforts` instead of the older `reasoning_efforts` key.
@@ -1443,7 +1445,13 @@ export function catalogHintsFromModelsApiItem(providerName: string, item: Provid
         : [])
       : undefined;
   const capabilities = modelCapabilities(item);
-  const inputModalities = modelInputModalities(item, capabilities);
+  const inputModalities = modelInputModalities(item, capabilities)
+    ?? (item.supportsImages === true ? ["text", "image"]
+      : item.supportsImages === false ? ["text"]
+        : undefined);
+  const displayName = typeof item.name === "string" && item.name.trim() && item.name.trim() !== item.id
+    ? item.name.trim()
+    : undefined;
   return {
     ...(contextWindow && contextWindow > 0 ? { contextWindow } : {}),
     ...(maxInputTokens && maxInputTokens > 0 ? { maxInputTokens } : {}),
@@ -1451,6 +1459,7 @@ export function catalogHintsFromModelsApiItem(providerName: string, item: Provid
     ...(reasoningEfforts !== undefined ? { reasoningEfforts } : {}),
     ...(inputModalities ? { inputModalities } : {}),
     ...(capabilities ? { capabilities } : {}),
+    ...(displayName ? { displayName } : {}),
   };
 }
 

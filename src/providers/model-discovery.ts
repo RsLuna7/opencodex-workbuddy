@@ -389,6 +389,20 @@ export function providerModelMatchesDiscoveryFilter(
   return true;
 }
 
+function unwrapNestedModelsEnvelope(
+  value: unknown,
+  maxModels: number,
+): ModelEnvelopeRowsResult {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, reason: "invalid_shape" };
+  }
+  const data = (value as { data?: unknown }).data;
+  if (data === null || typeof data !== "object" || Array.isArray(data)) {
+    return { ok: false, reason: "invalid_shape" };
+  }
+  return extractModelEnvelopeRows(data, maxModels, ["models"]);
+}
+
 /** Extract one allowlisted array envelope while enforcing the raw-row ceiling. */
 export function extractModelEnvelopeRows(
   value: unknown,
@@ -491,9 +505,15 @@ export function extractProviderModelItems(
     data = value;
   } else {
     const envelope = extractModelEnvelopeRows(value, discovery.maxModels, ["data"]);
-    if (!envelope.ok) return envelope;
-    data = envelope.rows;
-    siblings = buildSiblingIndex(value, limit);
+    if (envelope.ok) {
+      data = envelope.rows;
+      siblings = buildSiblingIndex(value, limit);
+    } else {
+      // CodeBuddy / WorkBuddy: `{ data: { models: [...] } }` instead of `{ data: [...] }`.
+      const nested = unwrapNestedModelsEnvelope(value, discovery.maxModels);
+      if (!nested.ok) return envelope;
+      data = nested.rows;
+    }
   }
 
   const items: ProviderModelsApiItem[] = [];
