@@ -8,6 +8,7 @@ import { createGoogleAdapter } from "./google";
 import { createKiroAdapter } from "./kiro";
 import { createMimoFreeAdapter } from "./mimo-free";
 import { createCodebuddyAdapter } from "./codebuddy";
+import { createZaiPlanAdapter } from "./zai-plan";
 import { createOpenAIChatAdapter } from "./openai-chat";
 import { createOllamaNativeAdapter } from "./ollama-native";
 import { createResponsesPassthroughAdapter } from "./openai-responses";
@@ -112,6 +113,11 @@ export const ADAPTER_REGISTRY = {
   codebuddy: {
     contractParent: "openai-chat",
     create: (provider: OcxProviderConfig, _context: AdapterFactoryContext) => createCodebuddyAdapter(provider),
+  },
+  "zai-plan": {
+    contractParent: "anthropic",
+    create: (provider: OcxProviderConfig, context: AdapterFactoryContext) =>
+      createZaiPlanAdapter(provider, context.cacheRetention),
   },
 } as const satisfies Record<string, AdapterDefinition>;
 

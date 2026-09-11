@@ -38,6 +38,10 @@ function providerFixture(adapterId: string, wire: AdapterWire): OcxProviderConfi
   };
   const baseUrl = adapterId === "mimo-free"
     ? "https://api.xiaomimimo.com/api/free-ai/openai/chat"
+    : adapterId === "codebuddy"
+      ? "https://copilot.tencent.com/v2"
+      : adapterId === "zai-plan"
+        ? "https://zcode.z.ai/api/v1/zcode-plan/anthropic"
     : adapterId === "azure" || adapterId === "azure-openai"
       ? "https://example.openai.azure.com/openai/v1"
       : baseUrls[wire];

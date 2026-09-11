@@ -82,6 +82,7 @@ const PROVIDER_ICON_ALIASES: Record<string, string> = {
    * into a 19px box.
    */
   zai: "zai.svg",
+  "zai-plan": "zai-plan.svg",
   "zhipu-bigmodel": "zai.svg",
   "zhipu-bigmodel-coding": "zai.svg",
   "qwen-cloud": "qwen-portal-color.svg",

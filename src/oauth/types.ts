@@ -44,7 +44,17 @@ export type OAuthCredentials = {
   kiro?: KiroOAuthMetadata;
   /** CodeBuddy CN routing headers (uid / enterprise / domain). Not a secret beyond the tokens. */
   codebuddy?: CodebuddyOAuthMetadata;
+  /** ZCode Plan device identity. codingKey stays in the auth store only. */
+  zaiPlan?: ZaiPlanOAuthMetadata;
 };
+
+export interface ZaiPlanOAuthMetadata {
+  deviceMid?: string;
+  userId?: string;
+  sessionId?: string;
+  /** Two-part coding-plan key. Never returned by management APIs. */
+  codingKey?: string;
+}
 
 /** Account-scoped CodeBuddy / WorkBuddy request headers. Safe to carry on a snapshot. */
 export interface CodebuddyOAuthMetadata {

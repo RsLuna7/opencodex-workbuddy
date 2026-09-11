@@ -1,4 +1,4 @@
-import type { CodebuddyOAuthMetadata, KiroOAuthMetadata, OAuthController, OAuthCredentials } from "./types";
+import type { CodebuddyOAuthMetadata, KiroOAuthMetadata, OAuthController, OAuthCredentials, ZaiPlanOAuthMetadata } from "./types";
 import { initializeProviderModelSelection } from "../providers/initial-model-selection";
 import { parseCallbackInput } from "./callback-server";
 import type { OcxConfig, OcxProviderConfig, RefreshPolicy } from "../types";
@@ -42,6 +42,7 @@ import { loginGithubCopilot, refreshGithubCopilotToken, validateCopilotApiBaseUr
 import { loginCommandCode, refreshCommandCodeToken } from "./command-code";
 import { loginMetaMuse, refreshMetaMuseToken } from "./meta-muse";
 import { applyCodebuddyAccountHeaders, CODEBUDDY_PROVIDER_ID, loginCodebuddy, refreshCodebuddyToken } from "./codebuddy";
+import { loginZaiPlan, refreshZaiPlanToken } from "./zai-plan";
 import { loginOrcaRouter, orcaRouterInferenceBaseUrl, refreshOrcaRouterKey } from "./orcarouter";
 import { ANTIGRAVITY_REQUEST_UA } from "../adapters/google-antigravity-wire";
 import { deriveOAuthDefaultModel, deriveOAuthProviderConfig } from "../providers/derive";
@@ -98,6 +99,8 @@ export interface OAuthAccessSnapshot {
   apiBaseUrl?: string;
   /** CodeBuddy / WorkBuddy routing headers belonging to THIS account. */
   codebuddy?: CodebuddyOAuthMetadata;
+  /** ZCode Plan device identity belonging to THIS account. Never includes codingKey. */
+  zaiPlan?: Pick<ZaiPlanOAuthMetadata, "deviceMid" | "userId" | "sessionId">;
 }
 
 export interface ObservedOAuthAccessSnapshot extends OAuthAccessSnapshot {
@@ -284,6 +287,13 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
     defaultModel: oauthDefaultModel("workbuddy"),
     defaultRefreshPolicy: "lazy-only",
   },
+  "zai-plan": {
+    login: (ctrl) => loginZaiPlan(ctrl, { importLocal: "fallback" }),
+    refresh: (rt, signal, credential) => refreshZaiPlanToken(rt, signal, credential),
+    providerConfig: oauthConfig("zai-plan"),
+    defaultModel: oauthDefaultModel("zai-plan"),
+    defaultRefreshPolicy: "lazy-only",
+  },
   nous: {
     // Nous Portal device-grant login (RFC 8628) against portal.nousresearch.com.
     // The access token is the per-request inference JWT (scope inference:invoke).
@@ -467,6 +477,13 @@ function accessSnapshot(provider: string, accountId: string, cred: OAuthCredenti
       ...(cred.codebuddy?.domain ? { domain: cred.codebuddy.domain } : {}),
     }
     : undefined;
+  const zaiPlan: OAuthAccessSnapshot["zaiPlan"] | undefined = cred.zaiPlan
+    ? {
+      ...(cred.zaiPlan.deviceMid ? { deviceMid: cred.zaiPlan.deviceMid } : {}),
+      ...(cred.zaiPlan.userId ? { userId: cred.zaiPlan.userId } : {}),
+      ...(cred.zaiPlan.sessionId ? { sessionId: cred.zaiPlan.sessionId } : {}),
+    }
+    : undefined;
   return {
     provider,
     accountId,
@@ -475,6 +492,7 @@ function accessSnapshot(provider: string, accountId: string, cred: OAuthCredenti
     ...(cred.projectId ? { projectId: cred.projectId } : {}),
     ...(copilotApiBaseUrl ? { apiBaseUrl: copilotApiBaseUrl } : {}),
     ...(codebuddy && Object.keys(codebuddy).length > 0 ? { codebuddy } : {}),
+    ...(zaiPlan && Object.keys(zaiPlan).length > 0 ? { zaiPlan } : {}),
     // Stored account metadata remains authoritative. Metadata-less legacy/environment credentials
     // may use explicit environment routing, but never borrow the currently signed-in local CLI account.
     ...(provider === "kiro"
