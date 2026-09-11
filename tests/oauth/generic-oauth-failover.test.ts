@@ -342,10 +342,11 @@ describe("sidecar on429 wiring", () => {
     // Kiro's routing metadata) live in exactly one place. A fourth rotation site that swaps the
     // bearer by hand would reintroduce the mixed-identity bug this helper exists to prevent.
     const snapshotUses = coreSource.match(/failoverAccountSnapshot\(/g) ?? [];
-    const helperUses = coreSource.match(/applyFailoverSnapshot\(snapshot(?:, nextParsed)?\)/g) ?? [];
-    // Five includes native Responses passthrough, which returns before the Chat bridge loop.
-    // The explicit count keeps a newly added rotation site from skipping identity pairing.
-    expect(snapshotUses.length).toBe(5);
+    const helperUses = coreSource.match(/applyFailoverSnapshot\(snapshot(?:, [^)]+)?\)/g) ?? [];
+    // Three mint-and-apply sites: the shared rotateGenericOAuthFromResponse helper (passthrough
+    // + streaming + continuation), the sidecar hook, and runTurn preflight. A new site that
+    // calls failoverAccountSnapshot without applyFailoverSnapshot(snapshot…) fails this count.
+    expect(snapshotUses.length).toBe(3);
     expect(helperUses.length).toBe(snapshotUses.length);
     // The bearer is written in exactly one place — inside the helper. Any other occurrence is a
     // rotation site that skipped the pairing rules.
@@ -376,9 +377,12 @@ describe("sidecar on429 wiring", () => {
     // The counts differ by rotator because the recovery sites differ, and each number is a
     // statement about which providers can recover where:
     //
-    //   generic  = 5: streaming loop, continuation loop, sidecar hook, runTurn preflight,
-    //                native Responses passthrough. The new default only moves OAuth traffic;
-    //                key-auth defaults and Anthropic's own wire/pool remain unchanged.
+    //   generic  = 3: rotateGenericOAuthAccountOn429 is called from the shared
+    //                rotateGenericOAuthFromResponse helper, the sidecar hook, and runTurn
+    //                preflight. Passthrough + streaming + continuation go through the helper
+    //                (counted separately below) so a 402 WorkBuddy quota can rotate the same
+    //                way a 429 does. The new default only moves OAuth traffic; key-auth
+    //                defaults and Anthropic's own wire/pool remain unchanged.
     //   anthropic = 3: the same, MINUS runTurn -- that path is Cursor-only (cursor.ts is the
     //                  sole adapter implementing runTurn), so Anthropic cannot reach it.
     //   key       = 3: hasKeyPoolFailover guards the two 429 response loops plus the
@@ -386,9 +390,10 @@ describe("sidecar on429 wiring", () => {
     //                  failing the request); the sidecar reaches the key pool through
     //                  rotateProviderTransportOn429 instead.
     //
-    // Adding a fifth recovery site means deciding, deliberately, which rotators it needs and
+    // Adding a recovery site means deciding, deliberately, which rotators it needs and
     // updating the matching number. That decision is the thing this test exists to force.
-    expect(counts.generic).toBe(5);
+    expect(counts.generic).toBe(3);
+    expect((coreSource.match(/rotateGenericOAuthFromResponse\(/g) ?? []).length).toBe(3);
     expect(counts.anthropic).toBe(3);
     expect(counts.key).toBe(3);
   });
@@ -416,10 +421,13 @@ describe("sidecar on429 wiring", () => {
 
     // Kiro routing metadata still travels with its own token.
     expect(body).toContain("_kiroAuthContext");
+    expect(body).toContain("_codebuddyAuthContext");
     // ...and reaches the object actually retried. The terminal-guard continuation dispatches a
     // shallow clone, so writing only the outer request pairs the rotated bearer with the failed
-    // account's region/profile.
-    expect(coreSource).toContain("applyFailoverSnapshot(snapshot, nextParsed)");
+    // account's region/profile. WorkBuddy 6004 goes through rotateGenericOAuthFromResponse
+    // (retryParsed), which the continuation calls with nextParsed.
+    expect(coreSource).toContain("applyFailoverSnapshot(snapshot, retryParsed");
+    expect(coreSource).toContain("rotateGenericOAuthFromResponse(response, nextParsed)");
   });
 
   test("pre-dispatch selection replaces the CCA project instead of inheriting one", () => {

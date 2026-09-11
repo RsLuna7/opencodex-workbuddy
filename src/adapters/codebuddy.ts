@@ -1,16 +1,27 @@
 import type { AdapterEvent } from "../types";
-import type { AdapterRequest, IncomingMeta, ProviderAdapter } from "./base";
+import type { AdapterFetchContext, AdapterRequest, IncomingMeta, ProviderAdapter } from "./base";
 import type { OcxParsedRequest, OcxProviderConfig } from "../types";
 import type { AdapterTierMetadata } from "../providers/fastwire";
 import type { TranslatorBudget } from "../lib/translator-budget";
+import { readBoundedResponseBody } from "../lib/bounded-body";
 import { getCredential } from "../oauth/store";
-import { CODEBUDDY_CHAT_BASE_URL, CODEBUDDY_PROVIDER_ID } from "../oauth/codebuddy";
+import {
+  applyCodebuddyAccountHeaders,
+  codebuddyFailoverHintFromQuotaCode,
+  CODEBUDDY_CHAT_BASE_URL,
+  CODEBUDDY_PROVIDER_ID,
+  rememberCodebuddyFailoverHint,
+} from "../oauth/codebuddy";
 import { createOpenAIChatAdapter } from "./openai-chat";
 import { openaiChatCompletionsUrl } from "./openai-chat-url";
 import { formatOpenAIChatErrorBody } from "./openai-chat";
 
 const CODEBUDDY_MAX_OUTPUT_TOKENS = 32_768;
-const CODEBUDDY_QUOTA_CODE = 14018;
+/** Account-wide exhaustion (CLIProxyAPI / CodeRelay). */
+const CODEBUDDY_QUOTA_CODE = "14018";
+/** Per-model rolling frequency window (observed 2026-09-11 on deepseek-v4.1-flash). */
+const CODEBUDDY_MODEL_RATE_QUOTA_CODE = "6004";
+const CODEBUDDY_QUOTA_CODES = new Set([CODEBUDDY_QUOTA_CODE, CODEBUDDY_MODEL_RATE_QUOTA_CODE]);
 
 const STATIC_HEADERS: Record<string, string> = {
   "Content-Type": "application/json",
@@ -34,17 +45,16 @@ function isCanonicalCodebuddyEndpoint(baseUrl: string): boolean {
   }
 }
 
-function applyAccountHeaders(headers: Record<string, string>): void {
-  const cred = getCredential(CODEBUDDY_PROVIDER_ID);
-  const uid = cred?.codebuddy?.uid ?? cred?.accountId;
-  const enterpriseId = cred?.codebuddy?.enterpriseId;
-  const domain = cred?.codebuddy?.domain;
-  if (uid) headers["X-User-Id"] = uid;
-  if (enterpriseId) {
-    headers["X-Enterprise-Id"] = enterpriseId;
-    headers["X-Tenant-Id"] = enterpriseId;
-  }
-  if (domain) headers["X-Domain"] = domain;
+function applyAccountHeaders(
+  headers: Record<string, string>,
+  routing?: { uid?: string; enterpriseId?: string; domain?: string } | null,
+): void {
+  applyCodebuddyAccountHeaders(
+    headers,
+    routing
+      ? { accountId: routing.uid, codebuddy: routing }
+      : getCredential(CODEBUDDY_PROVIDER_ID),
+  );
 }
 
 function forceStreamBody(raw: string): string {
@@ -72,23 +82,114 @@ function forceStreamBody(raw: string): string {
   return JSON.stringify(body);
 }
 
-function rewriteQuotaError(status: number, payloadText: string): string | undefined {
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
+function readStringField(record: Record<string, unknown> | undefined, names: string[]): string | undefined {
+  if (!record) return undefined;
+  for (const name of names) {
+    const raw = record[name];
+    if (typeof raw === "string" && raw.trim()) return raw.trim();
+  }
+  return undefined;
+}
+
+function readBizCode(parsed: Record<string, unknown>): string | undefined {
+  const error = asRecord(parsed.error);
+  const data = asRecord(error?.data);
+  const raw = parsed.code ?? error?.code ?? data?.code;
+  if (typeof raw === "number" && Number.isFinite(raw)) return String(Math.trunc(raw));
+  if (typeof raw === "string" && raw.trim()) return raw.trim();
+  return undefined;
+}
+
+function readUpstreamMessage(parsed: Record<string, unknown>): string | undefined {
+  const error = asRecord(parsed.error);
+  return readStringField(parsed, ["msg", "message"])
+    ?? readStringField(error, ["message", "msg"]);
+}
+
+/** Client-facing message that classifyError maps to insufficient_quota (no synthetic Retry-After). */
+export function codebuddyQuotaErrorMessage(payloadText: string): string | undefined {
   try {
-    const parsed = JSON.parse(payloadText) as { code?: unknown; error?: { data?: { code?: unknown } } };
-    const code = parsed.code ?? parsed.error?.data?.code;
-    if (code === CODEBUDDY_QUOTA_CODE || code === String(CODEBUDDY_QUOTA_CODE)) {
-      return JSON.stringify({
-        error: {
-          type: "rate_limit_error",
-          code: String(CODEBUDDY_QUOTA_CODE),
-          message: "CodeBuddy quota exhausted",
-        },
-      });
+    const parsed = JSON.parse(payloadText) as unknown;
+    const record = asRecord(parsed);
+    if (!record) return undefined;
+    const code = readBizCode(record);
+    if (!code || !CODEBUDDY_QUOTA_CODES.has(code)) return undefined;
+    const detail = readUpstreamMessage(record);
+    return detail
+      ? `CodeBuddy quota exhausted (${code}). ${detail}`
+      : `CodeBuddy quota exhausted (${code})`;
+  } catch {
+    return undefined;
+  }
+}
+
+function formatCodebuddyErrorBody(status: number, headers: Headers, payloadText: string): string {
+  const quota = codebuddyQuotaErrorMessage(payloadText);
+  if (quota) return quota;
+  const openai = formatOpenAIChatErrorBody(status, headers, payloadText);
+  if (openai) return openai;
+  try {
+    return readUpstreamMessage(asRecord(JSON.parse(payloadText)) ?? {}) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Codex retries HTTP 429 (including with ocx's 2s synthetic Retry-After). 6004/14018
+ * will not recover until the upstream window resets, so rewrite to 402 + insufficient_quota
+ * and omit Retry-After.
+ */
+async function rewriteCodebuddyQuotaResponse(
+  response: Response,
+  signal?: AbortSignal,
+): Promise<Response> {
+  if (response.ok) return response;
+  let text = "";
+  try {
+    const body = await readBoundedResponseBody(response.clone(), { signal });
+    if (!body.displaySafe) return response;
+    text = body.text;
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return response;
+  }
+  const message = codebuddyQuotaErrorMessage(text);
+  if (!message) return response;
+  try {
+    void response.body?.cancel();
+  } catch {
+    /* already consumed */
+  }
+  const rewritten = new Response(JSON.stringify({
+    error: {
+      type: "insufficient_quota",
+      code: "insufficient_quota",
+      message,
+    },
+  }), {
+    status: 402,
+    statusText: "Payment Required",
+    headers: { "Content-Type": "application/json" },
+  });
+  // 402 is for Codex (no Retry-After). The hint is process-local so core can rotate
+  // accounts without putting ocx-internal headers on the client response.
+  try {
+    const record = asRecord(JSON.parse(text));
+    const code = record ? readBizCode(record) : undefined;
+    if (code) {
+      const hint = codebuddyFailoverHintFromQuotaCode(code, message);
+      if (hint) rememberCodebuddyFailoverHint(rewritten, hint);
     }
   } catch {
-    /* keep the original body */
+    /* message already identified the quota; rotation hint is best-effort */
   }
-  return status === 429 ? undefined : undefined;
+  return rewritten;
 }
 
 export function createCodebuddyAdapter(provider: OcxProviderConfig): ProviderAdapter {
@@ -104,9 +205,17 @@ export function createCodebuddyAdapter(provider: OcxProviderConfig): ProviderAda
     ...base,
     name: "codebuddy",
 
-    formatErrorBody(status, headers, payloadText) {
-      return rewriteQuotaError(status, payloadText)
-        ?? formatOpenAIChatErrorBody(status, headers, payloadText);
+    formatErrorBody: formatCodebuddyErrorBody,
+
+    async fetchResponse(request: AdapterRequest, ctx?: AdapterFetchContext): Promise<Response> {
+      const executor = ctx?.executor ?? globalThis.fetch;
+      const response = await executor(request.url, {
+        method: request.method,
+        headers: request.headers,
+        body: request.body,
+        signal: ctx?.abortSignal,
+      });
+      return rewriteCodebuddyQuotaResponse(response, ctx?.abortSignal);
     },
 
     async buildRequest(parsed: OcxParsedRequest, incoming: IncomingMeta): Promise<AdapterRequest> {
@@ -117,7 +226,7 @@ export function createCodebuddyAdapter(provider: OcxProviderConfig): ProviderAda
         ...STATIC_HEADERS,
         Accept: "text/event-stream",
       };
-      applyAccountHeaders(headers);
+      applyAccountHeaders(headers, parsed._codebuddyAuthContext);
       return {
         ...baseReq,
         url: chatUrl,

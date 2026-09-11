@@ -1,4 +1,4 @@
-import type { KiroOAuthMetadata, OAuthController, OAuthCredentials } from "./types";
+import type { CodebuddyOAuthMetadata, KiroOAuthMetadata, OAuthController, OAuthCredentials } from "./types";
 import { initializeProviderModelSelection } from "../providers/initial-model-selection";
 import { parseCallbackInput } from "./callback-server";
 import type { OcxConfig, OcxProviderConfig, RefreshPolicy } from "../types";
@@ -96,6 +96,8 @@ export interface OAuthAccessSnapshot {
    * can pair account A's token with account B's origin during a concurrent switch (#2568d).
    */
   apiBaseUrl?: string;
+  /** CodeBuddy / WorkBuddy routing headers belonging to THIS account. */
+  codebuddy?: CodebuddyOAuthMetadata;
 }
 
 export interface ObservedOAuthAccessSnapshot extends OAuthAccessSnapshot {
@@ -457,6 +459,14 @@ function accessSnapshot(provider: string, accountId: string, cred: OAuthCredenti
   const copilotApiBaseUrl = provider === "github-copilot"
     ? validateCopilotApiBaseUrl(cred.apiBaseUrl)
     : undefined;
+  const codebuddyUid = cred.codebuddy?.uid ?? cred.accountId;
+  const codebuddy: CodebuddyOAuthMetadata | undefined = (cred.codebuddy || (provider === "workbuddy" && codebuddyUid))
+    ? {
+      ...(codebuddyUid ? { uid: codebuddyUid } : {}),
+      ...(cred.codebuddy?.enterpriseId ? { enterpriseId: cred.codebuddy.enterpriseId } : {}),
+      ...(cred.codebuddy?.domain ? { domain: cred.codebuddy.domain } : {}),
+    }
+    : undefined;
   return {
     provider,
     accountId,
@@ -464,6 +474,7 @@ function accessSnapshot(provider: string, accountId: string, cred: OAuthCredenti
     accessToken: cred.access,
     ...(cred.projectId ? { projectId: cred.projectId } : {}),
     ...(copilotApiBaseUrl ? { apiBaseUrl: copilotApiBaseUrl } : {}),
+    ...(codebuddy && Object.keys(codebuddy).length > 0 ? { codebuddy } : {}),
     // Stored account metadata remains authoritative. Metadata-less legacy/environment credentials
     // may use explicit environment routing, but never borrow the currently signed-in local CLI account.
     ...(provider === "kiro"

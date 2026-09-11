@@ -145,9 +145,12 @@ import {
   GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST,
   isGenericFailoverProvider,
   isGenericOAuthFailoverEnabled,
+  normalizeGenericFailoverModelId,
   preferredInitialAccount,
   rotateGenericOAuthAccountOn429,
+  shouldAttemptGenericOAuthFailover,
 } from "../../oauth/generic-account-failover";
+import { CODEBUDDY_PROVIDER_ID, getCodebuddyFailoverHint } from "../../oauth/codebuddy";
 import { resolveCopilotApiBaseUrl } from "../../oauth/github-copilot";
 import { buildWebSearchTool, planWebSearch, runWithWebSearch, shouldResolveOpenAiWebSearchSidecar } from "../../web-search";
 import { buildImageTool, buildVideoTool, planImageBridge, planVideoBridge, runWithImageBridge, clampImageMaxRounds, IMAGE_GEN_TOOL_NAME, VIDEO_GEN_TOOL_NAME } from "../../images";
@@ -3782,6 +3785,7 @@ async function handleResponsesInner(
   // the request actually used, so a concurrent rotation cannot cool an innocent replacement.
   let genericFailoverAccountId: string | null = null;
   let genericFailovers = 0;
+  let genericFailoverUnpersisted = false;
   let oauthSelection = route.provider.authMode === "oauth"
     ? captureOAuthAccountSelection(route.providerName) : null;
   let servingOAuthSnapshot: OAuthAccessSnapshot | undefined;
@@ -3889,11 +3893,22 @@ async function handleResponsesInner(
   const applyFailoverSnapshot = async (
     snapshot: OAuthAccessSnapshot,
     retryParsed: OcxParsedRequest = parsed,
+    persistActive = true,
   ): Promise<boolean> => {
     if (route.provider.googleMode === "cloud-code-assist" && !snapshot.projectId) return false;
-    const committed = await commitResolvedOAuthSelection(snapshot);
-    if (!committed) return false;
-    snapshot = committed;
+    if (persistActive) {
+      const committed = await commitResolvedOAuthSelection(snapshot);
+      if (!committed) return false;
+      snapshot = committed;
+      genericFailoverUnpersisted = false;
+    } else {
+      const row = getAccountCredentialWithStatus(route.providerName, snapshot.accountId);
+      if (!row || row.needsReauth) return false;
+      if (!oauthSelection) oauthSelection = { accountId: snapshot.accountId };
+      else oauthSelection = { accountId: snapshot.accountId, revision: oauthSelection.revision };
+      servingOAuthSnapshot = snapshot;
+      genericFailoverUnpersisted = true;
+    }
     let rotatedProvider: OcxProviderConfig = { ...route.provider, apiKey: snapshot.accessToken };
     if (route.providerName === "github-copilot") {
       rotatedProvider = resolveProviderTransport(
@@ -3913,6 +3928,11 @@ async function handleResponsesInner(
       parsed._kiroAuthContext = kiroContext;
       if (retryParsed !== parsed) retryParsed._kiroAuthContext = { ...kiroContext };
     }
+    if (snapshot.codebuddy || route.providerName === CODEBUDDY_PROVIDER_ID) {
+      const codebuddyContext = { ...(snapshot.codebuddy ?? {}) };
+      parsed._codebuddyAuthContext = codebuddyContext;
+      if (retryParsed !== parsed) retryParsed._codebuddyAuthContext = { ...codebuddyContext };
+    }
     // Re-stamp: a request that rotated accounts must be attributed to the account that actually
     // served it. All three rotation sites funnel through here, so this is the only re-stamp
     // needed -- and putting it anywhere else would let one of the three drift.
@@ -3927,15 +3947,66 @@ async function handleResponsesInner(
     replayOAuthCredentialSnapshot = { accountId: snapshot.accountId, generation: snapshot.generation };
     return true;
   };
+  const rotateGenericOAuthFromResponse = async (
+    response: Response,
+    retryParsed: OcxParsedRequest = parsed,
+  ): Promise<boolean> => {
+    const hint = route.providerName === CODEBUDDY_PROVIDER_ID
+      ? getCodebuddyFailoverHint(response)
+      : undefined;
+    if (!shouldAttemptGenericOAuthFailover(
+      config,
+      route.providerName,
+      response.status,
+      genericFailoverAccountId,
+      genericFailovers,
+      hint,
+    ) || !genericFailoverAccountId) return false;
+    const modelId = normalizeGenericFailoverModelId(route.providerName, route.modelId);
+    const scope = hint?.scope === "model" && modelId ? "model" : "account";
+    const nextAccountId = rotateGenericOAuthAccountOn429(
+      config,
+      route.providerName,
+      genericFailoverAccountId,
+      response.headers.get("retry-after"),
+      Date.now(),
+      {
+        scope,
+        modelId: scope === "model" ? modelId : undefined,
+        cooldownUntilMs: hint?.resetAtMs,
+        quotaExhausted: hint !== undefined,
+      },
+    );
+    if (!nextAccountId) return false;
+    try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+    try {
+      const snapshot = await failoverAccountSnapshot(route.providerName, nextAccountId);
+      if (!await applyFailoverSnapshot(snapshot, retryParsed, scope !== "model")) return false;
+      genericFailovers += 1;
+      return true;
+    } catch {
+      return false;
+    }
+  };
   const selectionIsCurrent = (binding: DispatchBinding | undefined): boolean => {
     if (route.provider.authMode === "forward") return true;
     if (!binding) return false;
     if (binding.kind === "api-key") return providerApiKeySelectionIsCurrent(config, route.providerName, binding.provider);
-    const selected = captureOAuthAccountSelection(route.providerName);
     const row = getAccountCredentialWithStatus(route.providerName, binding.snapshot.accountId);
-    return selected?.accountId === binding.selection.accountId && selected?.revision === binding.selection.revision
-      && !!row && !row.needsReauth && row.credential.expires > Date.now()
+    const credentialOk = !!row && !row.needsReauth && row.credential.expires > Date.now()
       && credentialGeneration(row.credential) === binding.snapshot.generation;
+    if (!credentialOk) return false;
+    // Model-scoped WorkBuddy 6004 rotation keeps the operator's active account and only
+    // rebinds THIS request. Dispatch must not treat that as a concurrent manual switch.
+    if (
+      genericFailoverUnpersisted
+      && servingOAuthSnapshot
+      && binding.kind === "oauth"
+      && binding.snapshot.accountId === servingOAuthSnapshot.accountId
+      && binding.snapshot.generation === servingOAuthSnapshot.generation
+    ) return true;
+    const selected = captureOAuthAccountSelection(route.providerName);
+    return selected?.accountId === binding.selection.accountId && selected?.revision === binding.selection.revision;
   };
   const resolveSelectionAdapter = (provider: OcxProviderConfig, retention = config.cacheRetention): ProviderAdapter => {
     const resolved = resolveAdapter(provider, retention);
@@ -4116,7 +4187,7 @@ async function handleResponsesInner(
         // measured as spent. A null answer means "use the active account", so every provider
         // without quota evidence keeps the resolution it has today.
         const preferredAccountId = isGenericFailoverProvider(route.providerName, route.provider)
-          ? preferredInitialAccount(config, route.providerName)
+          ? preferredInitialAccount(config, route.providerName, Date.now(), route.modelId)
           : null;
         // Resolved account-scoped, NOT through failoverAccountSnapshot: that helper marks a
         // rotation site, and rotation sites must apply their credential through
@@ -4193,6 +4264,9 @@ async function handleResponsesInner(
           // `{}` is intentional: this is an account-scoped request with no stored routing metadata.
           // Only genuinely accountless adapter calls leave the context undefined and use local/env fallback.
           parsed._kiroAuthContext = { ...(resolved.kiro ?? {}) };
+        }
+        if (route.providerName === CODEBUDDY_PROVIDER_ID) {
+          parsed._codebuddyAuthContext = { ...(resolved.codebuddy ?? {}) };
         }
         // Project identity belongs to the admitted account on EVERY request, including
         // the request after a pool transition made that account the persisted active one.
@@ -5253,36 +5327,18 @@ async function handleResponsesInner(
 
     // Native Responses returns before the generic adapter's OAuth rotation loop. Keep
     // the same quorum, cooldown and request budget here, before any client bytes flow.
-    if (
-      upstreamResponse.status === 429
-      && genericFailoverAccountId
-      && genericFailovers < GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST
-      && isGenericOAuthFailoverEnabled(config, route.providerName)
-    ) {
-      const nextAccountId = rotateGenericOAuthAccountOn429(
-        config, route.providerName, genericFailoverAccountId,
-        upstreamResponse.headers.get("retry-after"),
+    if (await rotateGenericOAuthFromResponse(upstreamResponse)) {
+      route.provider = resolveProviderTransport(
+        route.providerName, route.provider, parsed.options.promptCacheKey, sentOAuthSnapshot?.apiBaseUrl,
       );
-      let snapshot: OAuthAccessSnapshot | undefined;
-      if (nextAccountId) {
-        try { snapshot = await failoverAccountSnapshot(route.providerName, nextAccountId); }
-        catch { /* Keep the original 429 body readable when the next credential is unavailable. */ }
-      }
-      if (snapshot && await applyFailoverSnapshot(snapshot)) {
-        genericFailovers += 1;
-        route.provider = resolveProviderTransport(
-          route.providerName, route.provider, parsed.options.promptCacheKey, sentOAuthSnapshot?.apiBaseUrl,
-        );
-        bindRouteReasoningReplayScope({
-          parsed, providerName: route.providerName, provider: route.provider,
-          adapterName: "openai-responses", oauthCredentialSnapshot: replayOAuthCredentialSnapshot,
-        });
-        try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already closed */ }
-        const result = await rebuildAndRefetch("oauth-account-429");
-        if ("failed" in result) return result.failed;
-        upstreamResponse = result;
-        continue passthroughRecovery;
-      }
+      bindRouteReasoningReplayScope({
+        parsed, providerName: route.providerName, provider: route.provider,
+        adapterName: "openai-responses", oauthCredentialSnapshot: replayOAuthCredentialSnapshot,
+      });
+      const result = await rebuildAndRefetch("oauth-account-429");
+      if ("failed" in result) return result.failed;
+      upstreamResponse = result;
+      continue passthroughRecovery;
     }
 
     // Same-target 429 wait-and-retry (opt-in `retryOn429`) for key-auth providers on the
@@ -7240,45 +7296,20 @@ async function handleResponsesInner(
       // Generic OAuth account failover (#2568) for providers with no pool of their own.
       // Presence is consent since #2568d: rotation is ON by default once two or more eligible
       // accounts are stored for the provider, because a second deliberate login is read as the
-      // operator asking for it. A single-account install is still a strict no-op, and an
-      // explicit `oauthAccountFailover.enabled: false` (global or per provider) still wins --
-      // see isGenericOAuthFailoverEnabled in src/oauth/generic-account-failover.ts. Codex and
-      // Anthropic are excluded by isGenericFailoverProvider: their pools own quota scopes,
-      // probe leases and affinity that this must not reimplement.
-      while (
-        upstreamResponse.status === 429
-        && genericFailoverAccountId
-        && genericFailovers < GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST
-        && isGenericOAuthFailoverEnabled(config, route.providerName)
-      ) {
-        const nextAccountId = rotateGenericOAuthAccountOn429(
-          config,
-          route.providerName,
-          genericFailoverAccountId,
-          upstreamResponse.headers.get("retry-after"),
+      // operator asking for it. A single-account install is still a strict no-op.
+      // WorkBuddy 6004/14018 arrive as HTTP 402 (so Codex does not retry) and rotate here
+      // via getCodebuddyFailoverHint — 6004 cools account×model and does not persist active.
+      while (await rotateGenericOAuthFromResponse(upstreamResponse)) {
+        invalidateSameTargetRequest();
+        activeAdapter = resolveSelectionAdapter(
+          resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
+          config.cacheRetention,
         );
-        if (!nextAccountId) break;
-        try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
-        try {
-          // The FULL snapshot, not just the bearer: Antigravity pairs an account-matched
-          // projectId with its token and Kiro carries routing metadata, so a token-only swap
-          // would mix one account's credential with another's routing data.
-          const snapshot = await failoverAccountSnapshot(route.providerName, nextAccountId);
-            genericFailovers += 1;
-          if (!await applyFailoverSnapshot(snapshot)) break;
-          invalidateSameTargetRequest();
-          activeAdapter = resolveSelectionAdapter(
-            resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
-            config.cacheRetention,
-          );
-          sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, activeAdapter.name, logCtx.accountLogLabel);
-          recordAttemptCredentialSource(logCtx.activeAttempt, route.providerName, route.provider, activeAdapter.name);
-          const result = await rebuildAndRefetch("oauth-account-429");
-          if ("failed" in result) return result.failed;
-          upstreamResponse = result;
-        } catch {
-          break;
-        }
+        sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, activeAdapter.name, logCtx.accountLogLabel);
+        recordAttemptCredentialSource(logCtx.activeAttempt, route.providerName, route.provider, activeAdapter.name);
+        const result = await rebuildAndRefetch("oauth-account-429");
+        if ("failed" in result) return result.failed;
+        upstreamResponse = result;
       }
       // Unknown provenance is deliberately fail-soft in pre-flight: after a restart, TTL expiry,
       // or LRU eviction, a valid same-backend blob must survive. A decoder's own 4xx identity is
@@ -7657,42 +7688,16 @@ async function handleResponsesInner(
       // 429 stayed terminal even with failover fully active -- the same class of divergence the
       // two sidecars already produced once. Request-local state is shared with the other arms so
       // the per-request bound cannot be silently re-armed by reaching a different loop.
-      if (
-        response.status === 429
-        && genericFailoverAccountId
-        && genericFailovers < GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST
-        && isGenericOAuthFailoverEnabled(config, route.providerName)
-      ) {
-        const nextAccountId = rotateGenericOAuthAccountOn429(
-          config,
-          route.providerName,
-          genericFailoverAccountId,
-          response.headers.get("retry-after"),
+      if (await rotateGenericOAuthFromResponse(response, nextParsed)) {
+        invalidateSameTargetRequest();
+        activeAdapter = resolveSelectionAdapter(
+          resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
+          config.cacheRetention,
         );
-        if (nextAccountId) {
-          try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
-          try {
-            // The FULL snapshot through the shared helper, never a bare bearer: Antigravity
-            // pairs an account-matched projectId with its token and Kiro carries routing
-            // metadata, so a token-only swap would mix one account's credential with another's
-            // routing data.
-            const snapshot = await failoverAccountSnapshot(route.providerName, nextAccountId);
-                genericFailovers += 1;
-            if (await applyFailoverSnapshot(snapshot, nextParsed)) {
-              invalidateSameTargetRequest();
-              activeAdapter = resolveSelectionAdapter(
-                resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
-                config.cacheRetention,
-              );
-              sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, activeAdapter.name, logCtx.accountLogLabel);
-              recordAttemptCredentialSource(logCtx.activeAttempt, route.providerName, route.provider, activeAdapter.name);
-              nextContinuationRecoveryKind = "oauth-account-429";
-              continue;
-            }
-          } catch {
-            // fall through to emit continuation error below
-          }
-        }
+        sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, activeAdapter.name, logCtx.accountLogLabel);
+        recordAttemptCredentialSource(logCtx.activeAttempt, route.providerName, route.provider, activeAdapter.name);
+        nextContinuationRecoveryKind = "oauth-account-429";
+        continue;
       }
       if (shouldAttemptImageTierRetry({
         status: response.status,

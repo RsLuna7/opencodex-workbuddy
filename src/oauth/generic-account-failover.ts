@@ -26,6 +26,20 @@ export const GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST = 3;
 
 const DEFAULT_COOLDOWN_MS = 60_000;
 const MAX_COOLDOWN_MS = 15 * 60_000;
+/** WorkBuddy 6004/14018 windows are ~24h; keep a small ceiling above that. */
+const QUOTA_RESET_COOLDOWN_DEFAULT_MS = 24 * 60 * 60_000;
+const QUOTA_RESET_COOLDOWN_MAX_MS = 26 * 60 * 60_000;
+
+export interface GenericOAuthRotateOptions {
+  /** Default account-wide, matching today's 429 path. */
+  scope?: "account" | "model";
+  /** Required when `scope` is `model`; stripped of `provider/` if present. */
+  modelId?: string;
+  /** Absolute epoch ms from an upstream reset clock. */
+  cooldownUntilMs?: number;
+  /** Quota exhaustion (6004/14018): 24h default instead of the 15-minute 429 cap. */
+  quotaExhausted?: boolean;
+}
 
 /**
  * How long a presence answer may be reused before the store is consulted again.
@@ -53,7 +67,7 @@ const EXCLUDED_PROVIDERS = new Set(["openai", "anthropic"]);
 
 interface AccountHealth {
   cooldownUntil: number;
-  cooldownSource: "retry-after" | "default";
+  cooldownSource: "retry-after" | "reset-derived" | "default";
 }
 
 interface PresenceEntry {
@@ -67,16 +81,63 @@ const health = new Map<string, AccountHealth>();
 /** Provider -> recent eligible-account count. TTL-bounded; never holds credential material. */
 const presence = new Map<string, PresenceEntry>();
 
-const healthKey = (provider: string, accountId: string) => `${provider}\u0000${accountId}`;
+const healthKey = (provider: string, accountId: string, modelId?: string) => (
+  modelId ? `${provider}\u0000${accountId}\u0000model\u0000${modelId}` : `${provider}\u0000${accountId}`
+);
 
-function isCooled(provider: string, accountId: string, now: number): boolean {
-  const entry = health.get(healthKey(provider, accountId));
-  if (!entry) return false;
+function readHealth(key: string, now: number): AccountHealth | undefined {
+  const entry = health.get(key);
+  if (!entry) return undefined;
   if (entry.cooldownUntil <= now) {
-    health.delete(healthKey(provider, accountId));
-    return false;
+    health.delete(key);
+    return undefined;
   }
-  return true;
+  return entry;
+}
+
+function isCooled(provider: string, accountId: string, now: number, modelId?: string): boolean {
+  if (readHealth(healthKey(provider, accountId), now)) return true;
+  if (!modelId) return false;
+  return readHealth(healthKey(provider, accountId, modelId), now) !== undefined;
+}
+
+/** Strip `provider/` so catalog ids and wire ids share one cooldown key. */
+export function normalizeGenericFailoverModelId(
+  providerName: string,
+  modelId: string | undefined,
+): string | undefined {
+  const trimmed = modelId?.trim();
+  if (!trimmed) return undefined;
+  const prefix = `${providerName}/`;
+  if (trimmed.length > prefix.length && trimmed.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase()) {
+    return trimmed.slice(prefix.length);
+  }
+  return trimmed;
+}
+
+export function isGenericFailoverCooled(
+  providerName: string,
+  accountId: string,
+  now = Date.now(),
+  modelId?: string,
+): boolean {
+  return isCooled(providerName, accountId, now, normalizeGenericFailoverModelId(providerName, modelId));
+}
+
+export function applyGenericFailoverCooldown(opts: {
+  providerName: string;
+  accountId: string;
+  cooldownMs: number;
+  now?: number;
+  modelId?: string;
+  source?: AccountHealth["cooldownSource"];
+}): void {
+  const now = opts.now ?? Date.now();
+  const modelId = normalizeGenericFailoverModelId(opts.providerName, opts.modelId);
+  health.set(healthKey(opts.providerName, opts.accountId, modelId), {
+    cooldownUntil: now + Math.max(opts.cooldownMs, 1),
+    cooldownSource: opts.source ?? "default",
+  });
 }
 
 /** True when this provider participates in generic rotation at all. */
@@ -161,16 +222,43 @@ function isProactivePreferenceEnabled(config: OcxConfig, providerName: string, n
 }
 
 /** Accounts that may serve traffic right now: not cooled, not flagged for reauth. */
-export function eligibleFailoverAccounts(providerName: string, now = Date.now()): string[] {
+export function eligibleFailoverAccounts(
+  providerName: string,
+  now = Date.now(),
+  modelId?: string,
+): string[] {
   const set = getAccountSet(providerName);
   if (!set) return [];
+  const normalizedModel = normalizeGenericFailoverModelId(providerName, modelId);
   return set.accounts
-    .filter(account => account.needsReauth !== true && !isCooled(providerName, account.id, now))
+    .filter(account => account.needsReauth !== true && !isCooled(providerName, account.id, now, normalizedModel))
     .map(account => account.id);
 }
 
+function resolveGenericCooldown(
+  providerName: string,
+  failedAccountId: string,
+  retryAfterHeader: string | null | undefined,
+  now: number,
+  options?: GenericOAuthRotateOptions,
+): { cooldownMs: number; source: AccountHealth["cooldownSource"] } {
+  if (typeof options?.cooldownUntilMs === "number" && Number.isFinite(options.cooldownUntilMs)) {
+    const ms = Math.min(Math.max(options.cooldownUntilMs - now, 1), QUOTA_RESET_COOLDOWN_MAX_MS);
+    return { cooldownMs: ms, source: "reset-derived" };
+  }
+  if (options?.quotaExhausted === true || options?.scope === "model") {
+    return { cooldownMs: QUOTA_RESET_COOLDOWN_DEFAULT_MS, source: "default" };
+  }
+  const parsed = parseRetryAfterMs(retryAfterHeader, now, { preserveImmediate: true });
+  const exhausted = parsed === undefined ? exhaustedCooldownMs(providerName, failedAccountId, now) : null;
+  return {
+    cooldownMs: exhausted ?? Math.min(parsed ?? DEFAULT_COOLDOWN_MS, MAX_COOLDOWN_MS),
+    source: parsed ? "retry-after" : "default",
+  };
+}
+
 /**
- * Cool the account that actually 429'd and name the next eligible one, or null.
+ * Cool the account that actually 429'd (or quota-exhausted) and name the next eligible one, or null.
  *
  * Returns the id only; the caller mints the credential so a failed refresh does not leave the
  * cooldown applied to an account we then could not use.
@@ -181,25 +269,30 @@ export function rotateGenericOAuthAccountOn429(
   failedAccountId: string,
   retryAfterHeader: string | null | undefined,
   now = Date.now(),
+  options?: GenericOAuthRotateOptions,
 ): string | null {
   if (!isGenericOAuthFailoverEnabled(config, providerName)) return null;
   const set = getAccountSet(providerName);
   // A single stored account has nowhere to go; rotating to itself would just replay the 429.
   if (!set || set.accounts.length < 2) return null;
 
-  const parsed = parseRetryAfterMs(retryAfterHeader, now, { preserveImmediate: true });
-  // An account whose allowance is provably spent gets a reset-aligned cooldown instead of
-  // the default minute: retrying it every 60s until the window rolls over is pure waste.
-  // A Retry-After from upstream still wins — it is the server's own instruction.
-  const exhausted = parsed === undefined ? exhaustedCooldownMs(providerName, failedAccountId, now) : null;
-  const cooldownMs = exhausted ?? Math.min(parsed ?? DEFAULT_COOLDOWN_MS, MAX_COOLDOWN_MS);
-  health.set(healthKey(providerName, failedAccountId), {
-    cooldownUntil: now + cooldownMs,
-    cooldownSource: parsed ? "retry-after" : "default",
+  const modelId = options?.scope === "model"
+    ? normalizeGenericFailoverModelId(providerName, options.modelId)
+    : undefined;
+  const { cooldownMs, source } = resolveGenericCooldown(
+    providerName, failedAccountId, retryAfterHeader, now, options,
+  );
+  applyGenericFailoverCooldown({
+    providerName,
+    accountId: failedAccountId,
+    cooldownMs,
+    now,
+    modelId,
+    source,
   });
   sweepExpiredOnWrite(now);
 
-  const eligible = eligibleFailoverAccounts(providerName, now).filter(id => id !== failedAccountId);
+  const eligible = eligibleFailoverAccounts(providerName, now, modelId).filter(id => id !== failedAccountId);
   if (eligible.length === 0) return null;
   // A rotation means the roster in use just changed; do not answer the next activation question
   // from a count read before the failure.
@@ -215,6 +308,21 @@ export function rotateGenericOAuthAccountOn429(
   // With no quota evidence this returns the ring untouched, so providers without
   // per-account quota keep exactly the traversal they have today.
   return rankAccountsByHeadroom(providerName, candidates)[0] ?? null;
+}
+
+/** True when this response should enter the generic OAuth rotation loop. */
+export function shouldAttemptGenericOAuthFailover(
+  config: OcxConfig,
+  providerName: string,
+  status: number,
+  accountId: string | null | undefined,
+  failovers: number,
+  quotaHint?: { scope: "account" | "model" } | null,
+): boolean {
+  if (!accountId || failovers >= GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST) return false;
+  if (!isGenericOAuthFailoverEnabled(config, providerName)) return false;
+  if (status === 429) return true;
+  return quotaHint != null && status === 402;
 }
 
 /**
@@ -238,57 +346,72 @@ export async function failoverAccountSnapshot(
  * to be active — including one a previous probe already measured as spent. That costs a
  * full upstream round trip and one of three rotations to rediscover what the cache knew.
  *
- * Returns null whenever the ordinary active-account path should be used unchanged: no
- * quorum, rotation disabled, a single account, or no quota evidence to act on. This is a
- * preference, never a gate — a cooled or unmeasured account is still perfectly usable, so
- * an empty answer means "carry on", not "refuse".
+ * Returns null whenever the ordinary active-account path should be used unchanged.
+ * Proactive ranking still needs quota evidence. Cooldown avoidance does not: an account
+ * already cooled for this model (or the whole account) is skipped even when the
+ * proactive knob is off. An empty answer means "carry on", not "refuse".
  */
+function pickUncooledFromRing(
+  providerName: string,
+  order: string[],
+  active: string | undefined,
+  now: number,
+  modelId: string | undefined,
+  rank: boolean,
+): string | null {
+  const eligible = order.filter(id => !isCooled(providerName, id, now, modelId));
+  if (eligible.length === 0) return null;
+  const start = active ? order.indexOf(active) : -1;
+  const ring = start >= 0 ? [...order.slice(start), ...order.slice(0, start)] : order;
+  const candidates = ring.filter(id => eligible.includes(id));
+  if (candidates.length === 0) return null;
+  const best = rank
+    ? rankAccountsByHeadroom(providerName, candidates)[0] ?? null
+    : candidates[0] ?? null;
+  return best && best !== active ? best : null;
+}
+
 export function preferredInitialAccount(
   config: OcxConfig,
   providerName: string,
   now = Date.now(),
+  modelId?: string,
 ): string | null {
-  // The PROACTIVE predicate, not the reactive one: this steers a request upstream has not
-  // refused, so `oauthAccountFailover.enabled: false` must still be able to refuse it.
-  if (!isProactivePreferenceEnabled(config, providerName, now)) return null;
-  // Read the same authoritative selection the management writer commits. Caching the
-  // active id separately would delay manual selection and account removal.
+  const provider = config.providers?.[providerName];
+  if (!provider || !isGenericFailoverProvider(providerName, provider)) return null;
   const selected = getAccountSet(providerName);
   if (!selected) return null;
   const active = selected.activeAccountId;
   const order = selected.accounts.filter(account => account.needsReauth !== true).map(account => account.id);
   if (order.length < 2) return null;
+  const normalizedModel = normalizeGenericFailoverModelId(providerName, modelId);
 
+  // The PROACTIVE predicate, not the reactive one: this steers a request upstream has not
+  // refused, so `oauthAccountFailover.enabled: false` must still be able to refuse it.
+  if (isProactivePreferenceEnabled(config, providerName, now)) {
+    const activeRow = selected.accounts.find(account => account.id === active);
+    if (activeRow && activeRow.needsReauth !== true
+      && !isCooled(providerName, activeRow.id, now, normalizedModel)
+      && !isAccountQuotaExhausted(providerName, activeRow.id)) return null;
+
+    // Evidence is required BEFORE eligibility narrows the field. Without this, a provider
+    // with no quota data at all could still be redirected: cool the active account with a
+    // 429 and the eligible list collapses to one candidate, which any ranking returns
+    // unchanged — an answer that looks ranked but was never measured. The no-op guarantee
+    // for quota-less providers has to be checked on the full roster.
+    if (!hasHeadroomEvidence(providerName, order)) return null;
+
+    return pickUncooledFromRing(providerName, order, active, now, normalizedModel, true);
+  }
+
+  // Cooldown avoidance is not proactive ranking: we already refused this account×model
+  // (or the whole account) on a previous request. Presence is still required.
+  if (!hasFailoverAccountQuorum(providerName, now)) return null;
   const activeRow = selected.accounts.find(account => account.id === active);
   if (activeRow && activeRow.needsReauth !== true
-    && !isCooled(providerName, activeRow.id, now)
+    && !isCooled(providerName, activeRow.id, now, normalizedModel)
     && !isAccountQuotaExhausted(providerName, activeRow.id)) return null;
-
-  // Evidence is required BEFORE eligibility narrows the field. Without this, a provider
-  // with no quota data at all could still be redirected: cool the active account with a
-  // 429 and the eligible list collapses to one candidate, which any ranking returns
-  // unchanged — an answer that looks ranked but was never measured. The no-op guarantee
-  // for quota-less providers has to be checked on the full roster.
-  if (!hasHeadroomEvidence(providerName, order)) return null;
-
-  // Cooldowns are respected here, unlike in the presence count: this picks the account to
-  // send to right now, and one inside its 429 window is the single candidate we hold
-  // positive evidence against.
-  const eligible = order.filter(id => !isCooled(providerName, id, now));
-  if (eligible.length === 0) return null;
-
-  // Start the ring at the active account so an unranked outcome reproduces today's choice.
-  const start = active ? order.indexOf(active) : -1;
-  const ring = start >= 0 ? [...order.slice(start), ...order.slice(0, start)] : order;
-  const candidates = ring.filter(id => eligible.includes(id));
-  if (candidates.length === 0) return null;
-
-  const best = rankAccountsByHeadroom(providerName, candidates)[0] ?? null;
-  // Nothing to do when the ranking agrees with the account we would have used anyway.
-  //
-  // A proposal still needs guarded selection commit after credential resolution: a
-  // removal, reauth verdict, or manual choice can arrive during that await.
-  return best && best !== active ? best : null;
+  return pickUncooledFromRing(providerName, order, active, now, normalizedModel, false);
 }
 
 /** Earliest remaining cooldown, for a client-facing Retry-After when every account is cooled. */

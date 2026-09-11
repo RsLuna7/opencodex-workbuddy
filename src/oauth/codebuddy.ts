@@ -28,6 +28,50 @@ export function applyCodebuddyAccountHeaders(
   if (domain) headers["X-Domain"] = domain;
 }
 
+/** 6004 = this model on this account; 14018 = the whole account. */
+export type CodebuddyQuotaCode = "6004" | "14018";
+
+export interface CodebuddyFailoverHint {
+  code: CodebuddyQuotaCode;
+  scope: "account" | "model";
+  resetAtMs?: number;
+}
+
+const codebuddyFailoverHints = new WeakMap<Response, CodebuddyFailoverHint>();
+
+/** Observed 2026-09-11: "将在 2026-09-11 18:52:21 UTC+8 重置". */
+const CODEBUDDY_RESET_AT_RE = /将在\s+(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})\s*UTC\+8/;
+
+export function parseCodebuddyResetAtMs(text: string, now = Date.now()): number | undefined {
+  const match = CODEBUDDY_RESET_AT_RE.exec(text);
+  if (!match) return undefined;
+  const ms = Date.parse(`${match[1]}T${match[2]}+08:00`);
+  if (!Number.isFinite(ms) || ms <= now) return undefined;
+  return ms;
+}
+
+export function codebuddyFailoverHintFromQuotaCode(
+  code: string,
+  message: string,
+  now = Date.now(),
+): CodebuddyFailoverHint | undefined {
+  if (code !== "6004" && code !== "14018") return undefined;
+  const resetAtMs = parseCodebuddyResetAtMs(message, now);
+  return {
+    code,
+    scope: code === "6004" ? "model" : "account",
+    ...(resetAtMs !== undefined ? { resetAtMs } : {}),
+  };
+}
+
+export function rememberCodebuddyFailoverHint(response: Response, hint: CodebuddyFailoverHint): void {
+  codebuddyFailoverHints.set(response, hint);
+}
+
+export function getCodebuddyFailoverHint(response: Response): CodebuddyFailoverHint | undefined {
+  return codebuddyFailoverHints.get(response);
+}
+
 const AUTH_PREFIX = "/v2/plugin";
 const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
 const POLL_INTERVAL_MS = 1_500;

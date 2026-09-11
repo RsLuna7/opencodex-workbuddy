@@ -2,6 +2,13 @@
 
 基于官方 **v2.48.0**。额外功能：腾讯 WorkBuddy / CodeBuddy 中国站作为 OAuth 提供方，登录后实时拉模型目录。
 
+WorkBuddy 额度：
+
+- 业务码 **14018**（整号额度）和 **6004**（单模型 24h 频率）改写成 HTTP **402** `insufficient_quota`，避免 Codex 把 429 空转重试。
+- 存了 **≥2 个号** 时，ocx 在内部换号：6004 只冷却「这个号 × 这个模型」（尽量跟上游重置时刻），不改你手动选中的当前号；14018 冷却整号。单号安装是 no-op。
+- 加号：`ocx account login workbuddy`（会开浏览器；必须换一个腾讯账号）。列表：`ocx account list workbuddy`。
+- 冷却在进程内存里，重启代理会忘。
+
 上游 remote 名是 `upstream`（`lidge-jun/opencodex`）。你的 GitHub 是 `origin`。
 
 ## 别的电脑怎么装
