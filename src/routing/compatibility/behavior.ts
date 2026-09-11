@@ -20,6 +20,7 @@ export function upstreamProtocolForAdapter(adapter: string): string {
     case "mimo-free":
     case "codebuddy":
       return "openai-chat";
+    case "zai-plan":
     case "anthropic":
       return "anthropic-messages";
     case "google":

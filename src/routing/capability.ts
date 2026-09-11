@@ -126,6 +126,7 @@ const TOOL_CAPABLE_ADAPTERS = new Set([
   "mimo-free",
   "codebuddy",
   "command-code",
+  "zai-plan",
 ]);
 
 function localRemoteEvidence(baseUrl: string | undefined): Pick<RouteCapabilityEvidence, "localOnly" | "remoteAllowed"> {

@@ -37,6 +37,7 @@ export function resolveGuiFilePath(guiDist: string, pathname: string): string | 
     return null;
   }
   if (decodedPath.includes("\0")) return null;
+  if (decodedPath === "/zai-plan") decodedPath = "/zai-plan.html";
 
   const relativePath = decodedPath === "/" || decodedPath === ""
     ? "index.html"
