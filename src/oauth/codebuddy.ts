@@ -72,6 +72,58 @@ export function getCodebuddyFailoverHint(response: Response): CodebuddyFailoverH
   return codebuddyFailoverHints.get(response);
 }
 
+/** Client-facing 402 envelope written by the codebuddy adapter. */
+const CODEBUDDY_QUOTA_MESSAGE_RE = /CodeBuddy quota exhausted \((6004|14018)\)/;
+
+/**
+ * Rebuild the rotation hint from a 402 body.
+ *
+ * The adapter also stashes the hint on the Response via WeakMap, but anything that
+ * clones or rebuilds that object (tee, combo preflight, a second `new Response`)
+ * drops it. The rewritten JSON already carries the quota code in `error.message`,
+ * which is what Codex sees, so this is the durable copy.
+ */
+export function codebuddyFailoverHintFromErrorPayload(
+  text: string,
+  now = Date.now(),
+): CodebuddyFailoverHint | undefined {
+  let message = text;
+  try {
+    const parsed = JSON.parse(text) as { error?: { message?: unknown } };
+    if (typeof parsed?.error?.message === "string" && parsed.error.message.trim()) {
+      message = parsed.error.message;
+    }
+  } catch {
+    /* plain-text fallback uses the raw body */
+  }
+  const match = CODEBUDDY_QUOTA_MESSAGE_RE.exec(message);
+  if (!match) return undefined;
+  return codebuddyFailoverHintFromQuotaCode(match[1]!, message, now);
+}
+
+/**
+ * WeakMap first (no body read). On a 402 miss, clone and parse the durable envelope.
+ * Never consumes the original body: the error path still needs it if rotation fails.
+ */
+export async function recoverCodebuddyFailoverHint(
+  response: Response,
+  signal?: AbortSignal,
+  now = Date.now(),
+): Promise<CodebuddyFailoverHint | undefined> {
+  const remembered = getCodebuddyFailoverHint(response);
+  if (remembered) return remembered;
+  if (response.status !== 402) return undefined;
+  let text = "";
+  try {
+    const body = await readBoundedResponseBody(response.clone(), { signal });
+    if (!body.displaySafe || !body.text) return undefined;
+    text = body.text;
+  } catch {
+    return undefined;
+  }
+  return codebuddyFailoverHintFromErrorPayload(text, now);
+}
+
 const AUTH_PREFIX = "/v2/plugin";
 const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
 const POLL_INTERVAL_MS = 1_500;
