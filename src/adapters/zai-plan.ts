@@ -15,6 +15,8 @@ import {
 import {
   getZaiPlanVerifyParam,
   invalidateZaiPlanCaptcha,
+  restartZaiPlanChrome,
+  runZaiPlanChromeAttempt,
   ZAI_CAPTCHA_HEADER,
   ZAI_CAPTCHA_REGION,
   ZAI_CAPTCHA_REGION_HEADER,
@@ -247,17 +249,25 @@ export function createZaiPlanAdapter(provider: OcxProviderConfig, cacheRetention
       let lastText = "";
       let lastStatus = 0;
       for (let attempt = 0; attempt < CAPTCHA_RETRIES; attempt++) {
-        const param = await getZaiPlanVerifyParam();
-        const headers = {
-          ...(request.headers as Record<string, string>),
-          [ZAI_CAPTCHA_HEADER]: param,
-          [ZAI_CAPTCHA_REGION_HEADER]: ZAI_CAPTCHA_REGION,
-        };
-        const viaChrome = await zaiPlanBrowserFetch({
-          url: request.url,
-          headers,
-          body: String(request.body ?? ""),
-          timeoutMs: 90_000,
+        const viaChrome = await runZaiPlanChromeAttempt({
+          abortSignal: ctx?.abortSignal,
+          restart() {
+            restartZaiPlanChrome();
+            invalidateZaiPlanCaptcha();
+          },
+          run: async () => {
+            const param = await getZaiPlanVerifyParam();
+            return zaiPlanBrowserFetch({
+              url: request.url,
+              headers: {
+                ...(request.headers as Record<string, string>),
+                [ZAI_CAPTCHA_HEADER]: param,
+                [ZAI_CAPTCHA_REGION_HEADER]: ZAI_CAPTCHA_REGION,
+              },
+              body: String(request.body ?? ""),
+              abortSignal: ctx?.abortSignal,
+            });
+          },
         });
         lastStatus = viaChrome.status;
         lastText = viaChrome.text;

@@ -7,16 +7,20 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { cpSync, existsSync, mkdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { ZAI_ORIGIN } from "./zai-plan";
 
 export const ZAI_CAPTCHA_SCENE = "11xygtvd";
 export const ZAI_CAPTCHA_REGION = "cn";
 export const ZAI_CAPTCHA_PREFIX = "no8xfe";
 export const ZAI_CAPTCHA_HEADER = "X-Aliyun-Captcha-Verify-Param";
 export const ZAI_CAPTCHA_REGION_HEADER = "X-Aliyun-Captcha-Verify-Region";
+/** Safety cap for the buffered Chrome fetch. Client abort uses `abortSignal`. */
+export const ZAI_PLAN_FETCH_SAFETY_TIMEOUT_MS = 300_000;
 
 const SOLVE_TIMEOUT_MS = 40_000;
 const PARAM_TTL_MS = 45_000;
 const CHROME_IDLE_MS = 90_000;
+const PAGE_LOAD_TIMEOUT_MS = 15_000;
 
 type CdpSession = {
   send: (method: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>>;
@@ -113,6 +117,12 @@ function scheduleIdleClose(target: ChromeSlot): void {
   }, CHROME_IDLE_MS);
 }
 
+function clearIdleTimer(target: ChromeSlot): void {
+  if (!target.idleTimer) return;
+  clearTimeout(target.idleTimer);
+  target.idleTimer = undefined;
+}
+
 function closeSlot(): void {
   if (!slot) return;
   const current = slot;
@@ -122,8 +132,78 @@ function closeSlot(): void {
   try { current.child.kill(); } catch { /* ignore */ }
 }
 
+export function restartZaiPlanChrome(): void {
+  closeSlot();
+}
+
+export function zaiPlanBrowserFetchTimeoutMs(timeoutMs?: number): number {
+  return timeoutMs ?? ZAI_PLAN_FETCH_SAFETY_TIMEOUT_MS;
+}
+
+export function isZaiPlanPageReady(origin: string, readyState: string): boolean {
+  return origin === ZAI_ORIGIN && (readyState === "complete" || readyState === "interactive");
+}
+
+export function isZaiPlanChromeTransientError(error: unknown): boolean {
+  const text = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  if (/AbortError|The user aborted a request|The operation was aborted/i.test(text)) return false;
+  return /Failed to fetch/i.test(text)
+    || /chrome exited/i.test(text)
+    || /cdp websocket/i.test(text)
+    || /no chrome page websocket/i.test(text)
+    || /chrome debug port did not come up/i.test(text)
+    || /zcode\.z\.ai did not load/i.test(text);
+}
+
+export async function runZaiPlanChromeAttempt<T>(input: {
+  abortSignal?: AbortSignal;
+  run: () => Promise<T>;
+  restart: () => void;
+}): Promise<T> {
+  try {
+    return await input.run();
+  } catch (error) {
+    if (input.abortSignal?.aborted) throw error;
+    if (!isZaiPlanChromeTransientError(error)) throw error;
+    input.restart();
+    return await input.run();
+  }
+}
+
+async function evalString(session: CdpSession, expression: string): Promise<string> {
+  const result = await session.send("Runtime.evaluate", { expression, returnByValue: true });
+  const details = result.exceptionDetails as { text?: string; exception?: { description?: string } } | undefined;
+  if (details) throw new Error(details.exception?.description || details.text || "chrome evaluate failed");
+  const value = (result.result as { value?: unknown } | undefined)?.value;
+  return typeof value === "string" ? value : "";
+}
+
+async function waitForZcodePage(session: CdpSession, child: ChildProcess): Promise<void> {
+  const deadline = Date.now() + PAGE_LOAD_TIMEOUT_MS;
+  const origin = await evalString(session, "location.origin");
+  const ready = await evalString(session, "document.readyState");
+  if (isZaiPlanPageReady(origin, ready)) return;
+
+  await session.send("Page.navigate", { url: `${ZAI_ORIGIN}/` });
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) throw new Error(`chrome exited ${child.exitCode}`);
+    const nowOrigin = await evalString(session, "location.origin");
+    const nowReady = await evalString(session, "document.readyState");
+    if (isZaiPlanPageReady(nowOrigin, nowReady)) return;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  throw new Error("zcode.z.ai did not load");
+}
+
 async function ensureChrome(): Promise<ChromeSlot> {
-  if (slot && slot.child.exitCode === null) return slot;
+  if (slot && slot.child.exitCode === null) {
+    try {
+      await waitForZcodePage(slot.session, slot.child);
+      return slot;
+    } catch {
+      closeSlot();
+    }
+  }
   closeSlot();
   const exe = chromePath();
   const port = 19222 + Math.floor(Math.random() * 400);
@@ -163,8 +243,7 @@ async function ensureChrome(): Promise<ChromeSlot> {
   await session.send("Page.addScriptToEvaluateOnNewDocument", {
     source: `Object.defineProperty(navigator, "webdriver", { get: () => undefined });`,
   });
-  await session.send("Page.navigate", { url: "https://zcode.z.ai/" });
-  await new Promise((r) => setTimeout(r, 1200));
+  await waitForZcodePage(session, child);
   const created: ChromeSlot = { child, session };
   slot = created;
   return created;
@@ -239,23 +318,46 @@ export async function getZaiPlanVerifyParam(): Promise<string> {
   }
 }
 
+async function abortPageFetch(): Promise<void> {
+  if (!slot || slot.child.exitCode !== null) return;
+  try {
+    await slot.session.send("Runtime.evaluate", {
+      expression: "window.__ocxAbort && window.__ocxAbort.abort()",
+      returnByValue: true,
+    });
+  } catch { /* ignore */ }
+}
+
 export async function zaiPlanBrowserFetch(input: {
   url: string;
   headers: Record<string, string>;
   body: string;
   timeoutMs?: number;
+  abortSignal?: AbortSignal;
 }): Promise<{ status: number; text: string; headers: Record<string, string> }> {
+  if (input.abortSignal?.aborted) {
+    throw input.abortSignal.reason ?? new DOMException("The operation was aborted", "AbortError");
+  }
   await ensureChrome();
-  const timeoutMs = input.timeoutMs ?? 60_000;
-  const got = await evaluate<{ status: number; text: string }>(`(async () => {
-    const res = await fetch(${JSON.stringify(input.url)}, {
-      method: "POST",
-      headers: ${JSON.stringify(input.headers)},
-      body: ${JSON.stringify(input.body)},
-      signal: AbortSignal.timeout(${timeoutMs}),
-    });
-    return { status: res.status, text: await res.text() };
-  })()`);
-  if (slot) scheduleIdleClose(slot);
-  return { status: got.status, text: got.text, headers: { "content-type": "application/json" } };
+  if (slot) clearIdleTimer(slot);
+  const timeoutMs = zaiPlanBrowserFetchTimeoutMs(input.timeoutMs);
+  const onAbort = () => { void abortPageFetch(); };
+  input.abortSignal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    const got = await evaluate<{ status: number; text: string }>(`(async () => {
+      window.__ocxAbort = new AbortController();
+      const signal = AbortSignal.any([window.__ocxAbort.signal, AbortSignal.timeout(${timeoutMs})]);
+      const res = await fetch(${JSON.stringify(input.url)}, {
+        method: "POST",
+        headers: ${JSON.stringify(input.headers)},
+        body: ${JSON.stringify(input.body)},
+        signal,
+      });
+      return { status: res.status, text: await res.text() };
+    })()`);
+    return { status: got.status, text: got.text, headers: { "content-type": "application/json" } };
+  } finally {
+    input.abortSignal?.removeEventListener("abort", onAbort);
+    if (slot) scheduleIdleClose(slot);
+  }
 }
