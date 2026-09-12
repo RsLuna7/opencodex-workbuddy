@@ -150,7 +150,7 @@ import {
   rotateGenericOAuthAccountOn429,
   shouldAttemptGenericOAuthFailover,
 } from "../../oauth/generic-account-failover";
-import { CODEBUDDY_PROVIDER_ID, getCodebuddyFailoverHint } from "../../oauth/codebuddy";
+import { CODEBUDDY_PROVIDER_ID, recoverCodebuddyFailoverHint } from "../../oauth/codebuddy";
 import { resolveCopilotApiBaseUrl } from "../../oauth/github-copilot";
 import { buildWebSearchTool, planWebSearch, runWithWebSearch, shouldResolveOpenAiWebSearchSidecar } from "../../web-search";
 import { buildImageTool, buildVideoTool, planImageBridge, planVideoBridge, runWithImageBridge, clampImageMaxRounds, IMAGE_GEN_TOOL_NAME, VIDEO_GEN_TOOL_NAME } from "../../images";
@@ -3952,7 +3952,7 @@ async function handleResponsesInner(
     retryParsed: OcxParsedRequest = parsed,
   ): Promise<boolean> => {
     const hint = route.providerName === CODEBUDDY_PROVIDER_ID
-      ? getCodebuddyFailoverHint(response)
+      ? await recoverCodebuddyFailoverHint(response, options.abortSignal)
       : undefined;
     if (!shouldAttemptGenericOAuthFailover(
       config,
@@ -7298,7 +7298,9 @@ async function handleResponsesInner(
       // accounts are stored for the provider, because a second deliberate login is read as the
       // operator asking for it. A single-account install is still a strict no-op.
       // WorkBuddy 6004/14018 arrive as HTTP 402 (so Codex does not retry) and rotate here
-      // via getCodebuddyFailoverHint — 6004 cools account×model and does not persist active.
+      // via recoverCodebuddyFailoverHint — WeakMap first, then the 402 body, because a
+      // cloned Response drops the process-local hint. 6004 cools account×model and does
+      // not persist active.
       while (await rotateGenericOAuthFromResponse(upstreamResponse)) {
         invalidateSameTargetRequest();
         activeAdapter = resolveSelectionAdapter(
