@@ -1133,6 +1133,7 @@
   "z-handler-activation.test.ts": "images",
   "zai-plan-chrome.test.ts": "oauth",
   "zai-plan-fingerprint.test.ts": "oauth",
+  "zai-plan-quota.test.ts": "oauth",
   "zcode-client.test.ts": "providers",
   "zhipu-bigmodel-provider.test.ts": "providers",
   "zz-ci-api-usage-isolation.test.ts": "ci-workflows",

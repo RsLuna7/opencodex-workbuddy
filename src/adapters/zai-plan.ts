@@ -117,9 +117,33 @@ function isCaptchaFail(status: number, text: string): boolean {
   return status === 400 && readBiz(text).code === 3007;
 }
 
-function isQuotaFail(status: number, text: string): boolean {
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+/** Quota only from HTTP 402 or a 4xx/5xx error JSON — never from model/SSE body text. */
+export function isZaiPlanQuotaFail(status: number, text: string): boolean {
   if (status === 402) return true;
-  return /quota|insufficient|balance|exhaust|额度|余额不足/i.test(text);
+  if (status >= 200 && status < 300) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  const root = asRecord(parsed);
+  if (!root) return false;
+  const err = asRecord(root.error) ?? root;
+  const type = readString(err.type) ?? readString(root.type);
+  if (type && /^(insufficient_quota|quota_exhausted|quota_exceeded)$/i.test(type)) return true;
+  const msg = readString(err.message) ?? readString(root.msg) ?? readString(root.message);
+  if (!msg) return false;
+  return /insufficient_quota|quota exhausted|额度不足|余额不足|额度用尽/i.test(msg);
 }
 
 function isRiskFail(status: number, text: string): boolean {
@@ -151,7 +175,7 @@ export function createZaiPlanAdapter(provider: OcxProviderConfig, cacheRetention
     formatErrorBody(status, headers, payloadText) {
       if (isCaptchaFail(status, payloadText)) return "ZCode Plan captcha failed. Retry the request.";
       if (isRiskFail(status, payloadText)) return "ZCode Plan blocked the request (unusual activity). Wait and retry.";
-      if (isQuotaFail(status, payloadText)) return "ZCode Plan quota exhausted.";
+      if (isZaiPlanQuotaFail(status, payloadText)) return "ZCode Plan quota exhausted.";
       return inner.formatErrorBody?.(status, headers, payloadText) ?? payloadText.slice(0, 500);
     },
 
@@ -222,7 +246,7 @@ export function createZaiPlanAdapter(provider: OcxProviderConfig, cacheRetention
           }
         }
         const text = await resp.text();
-        if (!isQuotaFail(resp.status, text)) {
+        if (!isZaiPlanQuotaFail(resp.status, text)) {
           return new Response(text, {
             status: resp.status,
             headers: { "content-type": resp.headers.get("content-type") ?? "application/json" },
@@ -275,7 +299,7 @@ export function createZaiPlanAdapter(provider: OcxProviderConfig, cacheRetention
           invalidateZaiPlanCaptcha();
           continue;
         }
-        if (isQuotaFail(viaChrome.status, lastText)) {
+        if (isZaiPlanQuotaFail(viaChrome.status, lastText)) {
           return jsonResponse(402, { error: { type: "insufficient_quota", message: "ZCode Plan quota exhausted" } });
         }
         return new Response(lastText, {
