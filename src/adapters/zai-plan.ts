@@ -15,6 +15,8 @@ import {
 import {
   getZaiPlanVerifyParam,
   invalidateZaiPlanCaptcha,
+  isZaiPlanCdpError,
+  resetZaiPlanChrome,
   ZAI_CAPTCHA_HEADER,
   ZAI_CAPTCHA_REGION,
   ZAI_CAPTCHA_REGION_HEADER,
@@ -247,31 +249,46 @@ export function createZaiPlanAdapter(provider: OcxProviderConfig, cacheRetention
       let lastText = "";
       let lastStatus = 0;
       for (let attempt = 0; attempt < CAPTCHA_RETRIES; attempt++) {
-        const param = await getZaiPlanVerifyParam();
-        const headers = {
-          ...(request.headers as Record<string, string>),
-          [ZAI_CAPTCHA_HEADER]: param,
-          [ZAI_CAPTCHA_REGION_HEADER]: ZAI_CAPTCHA_REGION,
-        };
-        const viaChrome = await zaiPlanBrowserFetch({
-          url: request.url,
-          headers,
-          body: String(request.body ?? ""),
-          timeoutMs: 90_000,
-        });
-        lastStatus = viaChrome.status;
-        lastText = viaChrome.text;
-        if (isCaptchaFail(viaChrome.status, lastText)) {
-          invalidateZaiPlanCaptcha();
-          continue;
+        try {
+          const param = await getZaiPlanVerifyParam(ctx?.abortSignal);
+          const headers = {
+            ...(request.headers as Record<string, string>),
+            [ZAI_CAPTCHA_HEADER]: param,
+            [ZAI_CAPTCHA_REGION_HEADER]: ZAI_CAPTCHA_REGION,
+          };
+          const viaChrome = await zaiPlanBrowserFetch({
+            url: request.url,
+            headers,
+            body: String(request.body ?? ""),
+            signal: ctx?.abortSignal,
+          });
+          lastStatus = viaChrome.status;
+          if (viaChrome.status >= 400) {
+            lastText = await new Response(viaChrome.body).text();
+            if (isCaptchaFail(viaChrome.status, lastText)) {
+              invalidateZaiPlanCaptcha();
+              continue;
+            }
+            if (isQuotaFail(viaChrome.status, lastText)) {
+              return jsonResponse(402, { error: { type: "insufficient_quota", message: "ZCode Plan quota exhausted" } });
+            }
+            return new Response(lastText, {
+              status: viaChrome.status,
+              headers: { "content-type": viaChrome.headers["content-type"] ?? "application/json" },
+            });
+          }
+          return new Response(viaChrome.body, {
+            status: viaChrome.status,
+            headers: { "content-type": viaChrome.headers["content-type"] ?? "application/json" },
+          });
+        } catch (err) {
+          if (ctx?.abortSignal?.aborted) throw err;
+          if (isZaiPlanCdpError(err) && attempt < CAPTCHA_RETRIES - 1) {
+            resetZaiPlanChrome();
+            continue;
+          }
+          throw err;
         }
-        if (isQuotaFail(viaChrome.status, lastText)) {
-          return jsonResponse(402, { error: { type: "insufficient_quota", message: "ZCode Plan quota exhausted" } });
-        }
-        return new Response(lastText, {
-          status: viaChrome.status,
-          headers: { "content-type": viaChrome.headers["content-type"] ?? "application/json" },
-        });
       }
       return new Response(lastText, { status: lastStatus || 400, headers: { "content-type": "application/json" } });
     },
