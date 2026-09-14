@@ -12,6 +12,7 @@ let host: HTMLElement;
 let pools: ReturnType<typeof useProviderAccountPools>;
 let requests: Array<{ url: string; signal?: AbortSignal | null }>;
 let respond: (url: string, signal?: AbortSignal | null, init?: RequestInit) => Promise<Response>;
+let notifyCalls: Array<[string, boolean | undefined]>;
 const noop = async () => {};
 const reading = { fiveHourPercent: 21, weeklyPercent: 34, updatedAt: 1_700_000_000_000 };
 
@@ -110,7 +111,7 @@ function deferred<T>() {
 function Harness({ apiBase = "/quota-hook" }: { apiBase?: string }) {
   const aliveRef = useRef(true);
   const currentPools = useProviderAccountPools({ apiBase, config: null, aliveRef, t: key => key,
-    oauthStatus: {}, notify: () => {}, fetchConfig: noop, fetchOauth: noop,
+    oauthStatus: {}, notify: (msg, ok) => { notifyCalls.push([msg, ok]); }, fetchConfig: noop, fetchOauth: noop,
     fetchProviderQuotas: noop, codexActiveNeedsReauth: false });
   useLayoutEffect(() => { pools = currentPools; }, [currentPools]);
   return null;
@@ -123,6 +124,7 @@ beforeEach(async () => {
     navigator: { configurable: true, value: win.navigator }, IS_REACT_ACT_ENVIRONMENT: { configurable: true, value: true },
   });
   requests = [];
+  notifyCalls = [];
   respond = async () => Response.json({ accounts: [], keys: [] });
   Object.defineProperty(globalThis, "fetch", { configurable: true, value: (input: RequestInfo | URL, init?: RequestInit) => {
     requests.push({ url: String(input), signal: init?.signal });
@@ -202,7 +204,85 @@ for (const kind of ["oauth", "api-key"] as const) {
     expect((kind === "oauth" ? pools.accountSets.fixture.accounts : pools.keyPools.fixture).find(row => row.active)?.id).toBe("b");
     await act(async () => { afterPut.resolve(roster("b")); await switched; });
   });
+
+  test(`${kind} overlapping selection read is superseded without reporting failure`, async () => {
+    const rows = ["a", "b"].map(id => ({ id, masked: id, active: id === "a", quotaMode: "unsupported" as const }));
+    await act(async () => {
+      if (kind === "oauth") pools.setAccountSets({ fixture: { activeAccountId: "a", accounts: rows } });
+      else pools.setKeyPools({ fixture: rows });
+    });
+    const first = deferred<Response>();
+    const second = deferred<Response>();
+    let reads = 0;
+    respond = async () => ++reads === 1 ? first.promise : second.promise;
+    const roster = (id: string) => Response.json({
+      activeAccountId: id, activeId: id,
+      accounts: rows.map(row => ({ ...row, active: row.id === id })),
+      keys: rows.map(row => ({ ...row, active: row.id === id })),
+    });
+    let older!: Promise<boolean>;
+    let newer!: Promise<boolean>;
+    await act(async () => { older = pools.refreshAccountRosters({ provider: "fixture", kind }); });
+    await act(async () => { newer = pools.refreshAccountRosters({ provider: "fixture", kind }); });
+    await act(async () => {
+      second.resolve(roster("b"));
+      expect(await newer).toBe(true);
+    });
+    expect((kind === "oauth" ? pools.accountSets.fixture.accounts : pools.keyPools.fixture).find(row => row.active)?.id).toBe("b");
+    await act(async () => {
+      first.resolve(roster("a"));
+      expect(await older).toBe(true);
+    });
+    expect((kind === "oauth" ? pools.accountSets.fixture.accounts : pools.keyPools.fixture).find(row => row.active)?.id).toBe("b");
+  });
 }
+
+test("oauth switch does not report accountsLoadFailed when a later selection read supersedes settlement", async () => {
+  const rows = ["a", "b"].map(id => ({ id, active: id === "a", masked: id, quotaMode: "unsupported" as const }));
+  await act(async () => {
+    pools.setAccountSets({ fixture: { activeAccountId: "a", accounts: rows } });
+  });
+  const settlement = deferred<Response>();
+  const push = deferred<Response>();
+  let reads = 0;
+  respond = async (_url, _signal, init) => {
+    if (init?.method === "PUT") return Response.json({ ok: true, activeAccountId: "b" });
+    return ++reads === 1 ? settlement.promise : push.promise;
+  };
+  const roster = (id: string) => Response.json({
+    activeAccountId: id,
+    accounts: rows.map(row => ({ ...row, active: row.id === id })),
+  });
+  let switched!: Promise<unknown>;
+  await act(async () => { switched = pools.switchAccount("fixture", rows[1]); });
+  expect(pools.accountSets.fixture.accounts.find(row => row.active)?.id).toBe("b");
+  let pushed!: Promise<boolean>;
+  await act(async () => { pushed = pools.refreshAccountRosters({ provider: "fixture", kind: "oauth" }); });
+  await act(async () => {
+    push.resolve(roster("b"));
+    expect(await pushed).toBe(true);
+  });
+  await act(async () => {
+    settlement.resolve(roster("b"));
+    await switched;
+  });
+  expect(pools.accountSets.fixture.accounts.find(row => row.active)?.id).toBe("b");
+  expect(notifyCalls).toContainEqual(["prov.accountSwitched", true]);
+  expect(notifyCalls.some(([key]) => key === "pws.accountsLoadFailed")).toBe(false);
+});
+
+test("oauth switch still reports accountsLoadFailed when settlement read fails", async () => {
+  const rows = ["a", "b"].map(id => ({ id, active: id === "a", masked: id, quotaMode: "unsupported" as const }));
+  await act(async () => {
+    pools.setAccountSets({ fixture: { activeAccountId: "a", accounts: rows } });
+  });
+  respond = async (_url, _signal, init) => init?.method === "PUT"
+    ? Response.json({ ok: true, activeAccountId: "b" })
+    : new Response(null, { status: 503 });
+  await act(async () => { await pools.switchAccount("fixture", rows[1]); });
+  expect(notifyCalls).toContainEqual(["pws.accountsLoadFailed", false]);
+  expect(notifyCalls.some(([key]) => key === "prov.accountSwitched")).toBe(false);
+});
 afterEach(async () => {
   if (root) await act(async () => { root!.unmount(); root = null; });
   for (const key of globals) {
