@@ -448,10 +448,11 @@ describe("sidecar on429 wiring", () => {
     // an ordinary stored state.
     expect(region).toContain("usedPreferredAccount = false");
     expect(region).not.toContain("has no Cloud Code Assist project");
-    // Both fallbacks — a project-less account and an unresolvable one — must reach the SAME
-    // active-account resolution, so neither can dispatch on a half-applied identity.
+    // Three fallbacks — a project-less account, an unresolvable one, and a cooldown-avoidance
+    // snapshot that cannot be applied — must reach the SAME active-account resolution, so
+    // none can dispatch on a half-applied identity.
     const fallbacks = region.match(/usedPreferredAccount = false;/g) ?? [];
-    expect(fallbacks.length).toBe(2);
+    expect(fallbacks.length).toBe(3);
     expect(region).toContain("forgetGenericFailoverRoster(route.providerName)");
   });
 });
