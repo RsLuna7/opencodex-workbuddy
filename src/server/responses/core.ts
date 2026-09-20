@@ -4229,7 +4229,27 @@ async function handleResponsesInner(
           resolved = await getValidAccessTokenSnapshot(route.providerName);
           usedPreferredAccount = false;
         }
-        const admitted = await commitResolvedOAuthSelection(resolved, true);
+        const persistPreferredAccount = usedPreferredAccount && (
+          (config.providers[route.providerName]?.oauthAccountFailover?.enabled
+            ?? config.oauthAccountFailover?.enabled) === true
+        );
+        // Cooldown avoidance is not the proactive pool: with the knob off,
+        // preferredInitialAccount only names a spare after this account×model (or
+        // the whole account) already 402/429'd. Rebind this request only — same
+        // as WorkBuddy 6004 rotation — so the operator's active account stays put
+        // and the next turn does not first replay the cooled credential.
+        let admitted: OAuthAccessSnapshot | null;
+        if (usedPreferredAccount && !persistPreferredAccount) {
+          if (await applyFailoverSnapshot(resolved, parsed, false)) {
+            admitted = servingOAuthSnapshot ?? resolved;
+          } else {
+            usedPreferredAccount = false;
+            resolved = await getValidAccessTokenSnapshot(route.providerName);
+            admitted = await commitResolvedOAuthSelection(resolved, true);
+          }
+        } else {
+          admitted = await commitResolvedOAuthSelection(resolved, true);
+        }
         if (!admitted) return formatErrorResponse(409, "conflict_error", "OAuth account selection changed; retry the request");
         if (admitted.accountId !== resolved.accountId) usedPreferredAccount = true;
         resolved = admitted;

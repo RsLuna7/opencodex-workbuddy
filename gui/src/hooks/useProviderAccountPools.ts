@@ -308,16 +308,22 @@ export function useProviderAccountPools(deps: {
     const results = await Promise.all(targets.map(async ({ provider, kind }) => {
       const key = `${kind === "oauth" ? "oauth" : "key"}:${provider}`;
       // PUT settlement always reconciles, including events received while it is pending.
-      if (selectionMutationsRef.current.has(key)) return false;
+      // A skipped or overtaken read is not a load failure: the in-flight mutation or a
+      // newer generation owns the roster (SSE account-selection after a successful PUT).
+      if (selectionMutationsRef.current.has(key)) return true;
       const generation = (rosterGenerationRef.current[key] ?? 0) + 1;
       rosterGenerationRef.current[key] = generation;
       const currentRequest = () => aliveRef.current && mountedRef.current && serverRef.current === apiBase
         && !signal?.aborted && rosterGenerationRef.current[key] === generation && !selectionMutationsRef.current.has(key);
+      const superseded = () => aliveRef.current && mountedRef.current && serverRef.current === apiBase
+        && !signal?.aborted
+        && (rosterGenerationRef.current[key] !== generation || selectionMutationsRef.current.has(key));
       try {
         if (kind === "oauth") {
           const data = await readRoster<{ activeAccountId?: string | null; accounts?: OAuthAccount[] }>(
             `${apiBase}/api/oauth/accounts?provider=${encodeURIComponent(provider)}`, signal);
-          if (!Array.isArray(data.accounts) || !currentRequest()) return false;
+          if (!currentRequest()) return superseded();
+          if (!Array.isArray(data.accounts)) return false;
           const rows = selectionRows(data.accounts, data.activeAccountId);
           setAccountSets(current => currentRequest() ? { ...current, [provider]: {
             activeAccountId: data.activeAccountId === undefined ? rows.find(row => row.active)?.id ?? null : data.activeAccountId,
@@ -327,14 +333,16 @@ export function useProviderAccountPools(deps: {
         } else {
           const data = await readRoster<{ activeId?: string | null; keys?: ApiKeyEntry[] }>(
             `${apiBase}/api/providers/keys?name=${encodeURIComponent(provider)}`, signal);
-          if (!Array.isArray(data.keys) || !currentRequest()) return false;
+          if (!currentRequest()) return superseded();
+          if (!Array.isArray(data.keys)) return false;
           const rows = selectionRows(data.keys, data.activeId);
           setKeyPools(current => currentRequest() ? { ...current, [provider]: mergeRosterRows(rows, current[provider] ?? []) } : current);
         }
         return true;
       } catch {
         // A missed invalidation read does not change quota health; recovery retries it.
-        return false;
+        // Supersession is not a miss — a later read already replaced this generation.
+        return superseded();
       }
     }));
     return results.every(Boolean);
