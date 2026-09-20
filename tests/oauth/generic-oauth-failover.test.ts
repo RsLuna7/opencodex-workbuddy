@@ -428,6 +428,11 @@ describe("sidecar on429 wiring", () => {
     // (retryParsed), which the continuation calls with nextParsed.
     expect(coreSource).toContain("applyFailoverSnapshot(snapshot, retryParsed");
     expect(coreSource).toContain("rotateGenericOAuthFromResponse(response, nextParsed)");
+    // 402 rotation must recover the quota hint from the body. WeakMap-only lookup
+    // silently no-ops after any Response clone, which is how a two-account WorkBuddy
+    // install returned the 402 to Codex instead of retrying the spare account.
+    expect(coreSource).toContain("recoverCodebuddyFailoverHint(");
+    expect(coreSource).not.toMatch(/getCodebuddyFailoverHint\(response\)/);
   });
 
   test("pre-dispatch selection replaces the CCA project instead of inheriting one", () => {
