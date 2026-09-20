@@ -6,6 +6,11 @@ import {
   type OwnershipInspection,
 } from "../../integrations/native/ownership-preflight";
 import { registerCodexQuotaAutoRefreshWorker } from "../../codex/quota-auto-refresh";
+import type { OcxConfig } from "../../types";
+import {
+  activateWorkbuddyCheckinScheduler,
+  workbuddyCheckinActivationRequired,
+} from "../../oauth/codebuddy-checkin";
 import {
   consumeForInspection,
   relaySseWithHeartbeat,
@@ -210,4 +215,23 @@ export function warnPlaintextV2AgentMessagesStartup(config: { plaintextV2AgentMe
   console.warn("⚠️  Experimental plaintext V2 agent messages are enabled.");
   console.warn("   Eligible ChatGPT collaboration calls may carry plaintext message arguments. HTTPS remains encrypted, but task text may be retained in Codex history, selected providers, and local response/debug state.");
   console.warn("   This depends on undocumented ChatGPT and Codex behavior; it does not decrypt existing tasks.");
+}
+
+/**
+ * Arm the WorkBuddy / CodeBuddy CN daily check-in timer.
+ *
+ * Registering a timer is all this does; the network work happens on the timer itself, and the
+ * predicate keeps an install that never configured WorkBuddy from constructing anything -- the
+ * same opt-in discipline the other optional subsystems follow.
+ *
+ * Lives with the other startup side effects rather than inline in the composition root, whose
+ * committed file-size cap leaves no room for another inline activation block.
+ *
+ * The scheduler returns a stop handle that is deliberately dropped, matching the previous
+ * inline call: the timer outlives `startServer`, and no shutdown path cancels it yet.
+ */
+export function activateWorkbuddyCheckinForStartup(config: OcxConfig): void {
+  if (workbuddyCheckinActivationRequired(config)) {
+    activateWorkbuddyCheckinScheduler(config);
+  }
 }

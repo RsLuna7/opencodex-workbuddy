@@ -46,10 +46,6 @@ import {
 import { activateResetCreditAutoRedeem } from "../codex/reset-credit-auto-redeem";
 import { registerCodexQuotaAutoRefreshWorker } from "../codex/quota-auto-refresh";
 import {
-  activateWorkbuddyCheckinScheduler,
-  workbuddyCheckinActivationRequired,
-} from "../oauth/codebuddy-checkin";
-import {
   reconcileLiveStateStores,
   setLiveStateStoreConfig,
 } from "../lib/state-store-registrations";
@@ -207,7 +203,7 @@ import {
 } from "../lib/package-tree-integrity";
 import { detectInstall } from "../update/index";
 import { createServeOptions, type ServerIngress } from "./index/serve-options";
-import { inspectStartupOwnership, setStartupCacheInvalidationWrite, warnAgentTaskRecoveryStartup, warnPlaintextV2AgentMessagesStartup, type StartServerDeps } from "./index/startup-warnings";
+import { activateWorkbuddyCheckinForStartup, inspectStartupOwnership, setStartupCacheInvalidationWrite, warnAgentTaskRecoveryStartup, warnPlaintextV2AgentMessagesStartup, type StartServerDeps } from "./index/startup-warnings";
 import { acquireSpendLedgerServerLifecycle, type SpendLedgerServerLifecycle } from "./index/spend-ledger-lifecycle";
 
 export function startServer(port?: number, deps: StartServerDeps = {}): Server<WsData> {
@@ -234,6 +230,7 @@ function startServerWithSpendLedgerOwner(port: number | undefined, deps: StartSe
   const config = migrateStartupZaiResponses(migrateStartupXaiResponses(startupConfig));
   warnPlaintextV2AgentMessagesStartup(config);
   warnAgentTaskRecoveryStartup(config);
+  activateWorkbuddyCheckinForStartup(config);
   setLiveStateStoreConfig(config);
   applyProxyEnv(config, true);
   assertServerAuthConfig(config);
@@ -885,12 +882,6 @@ function startServerWithSpendLedgerOwner(port: number | undefined, deps: StartSe
       accountId: MAIN_CODEX_ACCOUNT_ID,
       ...createResetCreditWhamClient(config, MAIN_CODEX_ACCOUNT_ID),
     });
-  }
-
-  // WorkBuddy daily check-in: timer registration only. Network work happens on the timer.
-  // A default openai-only install never constructs this (see workbuddyCheckinActivationRequired).
-  if (workbuddyCheckinActivationRequired(config)) {
-    activateWorkbuddyCheckinScheduler(config);
   }
 
   return server;
