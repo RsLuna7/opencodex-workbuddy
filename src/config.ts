@@ -1208,6 +1208,9 @@ const configSchema = z.object({
     enabled: z.boolean().optional(),
     leadTimeMinutes: z.number().int().min(1).max(60).optional(),
   }).optional().catch(undefined),
+  workbuddyCheckin: z.object({
+    auto: z.boolean().optional(),
+  }).optional().catch(undefined),
   // Model ids excluded from the Grok Build managed block (dashboard switches).
   grokExcludedModels: z.array(z.string()).optional(),
   // Invalid values degrade to undefined ("auto") instead of failing the whole

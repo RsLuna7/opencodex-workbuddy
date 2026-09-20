@@ -172,7 +172,7 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
   },
   {
     name: "account",
-    usage: "ocx account <list|current|use|refresh|auto-switch|priority|login|reauth|code|cancel|remove|add-key|reset-credits|main> ...",
+    usage: "ocx account <list|current|use|refresh|auto-switch|priority|login|reauth|code|cancel|remove|add-key|reset-credits|checkin|main> ...",
     summary: "List and switch provider accounts and API-key pools (GUI parity).",
     details: [
       "list [provider]     Codex account pool, OAuth accounts and API keys (identifiers shown masked as the API returns them).",
@@ -186,6 +186,7 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
       "login/reauth/code/cancel  Run browser or manual-code auth from a headless shell.",
       "reset-credits <id|main> [--consume --yes]  Inspect or consume Codex reset credits.",
       "main <subcommand>     Manage the physical native Codex login separately from Pool routing.",
+      "checkin workbuddy [--status]  Claim CodeBuddy CN daily check-in for stored accounts (proxy optional).",
       "Switching the active account takes effect immediately; running threads move on their next request, and in-flight requests keep the account they captured.",
       "A selection-order change applies from the next unbound request and never moves a bound thread.",
     ],

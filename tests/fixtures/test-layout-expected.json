@@ -1143,5 +1143,9 @@
   "model-costs-management-api.test.ts": "server",
   "usage-time-range.test.ts": "usage",
   "model-pinned-effort.test.ts": "codex-integration",
-  "model-pinned-effort-config.test.ts": "config"
+  "model-pinned-effort-config.test.ts": "config",
+  "workbuddy-checkin.test.ts": "oauth",
+  "workbuddy-account-pool.test.ts": "oauth",
+  "zai-plan-fingerprint.test.ts": "oauth",
+  "cli-account-checkin.test.ts": "cli"
 }
