@@ -519,6 +519,23 @@ JSON mode: `envelope`.
 
 - Only meaningful under the sticky-capable strategies; the pool strategy is the other half of this setting.
 
+### `ocx account checkin`
+
+Claim WorkBuddy / CodeBuddy CN daily check-in for every stored account.
+
+Drives no management route.
+
+| Flag | Value | Meaning |
+|---|---|---|
+| `--status` | boolean | Query today's state without claiming. |
+| `--json` | boolean | Emit per-account results as JSON. |
+
+JSON mode: `payload`.
+
+- Runs locally against auth.json; the proxy does not need to be up.
+- Already-claimed days and Global (workbuddy.ai) accounts are skipped.
+- When WorkBuddy is configured, the running proxy also claims at 09:10 Asia/Shanghai unless workbuddyCheckin.auto is false.
+
 ### `ocx storage cleanup`
 
 Preview or delete the oldest archived sessions by percentage.
@@ -687,6 +704,6 @@ JSON mode: `payload`.
 
 ## Counts
 
-- declared capabilities: 37
-- of those, state-changing: 16
+- declared capabilities: 38
+- of those, state-changing: 17
 - head-resolved invocations: 2

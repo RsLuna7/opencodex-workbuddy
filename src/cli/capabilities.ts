@@ -306,6 +306,22 @@ export const CAPABILITIES: readonly Capability[] = [
     details: ["Only meaningful under the sticky-capable strategies; the pool strategy is the other half of this setting."],
   },
   {
+    command: ["account", "checkin"],
+    summary: "Claim WorkBuddy / CodeBuddy CN daily check-in for every stored account.",
+    routes: [],
+    flags: [
+      { name: "--status", value: "boolean", summary: "Query today's state without claiming." },
+      { name: "--json", value: "boolean", summary: "Emit per-account results as JSON." },
+    ],
+    mutates: true,
+    json: "payload",
+    details: [
+      "Runs locally against auth.json; the proxy does not need to be up.",
+      "Already-claimed days and Global (workbuddy.ai) accounts are skipped.",
+      "When WorkBuddy is configured, the running proxy also claims at 09:10 Asia/Shanghai unless workbuddyCheckin.auto is false.",
+    ],
+  },
+  {
     command: ["logs"],
     summary: "Recent request log rows, filterable by provider, model, conversation, and status.",
     routes: [{ method: "GET", path: "/api/logs" }],

@@ -769,6 +769,12 @@ export interface OcxConfig {
    * spends a second credit. A malformed value reads as off.
    */
   resetCreditAutoRedeem?: { enabled?: boolean; leadTimeMinutes?: number };
+  /**
+   * WorkBuddy / CodeBuddy CN daily check-in. Default on whenever the workbuddy
+   * provider is configured or accounts exist. Set auto to false to disable the
+   * 09:10 Asia/Shanghai timer; ocx account checkin workbuddy still works.
+   */
+  workbuddyCheckin?: { auto?: boolean };
   /** Active pool account id for next session. undefined = main (passthrough as-is). */
   activeCodexAccountId?: string;
   /** Auto-switch threshold (0-100). Default 80. 0 = disabled. */

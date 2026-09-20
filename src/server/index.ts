@@ -41,6 +41,10 @@ import {
 import { activateResetCreditAutoRedeem } from "../codex/reset-credit-auto-redeem";
 import { registerCodexQuotaAutoRefreshWorker } from "../codex/quota-auto-refresh";
 import {
+  activateWorkbuddyCheckinScheduler,
+  workbuddyCheckinActivationRequired,
+} from "../oauth/codebuddy-checkin";
+import {
   reconcileLiveStateStores,
   setLiveStateStoreConfig,
 } from "../lib/state-store-registrations";
@@ -2544,6 +2548,12 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       accountId: MAIN_CODEX_ACCOUNT_ID,
       ...createResetCreditWhamClient(config, MAIN_CODEX_ACCOUNT_ID),
     });
+  }
+
+  // WorkBuddy daily check-in: timer registration only. Network work happens on the timer.
+  // A default openai-only install never constructs this (see workbuddyCheckinActivationRequired).
+  if (workbuddyCheckinActivationRequired(config)) {
+    activateWorkbuddyCheckinScheduler(config);
   }
 
   return server;
