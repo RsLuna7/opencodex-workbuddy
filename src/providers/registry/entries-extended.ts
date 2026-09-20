@@ -88,6 +88,11 @@ import {
   OPPER_MODEL_CONTEXT_WINDOWS,
   OPPER_MODEL_MAX_OUTPUT_TOKENS,
   OPPER_MODEL_INPUT_MODALITIES,
+  STEPFUN_MODELS,
+  STEPFUN_MODEL_CONTEXT_WINDOWS,
+  STEPFUN_MODEL_INPUT_MODALITIES,
+  STEPFUN_NO_VISION_MODELS,
+  STEPFUN_REASONING_EFFORTS,
 } from "./model-seeds";
 
 export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
@@ -1344,5 +1349,22 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     defaultMaxOutputTokens: 131_072,
     extraMetadataAliases: ["zcode-plan"],
     note: "Z.AI ZCode Start/Coding Plan via desktop login. Unofficial Plan JWT + captcha. Do not send confidential material.",
+  },
+  {
+    id: "stepfun",
+    label: "StepFun",
+    baseUrl: "https://api.stepfun.com/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://platform.stepfun.com",
+    defaultModel: "step-5-preview",
+    models: STEPFUN_MODELS,
+    liveModels: true,
+    preserveCustomDestination: true,
+    modelContextWindows: STEPFUN_MODEL_CONTEXT_WINDOWS,
+    modelInputModalities: STEPFUN_MODEL_INPUT_MODALITIES,
+    noVisionModels: STEPFUN_NO_VISION_MODELS,
+    reasoningEfforts: STEPFUN_REASONING_EFFORTS,
+    note: "StepFun (阶跃星辰) official OpenAI-compatible API.",
   },
 ];
