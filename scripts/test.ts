@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
@@ -9,6 +9,12 @@ import {
   TEST_RUN_LOCK_PATH_ENV,
   TEST_RUN_LOCK_TOKEN_ENV,
 } from "./test-run-lock";
+import {
+  createContainedTestTemp,
+  recoverStaleTestTempArtifactsOnce,
+  removeTestTempTree,
+  writeTestTempOwner,
+} from "./test-temp";
 
 export interface IsolatedTestEnvironment {
   root: string;
@@ -19,9 +25,20 @@ export interface IsolatedTestEnvironment {
 export function createIsolatedTestEnvironment(
   baseEnv: Record<string, string | undefined> = process.env,
 ): IsolatedTestEnvironment {
-  const root = mkdtempSync(join(tmpdir(), "opencodex-test-"));
+  const hostTemp = tmpdir();
+  const recovery = recoverStaleTestTempArtifactsOnce({ tempRoot: hostTemp });
+  if (recovery && (recovery.removed > 0 || recovery.errors > 0 || recovery.truncated)) {
+    console.warn(
+      `[test] stale TEMP recovery removed ${recovery.removed} OpenCodex test root(s)`
+      + (recovery.errors > 0 ? `; ${recovery.errors} could not be reclaimed` : "")
+      + (recovery.truncated ? "; the bounded scan will continue on a later run" : "")
+      + ".",
+    );
+  }
+  const root = mkdtempSync(join(hostTemp, "opencodex-test-"));
   const opencodexHome = join(root, ".opencodex");
   const codexHome = join(root, ".codex");
+  const containedTemp = createContainedTestTemp(root);
   mkdirSync(opencodexHome, { recursive: true });
   mkdirSync(codexHome, { recursive: true });
   if (process.platform === "win32") {
@@ -35,6 +52,7 @@ export function createIsolatedTestEnvironment(
     mkdirSync(join(root, "AppData", "Local"), { recursive: true });
     mkdirSync(join(root, "AppData", "Roaming"), { recursive: true });
   }
+  writeTestTempOwner(root, baseEnv[TEST_RUN_ID_ENV]);
 
   return {
     root,
@@ -60,9 +78,12 @@ export function createIsolatedTestEnvironment(
       USERPROFILE: root,
       OPENCODEX_HOME: opencodexHome,
       CODEX_HOME: codexHome,
+      TEMP: containedTemp,
+      TMP: containedTemp,
+      TMPDIR: containedTemp,
     },
     cleanup() {
-      rmSync(root, { recursive: true, force: true });
+      removeTestTempTree(root);
     },
   };
 }
@@ -331,6 +352,15 @@ export const SERIAL_FULL_SUITE_FILES = [
   "adapters/openai/openai-provider-option-e2e.test.ts",
   "ci-workflows/release-helper.test.ts",
   "update/update-stop-first.test.ts",
+  // Relays a 50 MiB WebSocket frame end to end against a 15s deadline, so its result is a
+  // measurement of the whole process, not of the relay. On a healthy 3-CPU macOS runner the
+  // echo leg alone spends 7.4s of that budget; whichever half of `--shard=N/2` it lands in
+  // decides whether it finishes. It has been passing by accident: it sat in the lighter half
+  // until three unrelated test files were added elsewhere in the tree, Bun repartitioned, and
+  // it went from 7.4s to over 15s twice in a row without anything on the sideband path
+  // changing. Quarantining it here is what keeps it a test of the relay instead of a test of
+  // its neighbours.
+  "server/server-live.test.ts",
 ] as const;
 
 type SerialLaneBasename = (typeof SERIAL_FULL_SUITE_FILES)[number] extends infer P
@@ -527,7 +557,11 @@ export async function runTestLane(
   } finally {
     process.off("SIGINT", onInterrupt);
     process.off("SIGTERM", onTerminate);
-    isolated.cleanup();
+    try {
+      isolated.cleanup();
+    } catch {
+      console.error("[test] deferred cleanup of one test root after Windows kept a handle open; a later run will retry it.");
+    }
   }
 }
 

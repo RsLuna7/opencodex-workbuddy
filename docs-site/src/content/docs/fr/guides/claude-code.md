@@ -56,6 +56,7 @@ ocx claude
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `claudeCode.tierModels.haiku ?? claudeCode.smallFastModel` (facultatif ; ancien `ANTHROPIC_SMALL_FAST_MODEL` également) |
 | `ANTHROPIC_DEFAULT_{OPUS,SONNET,FABLE}_MODEL` | `claudeCode.tierModels.*` (facultatif) |
 | `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT` | `1` lorsque `alwaysEnableEffort` est activé (conditionnel) |
+| `ENABLE_TOOL_SEARCH` | `claudeCode.toolSearch` lorsqu'il est défini (conditionnel ; désactivé par défaut) |
 | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` / `DISABLE_COMPACT` | Remplacement du contexte hérité lorsque `maxContextTokens` est défini (conditionnel) |
 Les variables que vous exportez vous-même gagnent toujours. Les arguments supplémentaires passent par : `ocx claude -p "hello"`.
 
@@ -159,8 +160,9 @@ Support/Claude/configLibrary` sur macOS, `%APPDATA%\Claude\configLibrary` sur Wi
 `CLAUDE_USER_DATA_DIR` pour utiliser une autre racine de données Claude Desktop. L'ancien répertoire `Claude-3p` n'est
 ni lu ni supprimé automatiquement.
 
-Les routes non Anthropic reçoivent des alias stables comme `claude-opus-4-8-2026MMDD`. La partie qui ressemble à une date
-est un emplacement synthétique de route, et non la date de publication du modèle. Les véritables routes Anthropic Claude conservent
+Les routes non Anthropic reçoivent des alias stables comme `claude-opus-4-8-YYYYMMDD`, dont l'année va de 2026 à 2035. La partie qui ressemble à une date
+est un emplacement synthétique de route, et non la date de publication du modèle. Les emplacements de 2026 sont attribués en premier, de sorte que les alias
+existants conservent leur identifiant ; les années suivantes ne sont utilisées qu'une fois 2026 saturée. Les véritables routes Anthropic Claude conservent
 leur identité. Les nouvelles routes appartiennent par défaut à la famille Opus, mais déplacer une route ne change ni le
 fournisseur ni le modèle qu'elle appelle. Les anciens indicateurs `--static`, `--hybrid` et `--discovery-only`
 restent disponibles pour les scripts existants.
@@ -623,3 +625,7 @@ par défaut par un contenu minimal (`blockedSkills: ["claude-api"]`).
 **Les sous-agents sont envoyés au mauvais modèle** — Les agents de la liste (`ocx-*`) utilisent les directives
 `<!-- ocx-route: ... -->`, et non l'argument `model` de l'outil Agent. Vérifiez que la directive désigne la route voulue.
 Utilisez `"haiku"` comme valeur de remplacement pour le modèle.
+
+Dans `config.json`, `claudeCode.stabilizePromptCache: true` déplace les notices Claude reconnues en fin des instructions système vers un dernier message utilisateur sur les routes traduites. La valeur par défaut est `false`. Activez cette option seulement si ce changement de rôle convient à vos clients. Les exemples dans des blocs de code et le texte non reconnu sont conservés ; le transfert Anthropic natif reste inchangé. Sans métadonnées, la clé de cache suit les instructions stabilisées. Cette option ne crée pas une identité de conversation et ne garantit aucun succès du cache amont.
+
+Sur toutes les routes Chat traduites, les rappels de l’historique conservent leur position dans la conversation, après les résultats d’outils encore attendus, et sont transmis avec le rôle `developer`. L’ajout d’un rappel ne réécrit donc pas le prompt système initial, et une instruction placée au milieu de la conversation n’arrive plus avant les tours qu’elle était censée suivre. Si le service en amont refuse le rôle `developer`, activez `foldDeveloperRoleToSystem` sur ce fournisseur : le rappel est alors envoyé en `system`, à la même position. Ce comportement s’applique avec ou sans `stabilizePromptCache` ; le transfert Anthropic natif reste inchangé. La réutilisation du cache exige toujours une identité de session stable et un cache disponible en amont. Les changements des instructions ou outils antérieurs et la compaction de la conversation peuvent aussi affecter les succès du cache ; préserver l’ordre des rappels ne suffit pas à garantir sa réutilisation.

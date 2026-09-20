@@ -63,7 +63,7 @@ V1 ガイダンスは、`max` または `ultra` でのみプロアクティブ �
 拒否し、ロールをスキップします（#1190）。TOML 内のレガシー `model_fallback` 行は後方互換性の
 ために引き続き読み取られますが、`ocx doctor` がそれをフラグ付けします。
 
-opencodex は、無効、ルーティング不能、異常、冷却期間、またはクォータしきい値の候補をスキップします。可用性スナップショットは `subagentModelFallbackPollMs` に対してキャッシュされます。暗号化された子タスクでは、チェーンを正規のネイティブ ChatGPT ターゲットと、`allowEncryptedV2AgentTasks: true` で明示的に信頼された直接のキー認証 Responses ルートに制限します。暗号化されたペイロードを処理できる対象がない場合、読み取り不可能な暗号文を別の場所へ送らず、リクエストは失敗します。コンボはまず利用可能な正規ネイティブ対象を試し、選択できるネイティブ対象がなく `agentTaskRecovery` が有効な場合、暗号化された `NEW_TASK` をルーティングされたコンボ送信の前に一度だけ復旧します。
+opencodex は、無効、ルーティング不能、異常、冷却期間、またはクォータしきい値の候補をスキップします。可用性スナップショットは `subagentModelFallbackPollMs` に対してキャッシュされます。暗号化された子タスクでは、チェーンを正規のネイティブ ChatGPT ターゲットと、`allowEncryptedV2AgentTasks: true` で明示的に信頼された直接のキー認証 Responses ルートに制限します。暗号化されたペイロードを処理できる対象がない場合、読み取り不可能な暗号文を別の場所へ送らず、リクエストは失敗します。コンボはまず利用可能な正規ネイティブ対象を試し、選択できるネイティブ対象がない場合、またはネイティブ対象への試行を使い切った場合に `agentTaskRecovery` が有効なら、暗号化された `NEW_TASK` をルーティングされたコンボ送信の前に一度だけ復旧します。コンボの復旧は spawn された子ターンにのみ適用され、直接ルーティングされる経路はスレッド途中のモデル切り替えも復旧します。
 
 ```json
 {
@@ -72,9 +72,9 @@ opencodex は、無効、ルーティング不能、異常、冷却期間、ま�
   "injectionModel": "gpt-5.5",
   "injectionEffort": "high",
   "syncCodexSubagentDefaults": true,
-  "subagentModelFallback": ["gpt-5.4-mini"],
+  "subagentModelFallback": ["gpt-5.6-luna"],
   "subagentModelFallbackByModel": {
-    "gpt-5.5": ["gpt-5.4-mini"]
+    "gpt-5.5": ["gpt-5.6-luna"]
   },
   "subagentModelFallbackPollMs": 60000,
   "subagentEffortCap": "high"
@@ -86,5 +86,7 @@ opencodex は、無効、ルーティング不能、異常、冷却期間、ま�
 キャップは v2 コラボレーション機能にのみ適用されます。メイン ターンは、そのツールが v2 を公開するときに資格を持ちますが、子ターンは、リーフ ツールがコラボレーションを公開しなくなった場合でも、`x-codex-turn-metadata` に正確な codex-rs `x-openai-subagent: collab_spawn` または `"subagent_kind": "thread_spawn"` マーカーが含まれるときに資格を持ちます。 V1 メイン ターン、`multiAgentMode: "v1"`、圧縮、レビュー、およびメモリ統合ターンはバイパス キャップです。
 
 キャップは労力を軽減するだけです。これらは、キャップまたはキャップの下で宣伝されている最も高い段にスナップします。モデルにエフォート制御がない場合、またはサポートされているラングフィットがない場合、opencodex はエフォートを削除し、プロバイダーのデフォルトを適用します。 `max` および `ultra` が受け入れられますが、ダッシュボードでは `low` から `xhigh` が提供されます。
+
+モデルの effort pin がなくても、対象のネイティブ Chat Completions ターンには設定された上限が適用されます。pin を適用した場合、または上限で値を変更した場合にプロバイダーの送信値へ変換し、どちらも起きない呼び出し元の値は元の表記を維持します。
 
 v1、デフォルト、および v2 の動作に関する初心者向けの説明については、「[サブエージェントサーフェス](/guides/sub-agent-surface/)」を参照してください。

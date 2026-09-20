@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { act } from "react";
 import type { Root } from "react-dom/client";
 import { LanguageProvider } from "../src/i18n/provider";
+import { en } from "../src/i18n/en";
 import { clearClientResourceStoresForTests } from "../src/client-resource";
 import Usage from "../src/pages/Usage";
 
@@ -81,14 +82,95 @@ function report(gate: RequestGate, marker: string, date = "2020-09-15") {
   };
 }
 
+test("Usage model table renders cache breakdown and marks unavailable telemetry", async () => {
+  await mount();
+  const data = report(requests[0], "cache-model");
+  data.models = [
+    {
+      ...data.models[0]!,
+      model: "cache-model",
+      totalTokens: 1_120,
+      inputTokens: 1_000,
+      outputTokens: 120,
+      cachedInputTokens: 600,
+      cacheReadInputTokens: 600,
+      cacheCreationInputTokens: 100,
+      cacheHitRate: 0.6,
+      cacheObservedInputTokens: 1_000,
+    },
+    {
+      ...data.models[0]!,
+      model: "partial-cache-model",
+      totalTokens: 1_000,
+      inputTokens: 1_000,
+      outputTokens: 0,
+      cachedInputTokens: 450,
+      cacheReadInputTokens: 450,
+      cacheCreationInputTokens: 0,
+      cacheHitRate: 0.9,
+      cacheObservedInputTokens: 500,
+    },
+    {
+      ...data.models[0]!,
+      model: "unknown-cache-model",
+      totalTokens: 110,
+      inputTokens: 100,
+      outputTokens: 10,
+    },
+  ];
+  await act(async () => { requests[0]!.resolve(Response.json(data)); });
+
+  const table = container.querySelector<HTMLElement>("#usage-section-models table");
+  expect(table).not.toBeNull();
+  // Header labels come from the catalog the page renders, so a copy change stays a
+  // one-place edit and this case keeps asserting the column ORDER it cares about --
+  // the five cache columns sitting between Measured and Tokens.
+  expect([...table!.querySelectorAll("thead th")].map(cell => cell.textContent?.trim())).toEqual([
+    "logs.col.model", "logs.col.provider", "usage.col.requests", "usage.col.measured",
+    "usage.col.inputTokens", "usage.col.outputTokens", "usage.col.cacheHits",
+    "usage.col.cacheWrites", "usage.col.cacheHitRate", "usage.col.tokens",
+    "usage.col.apiListPrice", "usage.col.share",
+  ].map(key => en[key as keyof typeof en]));
+  const rows = table!.querySelectorAll("tbody tr");
+  expect(rows).toHaveLength(3);
+  const measured = [...rows[0]!.querySelectorAll("td")].map(cell => cell.textContent?.trim());
+  expect(measured?.slice(4, 9)).toEqual(["1000", "120", "600", "100", "60%"]);
+  const partial = [...rows[1]!.querySelectorAll("td")].map(cell => cell.textContent?.trim());
+  expect(partial?.slice(6, 9)).toEqual(["450", "0", "—"]);
+  const unavailable = [...rows[2]!.querySelectorAll("td")].map(cell => cell.textContent?.trim());
+  expect(unavailable?.slice(6, 9)).toEqual(["—", "—", "—"]);
+});
+
 async function respond(index: number, marker: string, date?: string) {
   await act(async () => { requests[index].resolve(Response.json(report(requests[index], marker, date))); });
 }
 
+test("incomplete usage notice survives held cache and remains visible with no readable rows", async () => {
+  await mount();
+  const partial = { ...report(requests[0], "readable-model"), usageIncomplete: true, usageIncompleteReason: "oversized_rows" };
+  await act(async () => { requests[0].resolve(Response.json(partial)); });
+  expect(container.textContent).toContain("Some usage records could not be included");
+  expect(container.textContent).toContain("readable-model");
+  expect(sessionEntries().some(([, value]) => value?.includes('"usageIncomplete":true'))).toBe(true);
+  await act(async () => { root!.unmount(); });
+  root = undefined;
+  clearClientResourceStoresForTests();
+  await mount();
+  expect(container.textContent).toContain("Some usage records could not be included");
+  await act(async () => { requests[1].resolve(Response.json({ ...partial,
+    summary: { ...partial.summary, requests: 0, totalTokens: 0 }, days: [], models: [],
+  })); });
+  expect(container.textContent).toContain("Some usage records could not be included");
+  expect(container.textContent).not.toContain("readable-model");
+});
+
+const toggle = () => container.querySelector<HTMLButtonElement>(".usage-range-toggle")!;
 const form = () => container.querySelector<HTMLFormElement>('form[aria-label="Custom date range"]')!;
 const startInput = () => form().querySelectorAll<HTMLInputElement>('input[type="datetime-local"]')[0];
 const endInput = () => form().querySelectorAll<HTMLInputElement>('input[type="datetime-local"]')[1];
-const interval = () => form().querySelector('[role="status"]')?.textContent;
+// The applied interval lives beside the trigger rather than inside the panel: collapsing the
+// controls must not hide which window the totals cover.
+const interval = () => container.querySelector('.usage-range-bar [role="status"]')?.textContent;
 const error = () => form().querySelector('[role="alert"]')?.textContent;
 const preset = (name: string) => container.querySelector<HTMLButtonElement>(`button.usage-segmented-btn[aria-label="${name}"]`)!;
 
@@ -97,7 +179,13 @@ async function click(button: HTMLButtonElement) {
   await act(async () => { button.click(); });
 }
 
+// The date fields are behind a closed-by-default disclosure, so every draft starts by opening it.
+async function openRange() {
+  if (toggle().getAttribute("aria-expanded") !== "true") await click(toggle());
+}
+
 async function enter(start: string, end: string) {
+  await openRange();
   await act(async () => {
     for (const [input, value] of [[startInput(), start], [endInput(), end]] as const) {
       Object.getOwnPropertyDescriptor(testWindow.HTMLInputElement.prototype, "value")!.set!.call(input, value);
@@ -193,9 +281,9 @@ test("America/Santiago midnight DST retains final-day activity and tooltip", asy
   await act(async () => gate.resolve(Response.json(data)));
   const active = container.querySelector<HTMLElement>('.heatmap-grid .heatmap-cell:not(.heatmap-cell-0)');
   expect(active).not.toBeNull();
-  await act(async () => active!.dispatchEvent(new testWindow.MouseEvent("mouseover", { bubbles: true })));
-  expect(container.querySelector(".heatmap-tip-date")?.textContent).toBe("2026-09-07");
-  expect(container.querySelector(".heatmap-tip")?.textContent).toContain("700");
+  await act(async () => active!.dispatchEvent(new testWindow.PointerEvent("pointerover", { bubbles: true })));
+  expect(document.querySelector(".heatmap-tip-date")?.textContent).toBe("Sep 7, 2026");
+  expect(document.querySelector(".heatmap-tip")?.textContent).toContain("700");
   if (process.env.OCX_USAGE_SANTIAGO_CHILD === "1") console.log("OCX_SANTIAGO_CASE_COMPLETED");
 }, process.env.OCX_USAGE_SANTIAGO_CHILD === "1" ? 10000 : 15000);
 
@@ -226,8 +314,8 @@ test("Apply submits inclusive bounds once; Clear restores the held preset withou
   // A one-day historical window must not produce a year grid anchored to today's date.
   expect(container.querySelectorAll(".heatmap-grid .heatmap-cell")).toHaveLength(7);
   const activeCell = container.querySelector(".heatmap-grid .heatmap-cell-1")!;
-  await act(async () => { activeCell.dispatchEvent(new testWindow.MouseEvent("mouseover", { bubbles: true })); });
-  expect(container.querySelector('[role="tooltip"]')?.textContent).toContain("2020-09-15");
+  await act(async () => { activeCell.dispatchEvent(new testWindow.PointerEvent("pointerover", { bubbles: true })); });
+  expect(document.querySelector('[role="tooltip"]')?.textContent).toContain("Sep 15, 2020");
   await enter("2020-09-16T10:20", "2020-09-16T10:21");
   expect(interval()).toBe(appliedInterval);
   expect(requests).toHaveLength(2);
@@ -356,4 +444,71 @@ test("each preset clears custom, including the retained preset; 7d never replace
   expect(container.querySelector(".daybars")).toBeNull();
   expect(container.querySelectorAll(".heatmap-grid .heatmap-cell")).toHaveLength(7);
   expect(preset("7d").getAttribute("aria-pressed")).toBe("false");
+});
+
+test("the range panel is closed until asked for, and collapsing it keeps the applied interval readable", async () => {
+  await mount();
+  await respond(0, "preset-report-marker");
+  // Closed is the default: a page that opens on a report should not also open on two empty
+  // date fields, and the collapsed panel must leave no tab stops behind.
+  expect(toggle().getAttribute("aria-expanded")).toBe("false");
+  expect(toggle().textContent).toContain("Custom date range");
+  expect(container.querySelector('form[aria-label="Custom date range"]')).toBeNull();
+  expect(container.querySelectorAll('input[type="datetime-local"]')).toHaveLength(0);
+  expect(toggle().className).not.toContain("is-active");
+  // Naming a panel that is not in the document would leave a dangling IDREF.
+  expect(toggle().hasAttribute("aria-controls")).toBe(false);
+
+  await click(toggle());
+  expect(toggle().getAttribute("aria-expanded")).toBe("true");
+  expect(toggle().getAttribute("aria-controls")).toBe(form().id);
+  expect(container.querySelectorAll('input[type="datetime-local"]')).toHaveLength(2);
+  expect(requests).toHaveLength(1);
+
+  await enter("2020-09-15T10:20", "2020-09-15T10:21");
+  await apply();
+  expect(requests[1].url).toBe(`${apiBase}/api/usage?range=30d&surface=all&${boundsQuery}`);
+  await respond(1, "custom-report-marker");
+  const applied = interval();
+  expect(applied).toContain("both inclusive");
+
+  // Collapsing hides the controls, never the state: the interval line and the marked trigger
+  // still say which window produced the numbers below.
+  await click(toggle());
+  expect(toggle().getAttribute("aria-expanded")).toBe("false");
+  expect(container.querySelectorAll('input[type="datetime-local"]')).toHaveLength(0);
+  expect(interval()).toBe(applied);
+  expect(toggle().className).toContain("is-active");
+  expect(container.textContent).toContain("custom-report-marker");
+  expect(requests).toHaveLength(2);
+
+  // Reopening restores the draft that produced the applied window rather than empty fields.
+  await click(toggle());
+  expect(startInput().value).toBe("2020-09-15T10:20");
+  expect(endInput().value).toBe("2020-09-15T10:21");
+  await clear();
+  expect(interval()).toBeUndefined();
+  expect(toggle().className).not.toContain("is-active");
+  expect(startInput().value).toBe("");
+});
+
+test("closing the panel retires a validation error instead of parking it out of sight", async () => {
+  await mount();
+  await respond(0, "held-report-marker");
+  await enter("2020-09-16T10:20", "2020-09-15T10:20");
+  await apply();
+  expect(error()).toContain("The end must");
+  expect(startInput().getAttribute("aria-invalid")).toBe("true");
+  expect(startInput().getAttribute("aria-describedby")).toBe("usage-range-help usage-range-error");
+
+  // The alert only means something beside the fields that produced it, so it does not outlive
+  // the panel — but the draft that produced it does.
+  await click(toggle());
+  await click(toggle());
+  expect(error()).toBeUndefined();
+  expect(startInput().value).toBe("2020-09-16T10:20");
+  expect(startInput().getAttribute("aria-invalid")).toBe("false");
+  expect(startInput().getAttribute("aria-describedby")).toBe("usage-range-help");
+  expect(requests).toHaveLength(1);
+  expect(container.textContent).toContain("held-report-marker");
 });

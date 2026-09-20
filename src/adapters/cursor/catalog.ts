@@ -3,6 +3,7 @@ import {
   normalizeCursorClaudeId,
   type NormalizedCursorClaudeId,
 } from "./claude-id";
+import { createHash } from "node:crypto";
 
 /**
  * Cursor umbrella catalog — the single source of truth for cursor model
@@ -60,6 +61,8 @@ const CONTEXT_500K = 500 * K;
 const CONTEXT_1M = 1_000 * K;
 /** Gemini publishes the exact power-of-two window, not a rounded 1M. */
 const CONTEXT_GEMINI = 1_048_576;
+/** Meta publishes 1,048,576 for both Muse Spark 1.3 tiers (dev.meta.ai/docs/models). */
+const CONTEXT_MUSE = 1_048_576;
 
 const FULL = ["low", "medium", "high", "xhigh", "max"] as const;
 const T = "thinking-then-effort" as const;
@@ -210,6 +213,15 @@ export const CURSOR_CAPABILITIES: Record<string, CursorCapability> = {
     window: CONTEXT_GEMINI,
     defaultVariant: "regular",
     variants: { regular: { levels: ["low", "medium", "high"] } },
+  },
+  // Seeded from the live GetUsableModels roster attached to #4820, which advertises six
+  // muse-spark-1.3 effort variants. The ladder stops at xhigh on purpose: see the matching
+  // effort-map entry for why Cursor advertising `-max` is not evidence that it runs.
+  "muse-spark-1.3": {
+    displayName: "Muse Spark 1.3",
+    window: CONTEXT_MUSE,
+    defaultVariant: "regular",
+    variants: { regular: { levels: ["minimal", "low", "medium", "high", "xhigh"] } },
   },
   "kimi-k3": {
     displayName: "Kimi K3",
@@ -588,7 +600,7 @@ export function resolveCursorSelection(
   pickedId: string,
   reasoning: string | undefined,
   liveMaxModeIds?: ReadonlySet<string>,
-  options: { fast?: boolean } = {},
+  options: { fast?: boolean; liveRosterScope?: string } = {},
 ): CursorResolvedSelection {
   const parsed = parseCursorVariantId(pickedId);
   if (!parsed.known) {
@@ -606,7 +618,10 @@ export function resolveCursorSelection(
   const requested = parsed.level ?? reasoning;
   const effort = cursorVariantEffort(spec, requested);
   const requestedClaude = normalizeCursorClaudeId(pickedId);
-  const claudeIdentity = liveCursorClaudeWireIdentities.get(parsed.baseId)
+  const scopedClaudeIdentities = options.liveRosterScope
+    ? liveCursorClaudeWireIdentitiesByScope.get(options.liveRosterScope)
+    : liveCursorClaudeWireIdentities;
+  const claudeIdentity = scopedClaudeIdentities?.get(parsed.baseId)
     ?? (requestedClaude
       ? { sourceBaseId: requestedClaude.sourceBaseId, spelling: requestedClaude.spelling }
       : undefined);
@@ -615,7 +630,9 @@ export function resolveCursorSelection(
     ? `${capability.wirePrefix}${canonicalId}`
     : canonicalId;
   const ultraRequested = parsed.ultra || reasoning?.toLowerCase() === "ultra";
-  const evidence = liveMaxModeIds ?? liveCursorMaxModeBases;
+  const evidence = liveMaxModeIds
+    ?? (options.liveRosterScope ? liveCursorMaxModeBasesByScope.get(options.liveRosterScope) : undefined)
+    ?? liveCursorMaxModeBases;
   const maxModeArmed = capability.maxModeVerified === true || evidence.has(parsed.baseId);
   return { wireId, canonicalId, maxMode: ultraRequested && maxModeArmed, known: true };
 }
@@ -628,15 +645,36 @@ export function resolveCursorSelection(
  */
 let liveCursorMaxModeBases: ReadonlySet<string> = new Set();
 let liveCursorClaudeWireIdentities: ReadonlyMap<string, CursorLiveClaudeWireIdentity> = new Map();
+const liveCursorMaxModeBasesByScope = new Map<string, ReadonlySet<string>>();
+const liveCursorClaudeWireIdentitiesByScope = new Map<string, ReadonlyMap<string, CursorLiveClaudeWireIdentity>>();
+const liveCursorRosterScopesByProvider = new Map<string, Set<string>>();
 
-export function recordLiveCursorClaudeModels(liveIds: readonly string[]): void {
+/** Non-secret key binding live roster evidence to one upstream destination and credential. */
+export function cursorLiveRosterScope(baseUrl: string | undefined, credential: string): string {
+  const destination = (baseUrl?.trim().replace(/\/+$/, "") || "https://api2.cursor.sh");
+  return createHash("sha256")
+    .update("ocx:cursor:live-roster\0")
+    .update(destination)
+    .update("\0")
+    .update(credential)
+    .digest("hex");
+}
+
+export function recordLiveCursorClaudeModels(liveIds: readonly string[], scope?: { provider: string; key: string }): void {
   const next = new Map<string, CursorLiveClaudeWireIdentity>();
   for (const rawId of liveIds) {
     const n = normalizeCursorClaudeId(rawId.startsWith("cursor-") ? rawId.slice(7) : rawId);
     if (!n || !CURSOR_CAPABILITIES[n.canonicalBaseId]) continue;
     if (!next.has(n.canonicalBaseId)) next.set(n.canonicalBaseId, { sourceBaseId: n.sourceBaseId, spelling: n.spelling });
   }
-  liveCursorClaudeWireIdentities = next;
+  if (scope) {
+    liveCursorClaudeWireIdentitiesByScope.set(scope.key, next);
+    const scopes = liveCursorRosterScopesByProvider.get(scope.provider) ?? new Set<string>();
+    scopes.add(scope.key);
+    liveCursorRosterScopesByProvider.set(scope.provider, scopes);
+  } else {
+    liveCursorClaudeWireIdentities = next;
+  }
 }
 
 export function liveCursorClaudeWireIdentitiesForTests(): ReadonlyMap<string, CursorLiveClaudeWireIdentity> {
@@ -645,15 +683,32 @@ export function liveCursorClaudeWireIdentitiesForTests(): ReadonlyMap<string, Cu
 
 export function resetLiveCursorClaudeWireIdentitiesForTests(): void {
   liveCursorClaudeWireIdentities = new Map();
+  liveCursorClaudeWireIdentitiesByScope.clear();
+  liveCursorRosterScopesByProvider.clear();
 }
 
-export function recordLiveCursorMaxModeModels(liveIds: readonly string[]): void {
+export function recordLiveCursorMaxModeModels(liveIds: readonly string[], scope?: { provider: string; key: string }): void {
   const bases = new Set<string>();
   for (const id of liveIds) {
     const parsed = parseCursorVariantId(id);
     if (parsed.known) bases.add(parsed.baseId);
   }
-  liveCursorMaxModeBases = bases;
+  if (scope) liveCursorMaxModeBasesByScope.set(scope.key, bases);
+  else liveCursorMaxModeBases = bases;
+}
+
+export function clearLiveCursorRosterState(provider?: string): void {
+  if (!provider) {
+    liveCursorClaudeWireIdentitiesByScope.clear();
+    liveCursorMaxModeBasesByScope.clear();
+    liveCursorRosterScopesByProvider.clear();
+    return;
+  }
+  for (const scope of liveCursorRosterScopesByProvider.get(provider) ?? []) {
+    liveCursorClaudeWireIdentitiesByScope.delete(scope);
+    liveCursorMaxModeBasesByScope.delete(scope);
+  }
+  liveCursorRosterScopesByProvider.delete(provider);
 }
 
 export function liveCursorMaxModeBasesForTests(): ReadonlySet<string> {

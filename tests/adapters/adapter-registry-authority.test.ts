@@ -20,9 +20,11 @@ const EXPECTED_ADAPTER_NAMES = {
   azure: "azure-openai",
   "azure-openai": "azure-openai",
   cursor: "cursor",
+  devin: "devin",
   "mimo-free": "mimo-free",
   codebuddy: "codebuddy",
   "zai-plan": "zai-plan",
+  qoder: "qoder",
 } as const;
 
 function provider(adapter: string): OcxProviderConfig {
@@ -36,11 +38,13 @@ function provider(adapter: string): OcxProviderConfig {
         ? "https://copilot.tencent.com/v2"
         : adapter === "zai-plan"
           ? "https://zcode.z.ai/api/v1/zcode-plan/anthropic"
-      // ollama-native refuses a bare /v1 path on a host it does not recognise, rather than
-      // guessing that an arbitrary destination speaks Ollama's compatibility surface.
-      : adapter === "ollama-native"
-        ? "https://example.invalid/api"
-        : "https://example.invalid/v1",
+        : adapter === "qoder"
+          ? "https://qoder.com"
+        // ollama-native refuses a bare /v1 path on a host it does not recognise, rather than
+        // guessing that an arbitrary destination speaks Ollama's compatibility surface.
+        : adapter === "ollama-native"
+          ? "https://example.invalid/api"
+          : "https://example.invalid/v1",
     authMode: "key",
     apiKey: "test-key",
     defaultMaxOutputTokens: 4096,

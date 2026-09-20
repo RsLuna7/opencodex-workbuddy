@@ -10,8 +10,10 @@ import {
   collectPaths,
   detectFsType,
   collectConfiguredProxy,
+  collectDefaultModelExposure,
   collectProxyEnv,
   collectRunningProxyEnv,
+  chatgptPublicEndpointHint,
   collectWslDualInstall,
   fetchServiceMemory,
   formatResponseTempLines,
@@ -641,6 +643,42 @@ describe("service memory section (#314 WP4)", () => {
     expect(hint).toContain("ocx service install");
   });
 
+  test("ChatGPT public endpoint hint explains channel latency without claiming a fixed delay", () => {
+    const canonical = { adapter: "openai-responses", authMode: "forward", baseUrl: "https://chatgpt.com/backend-api/codex" };
+    const hint = chatgptPublicEndpointHint({ openai: canonical });
+    expect(hint).toContain("public ChatGPT endpoint");
+    expect(hint).toContain("assumed");
+    expect(hint).toContain("websocket");
+    expect(hint).toContain("both Pool and Direct modes");
+    expect(hint).not.toContain("11s");
+    // The helper classifies configuration; it measures no latency. The copy has
+    // to stay hedged because eligible turns can still fall back to SSE and
+    // local pacing can delay dispatch before any upstream work starts.
+    expect(hint).toContain("fall back");
+    expect(hint).toContain("one possible contributor");
+    expect(chatgptPublicEndpointHint({})).toBeNull();
+    // Resolution, not raw text. The registry entry for the built-in `openai` id has
+    // authKind "forward", so a row that omits `authMode` still forwards to ChatGPT and still
+    // needs the hint. Reading the raw row suppressed it.
+    expect(chatgptPublicEndpointHint({ openai: { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex" } })).not.toBeNull();
+    // Same reason the other way round: the entry is not key-auth-overridable, so writing
+    // `authMode: "key"` on this id does not change where requests go.
+    expect(chatgptPublicEndpointHint({ openai: { adapter: "openai-responses", authMode: "key", baseUrl: "https://chatgpt.com/backend-api/codex" } })).not.toBeNull();
+    // The entry sets no baseUrl override, so a differing URL is discarded and the request
+    // still goes to the canonical endpoint. Describing that route is correct, and a lookalike
+    // host never becomes the destination.
+    expect(chatgptPublicEndpointHint({ openai: { adapter: "openai-responses", authMode: "forward", baseUrl: "https://chatgpt.com.example/v1" } })).not.toBeNull();
+    // Trailing slashes still normalize to the canonical URL.
+    expect(chatgptPublicEndpointHint({ openai: { adapter: "openai-responses", authMode: "forward", baseUrl: "https://chatgpt.com/backend-api/codex/" } })).not.toBeNull();
+    // A disabled row never routes, so it is not the route in use.
+    expect(chatgptPublicEndpointHint({ openai: { adapter: "openai-responses", authMode: "forward", baseUrl: "https://chatgpt.com/backend-api/codex", disabled: true } })).toBeNull();
+    // A blank baseUrl is discarded like any other override on this id, so it resolves to the
+    // canonical endpoint and still gets the hint. Resolution has no reachable throw here:
+    // src/router.ts only rejects an unresolved URL when the registry entry allows a baseUrl
+    // override, and the `openai` entry does not.
+    expect(chatgptPublicEndpointHint({ openai: { adapter: "openai-responses", authMode: "forward", baseUrl: "   " } })).not.toBeNull();
+  });
+
   test("proxyDownRestartHint prefers 'ocx service start' when a service is installed", () => {
     const hint = proxyDownRestartHint({ proxyRunning: false, port: 12000, serviceViable: true });
     expect(hint).toContain("ocx service start");
@@ -828,7 +866,50 @@ describe("doctor version skew projection", () => {
       if (expected !== null) expect(output).toContain(expected);
       else expect(output).not.toContain("does not match the running proxy");
       if (cli !== "2.43.0" || proxy !== "2.43.0") expect(output).not.toContain("matches the running proxy");
-      if (expected === "the running proxy is older") expect(output).toContain("ocx service repair");
+      // A version skew leaves the service definition byte-identical, so `repair` would no-op over the
+      // old process; the advice names `restart`, which kickstarts an unchanged job.
+      if (expected === "the running proxy is older") expect(output).toContain("ocx service restart");
+    } finally {
+      for (const cleanup of restore.reverse()) cleanup();
+      process.exitCode = previousExitCode;
+      if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previousHome;
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      removeTreeWithRetry(home);
+    }
+  }, STORE_BUDGET_MS);
+
+  test("a malformed CODEX_HOME/agents path warns instead of aborting the report", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ocx-doctor-agents-"));
+    const codexHome = join(home, "codex");
+    const previousHome = process.env.OPENCODEX_HOME;
+    const previousCodexHome = process.env.CODEX_HOME;
+    const previousExitCode = process.exitCode;
+    const restore: Array<() => void> = [];
+    try {
+      mkdirSync(codexHome, { recursive: true });
+      process.env.OPENCODEX_HOME = home;
+      process.env.CODEX_HOME = codexHome;
+      writeFileSync(join(home, "config.json"), JSON.stringify({ ...getDefaultConfig(), port: 9, codexAutoStart: false }));
+      // A regular file where the role scan expects a readable directory.
+      writeFileSync(join(codexHome, "agents"), "not a directory");
+      const logged: string[] = [];
+      const log = spyOn(console, "log").mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(" ")); });
+      restore.push(() => log.mockRestore());
+      // Other doctor sections probe upstream health; this diagnostic fixture must stay offline.
+      const fetch = spyOn(globalThis, "fetch").mockImplementation(async () => new Response(null, { status: 503 }));
+      restore.push(() => fetch.mockRestore());
+      const live = spyOn(proxyLiveness, "findLiveProxy").mockResolvedValue({
+        pid: null, port: 9, hostname: "127.0.0.1", source: "config",
+      });
+      restore.push(() => live.mockRestore());
+      await runDoctor([]);
+      const output = logged.join("\n");
+      expect(output).toContain("[WARN] unable to scan $CODEX_HOME/agents/*.toml:");
+      expect(output).not.toContain("no per-role model_fallback fields");
+      // The dependent derived-role scan shares the listing; a missing guard would warn twice.
+      expect(output.match(/\[WARN\] unable to scan \$CODEX_HOME\/agents\/\*\.toml:/g) ?? []).toHaveLength(1);
     } finally {
       for (const cleanup of restore.reverse()) cleanup();
       process.exitCode = previousExitCode;
@@ -956,5 +1037,113 @@ describe("doctor reports an unclean prior proxy exit", () => {
     await runDoctor([]);
 
     expect(logged.join("\n")).not.toContain("may have exited unexpectedly");
+  });
+
+  test("runDoctor outputs ChatGPT public endpoint hint when the canonical openai provider is configured", async () => {
+    const { writeFileSync } = await import("fs");
+    const { join } = await import("path");
+    writeFileSync(
+      join(tempHome, "config.json"),
+      JSON.stringify({ port: 9, codexAutoStart: false, providers: { openai: { adapter: "openai-responses", authMode: "forward", baseUrl: "https://chatgpt.com/backend-api/codex" } } }),
+      "utf8",
+    );
+
+    await runDoctor([]);
+
+    const output = logged.join("\n");
+    expect(output).toContain("public ChatGPT endpoint");
+    expect(output).toContain("assumed");
+  });
+});
+
+// #4646: Codex pins a default model in its own config.toml, and nothing compared that pin
+// against the models this install exposes. Every dependency is injected here, so these cases
+// touch neither the real `CODEX_HOME` nor the network.
+describe("doctor Codex default model exposure (#4646)", () => {
+  const live = { pid: 4321, port: 10100, source: "config" as const };
+  const respondWith = (body: unknown, status = 200) => (
+    (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch
+  );
+
+  test("no root model pin is not a finding", async () => {
+    const result = await collectDefaultModelExposure({
+      readConfiguredModelFn: () => null,
+      readCatalogModelsFn: () => [{ slug: "gpt-5.6-sol", visibility: "list" }],
+    });
+
+    expect(result.status).toBe("not_configured");
+    expect(result.model).toBeNull();
+    expect(result.action).toBeUndefined();
+  });
+
+  test("a pin the running proxy advertises is exposed, and names the proxy as the source", async () => {
+    const result = await collectDefaultModelExposure({
+      readConfiguredModelFn: () => "  gpt-5.6-sol  ",
+      live,
+      fetchFn: respondWith({ data: [{ id: "gpt-5.6-sol" }, { id: "kiro/claude-opus-4.6" }] }),
+      readCatalogModelsFn: () => null,
+    });
+
+    expect(result.status).toBe("exposed");
+    // Trimmed: a pin written with surrounding whitespace is the same pin.
+    expect(result.model).toBe("gpt-5.6-sol");
+    expect(result.source).toBe("proxy");
+  });
+
+  test("a pin missing from every readable surface is the warning, and says which surfaces it read", async () => {
+    const result = await collectDefaultModelExposure({
+      readConfiguredModelFn: () => "kiro/claude-opus-4.6",
+      live,
+      fetchFn: respondWith({ data: [{ id: "gpt-5.6-sol" }] }),
+      readCatalogModelsFn: () => [{ slug: "gpt-5.6-sol", visibility: "list" }],
+    });
+
+    expect(result.status).toBe("not_exposed");
+    expect(result.detail).toContain("kiro/claude-opus-4.6");
+    expect(result.detail).toContain("/v1/models");
+    expect(result.detail).toContain("on-disk Codex catalog");
+    expect(result.action).toBeDefined();
+  });
+
+  test("an unreadable exposed set is undeterminable, never 'not exposed'", async () => {
+    const result = await collectDefaultModelExposure({
+      readConfiguredModelFn: () => "gpt-5.6-sol",
+      live: null,
+      readCatalogModelsFn: () => null,
+    });
+
+    expect(result.status).toBe("undeterminable");
+    expect(result.source).toBeNull();
+    expect(result.detail).not.toContain("NOT exposed");
+    expect(result.action).toContain("ocx start");
+  });
+
+  test("a proxy that refuses the read falls back to the catalog instead of guessing", async () => {
+    const result = await collectDefaultModelExposure({
+      readConfiguredModelFn: () => "gpt-5.6-sol",
+      live,
+      // What a non-loopback bind returns to doctor, which holds no data-plane key.
+      fetchFn: respondWith({ error: "opencodex API key required" }, 401),
+      readCatalogModelsFn: () => [{ slug: "gpt-5.6-sol", visibility: "list" }],
+    });
+
+    expect(result.status).toBe("exposed");
+    expect(result.source).toBe("catalog");
+  });
+
+  test("a retained hide row is not exposure: the pin Desktop can still show is still reported", async () => {
+    const result = await collectDefaultModelExposure({
+      readConfiguredModelFn: () => "gpt-5.6-terra",
+      live: null,
+      // Exactly the shape a disabled bare native leaves behind (see native-model-toggle.test.ts).
+      readCatalogModelsFn: () => [
+        { slug: "gpt-5.6-terra", visibility: "hide" },
+        { slug: "gpt-5.6-sol", visibility: "list" },
+      ],
+    });
+
+    expect(result.status).toBe("not_exposed");
+    expect(result.source).toBe("catalog");
+    expect(result.detail).not.toContain("/v1/models");
   });
 });

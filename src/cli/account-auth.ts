@@ -37,6 +37,7 @@ const USAGE = `Usage:
   ocx account code <provider> [--flow <flow-id>] [--json]   (reads the code from stdin)
   ocx account cancel <provider> [--flow <flow-id>] [--json]
   ocx account reset-credits <account-id|main> [--consume --yes [--operation-id <uuid>]] [--json]
+  ocx account grok-reset-coupons [<account-id>] [--consume --yes [--token-id <token-id>] [--operation-id <uuid>]] [--json]
 
 --device runs the OpenAI device-code login instead of the browser callback: use
 it when the proxy has no browser or nothing can reach localhost:1455, such as a
@@ -49,14 +50,40 @@ visible to anyone who can run ps:
   pbpaste | ocx account code <provider> --flow <flow-id>
   ocx account login <provider> --code -   (same, for the login flow)`;
 
+/**
+ * The Codex account pool answers to three spellings, and a user reaches for whichever
+ * one they already have a word for. `ocx login codex` routes here as well (dispatch.ts):
+ * the pool is deliberately not an `ocx login` provider -- it keeps its own account
+ * ledger and runs its browser flow inside the proxy -- but that is an implementation
+ * boundary, not something a user should have to know before they can log in.
+ */
 const CODEX_NAMES = new Set(["openai", "codex", "chatgpt"]);
+
+/** True for every spelling that means "the Codex account pool" rather than an OAuth provider. */
+export function isCodexAccountLoginName(name: string): boolean {
+  return CODEX_NAMES.has(name.trim().toLowerCase());
+}
 
 interface LoginStart {
   url?: string;
   flowId?: string;
   instructions?: string;
   deviceCode?: string;
+  /** Whether the host actually opened a browser. Absent from older proxies. */
+  browserLaunch?: "started" | "failed" | "skipped";
 }
+
+/**
+ * Said only when the host could not open a browser (#5261).
+ *
+ * Without it, a failed launch is indistinguishable from a successful one: the URL is printed
+ * either way, so the user waits at a terminal that looks like it is working. Names the fixed
+ * callback port because that is the part people cannot guess — ChatGPT supplies the redirect
+ * URI, so the flow cannot move to a free port, and `--device` is the way around it.
+ */
+export const BROWSER_LAUNCH_FAILED_HINT =
+  "⚠️  No browser could be opened here — open the URL above yourself."
+  + "\n   If nothing on this machine can reach http://localhost:1455, rerun with --device instead.";
 
 /** `-` means "read it from stdin", the documented way to pass a code silently. */
 const STDIN_SENTINEL = "-";
@@ -100,7 +127,12 @@ async function login(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   const id = takeOption(args, "--id");
   const suppliedCode = takeOptionWithSyntax(args, "--code");
   if (!provider) throw new CliUsageError("provider is required", USAGE);
-  rejectArgs(args, USAGE);
+  // A bare leftover here is plausibly the authorization code itself: this flow takes one
+  // through --code, and a user who pastes it as a positional would otherwise see it echoed
+  // back in the usage error. `ocx login codex` reaches this parser too, so the paste lands
+  // one word away from a command people run constantly. Flag-shaped leftovers stay visible,
+  // because a mistyped flag is exactly what the message has to name.
+  rejectArgs(args, USAGE, { redactValues: true });
   // kimi, nous, and github-copilot are already device flows, so --device is a
   // true statement about them and is accepted as a no-op rather than an error.
   // Anything else has no device grant at all and must fail loudly.
@@ -127,6 +159,7 @@ async function login(argv: string[], deps: RuntimeApiDeps): Promise<void> {
         start.url ? `Open this URL to sign in:\n${start.url}` : "",
         start.deviceCode ? `Device code: ${start.deviceCode}` : "",
         start.instructions ?? "",
+        start.browserLaunch === "failed" ? BROWSER_LAUNCH_FAILED_HINT : "",
         start.flowId ? `Flow: ${start.flowId}` : "",
       ].filter(line => line !== "").join("\n");
       if (block) writeStdoutFully(`${block}\n`);
@@ -154,7 +187,14 @@ async function login(argv: string[], deps: RuntimeApiDeps): Promise<void> {
         {}, deps,
       );
       if (state.status === "done") {
-        printData({ ...state, modelSelection: modelSelectionNextSteps("openai") }, wantsJson, [`Logged in${state.email ? ` as ${String(state.email)}` : ""}.`, ...modelSelectionGuidance("openai")]);
+        if (state.validationPending === true) {
+          printData({ ...state, recoveryCommand: "ocx gui", recoveryAction: "After quota recovers, click Refresh quotas in the dashboard Codex account pool." }, wantsJson, [
+            "Account registered; validation pending (routing disabled).",
+            "After quota recovers, open 'ocx gui' and click Refresh quotas to complete validation.",
+          ]);
+        } else {
+          printData({ ...state, modelSelection: modelSelectionNextSteps("openai") }, wantsJson, [`Logged in${state.email ? ` as ${String(state.email)}` : ""}.`, ...modelSelectionGuidance("openai")]);
+        }
         if (!wantsJson) warnIfCodexCatalogRefreshPending(state);
         return;
       }
@@ -277,12 +317,53 @@ async function resetCredits(argv: string[], deps: RuntimeApiDeps): Promise<void>
   printData(result, wantsJson);
 }
 
+async function grokResetCoupons(argv: string[], deps: RuntimeApiDeps): Promise<void> {
+  const args = [...argv];
+  // The account id is optional here (the server falls back to the selected xAI
+  // account), so a flag-shaped first token must not be swallowed as the id:
+  // `grok-reset-coupons --consume` has to reach the --yes gate, not become a
+  // read of account "--consume".
+  const rawId = args[0]?.startsWith("--") ? undefined : args.shift()?.trim();
+  const wantsJson = takeFlag(args, "--json");
+  const consume = takeFlag(args, "--consume");
+  const yes = takeFlag(args, "--yes");
+  // Before rejectArgs: takeOption splices its two tokens out of `args`.
+  const tokenId = takeOption(args, "--token-id");
+  const operationId = takeOption(args, "--operation-id");
+  if (consume && !yes) throw new CliUsageError("consuming a Grok reset coupon requires --yes", USAGE);
+  if (operationId !== undefined && !consume) {
+    throw new CliUsageError("--operation-id requires --consume", USAGE);
+  }
+  if (tokenId !== undefined && !consume) {
+    throw new CliUsageError("--token-id requires --consume", USAGE);
+  }
+  if (operationId !== undefined && !isCodexResetCreditOperationId(operationId)) {
+    throw new CliUsageError("--operation-id must be a UUIDv4", USAGE);
+  }
+  rejectArgs(args, USAGE);
+  const accountId = rawId ? (rawId === "main" ? "__main__" : rawId) : undefined;
+  const result = consume
+    ? await runtimeRequest("/api/grok/reset-coupons/consume", {
+      method: "POST",
+      // Spread, not `operationId: undefined`: the server distinguishes an absent
+      // key from a caller who asked for a stable idempotency identity.
+      body: JSON.stringify({ accountId, tokenId, ...(operationId === undefined ? {} : { operationId }) }),
+    }, deps)
+    : await runtimeRequest(
+      `/api/grok/reset-coupons${accountId ? `?accountId=${encodeURIComponent(accountId)}` : ""}`,
+      {},
+      deps,
+    );
+  printData(result, wantsJson);
+}
+
 export async function handleAccountAuthCommand(sub: string, argv: string[], deps: RuntimeApiDeps = {}): Promise<number | null> {
   let action: (() => Promise<void>) | undefined;
   if (sub === "login" || sub === "reauth") action = () => login(sub === "reauth" ? [...argv, "--reauth"] : argv, deps);
   else if (sub === "code") action = () => code(argv, deps);
   else if (sub === "cancel") action = () => cancel(argv, deps);
   else if (sub === "reset-credits") action = () => resetCredits(argv, deps);
+  else if (sub === "grok-reset-coupons") action = () => grokResetCoupons(argv, deps);
   if (!action) return null;
   return runCliAction(action);
 }

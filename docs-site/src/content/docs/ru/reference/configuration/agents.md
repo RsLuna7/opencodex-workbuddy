@@ -105,7 +105,7 @@ native ChatGPT-target'ами и прямыми key-auth Responses-маршрут
 `allowEncryptedV2AgentTasks: true`. Если ни один из них не может обработать encrypted payload,
 запрос завершается ошибкой вместо отправки нечитаемого ciphertext наружу. Combo по-прежнему
 сначала выбирает доступную каноническую native-цель; если её нельзя выбрать и включён
-`agentTaskRecovery`, encrypted `NEW_TASK` восстанавливается один раз перед routed combo dispatch.
+или native-попытки исчерпаны, а `agentTaskRecovery` включён, encrypted `NEW_TASK` восстанавливается один раз перед routed combo dispatch. Combo-восстановление работает только на spawned child-турах; прямой routed-путь восстанавливает и смену модели в середине треда.
 
 ```json
 {
@@ -114,9 +114,9 @@ native ChatGPT-target'ами и прямыми key-auth Responses-маршрут
   "injectionModel": "gpt-5.5",
   "injectionEffort": "high",
   "syncCodexSubagentDefaults": true,
-  "subagentModelFallback": ["gpt-5.4-mini"],
+  "subagentModelFallback": ["gpt-5.6-luna"],
   "subagentModelFallbackByModel": {
-    "gpt-5.5": ["gpt-5.4-mini"]
+    "gpt-5.5": ["gpt-5.6-luna"]
   },
   "subagentModelFallbackPollMs": 60000,
   "subagentEffortCap": "high"
@@ -135,6 +135,8 @@ Cap'ы умеют только понижать effort. Они опускают 
 которая не выше cap'а. Если у модели нет управления effort или ни одна поддерживаемая ступень не
 помещается под cap, opencodex убирает поле effort и позволяет провайдеру применить собственный
 дефолт. `max` и `ultra` принимаются, хотя дашборд предлагает только `low`–`xhigh`.
+
+Настроенные потолки применяются и к подходящим нативным запросам Chat Completions без закреплённого effort модели. Преобразование в значение провайдера выполняется, когда применяется закрепление или потолок меняет значение; иначе значение нативного вызывающего клиента сохраняет исходное написание.
 
 Если нужен объясняющий вариант для начинающих о поведении v1, default и v2, см.
 [Поверхность подагентов](/guides/sub-agent-surface/).

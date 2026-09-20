@@ -115,7 +115,10 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
     }
     const all = getRequestLogEntries();
     const total = filteredRequestLogCount(all, url.searchParams);
-    const logs = filterRequestLogs(all, url.searchParams).map(requestLogDto);
+    // Not point-free: requestLogDto takes an options object second, and Array.map would pass the
+    // element INDEX into it. An explicit arrow keeps the default (decode rate included) and is
+    // what /api/logs wants; /api/request-history opts out at its own call sites.
+    const logs = filterRequestLogs(all, url.searchParams).map(entry => requestLogDto(entry));
     const poll = selectRequestLogPoll(logs, url.searchParams, cursor);
     return jsonResponse({
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -222,6 +225,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
         const accumulator = filteredAggregate.accumulator;
         return jsonResponse({
           ...accumulator.summarize(range, now, surface),
+          ...(filteredAggregate.usageIncomplete ? { usageIncomplete: true as const, usageIncompleteReason: "oversized_rows" as const } : {}),
           historyTruncated: false,
           truncatedPrefixBytes: 0,
           entriesTruncated: false,
@@ -244,6 +248,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
       const revisionKey = `${usageLogRevisionKey(aggregate.revision)}\0${effectiveReadLimit}`;
       const lastSeenSize = aggregate.revision?.size ?? 0;
       const baseReadMetadata = {
+        ...(aggregate.usageIncomplete ? { usageIncomplete: true as const, usageIncompleteReason: "oversized_rows" as const } : {}),
         historyTruncated: false,
         truncatedPrefixBytes: 0,
         entriesTruncated: false,
@@ -425,6 +430,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
         bytes: result.bytes,
         ...(result.trashDir ? { trashDir: result.trashDir } : {}),
         removedPaths: result.removedPaths,
+        ...(result.skippedReferencedPaths?.length ? { skippedReferencedPaths: result.skippedReferencedPaths } : {}),
       });
     } catch {
       return jsonResponse({

@@ -5,6 +5,9 @@
  * Same translate-and-replay pattern as Claude Messages: the produced body must pass
  * responsesRequestSchema so routing/OAuth/pool/sidecars are inherited unchanged.
  */
+import { chatImageUrlFromPart } from "./image-parts";
+import { untranslatedChatInputMedia, untranslatedInputMediaMessage } from "../responses/input-media";
+
 export class ChatCompletionsRequestError extends Error {}
 
 type Rec = Record<string, unknown>;
@@ -25,7 +28,12 @@ export function assertChatCompletionsRoutingBody(raw: unknown): asserts raw is C
   }
 }
 
-const OUTPUT_CONFIG_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+// "none" is the runtime's disable sentinel, not an unknown value: src/reasoning-effort.ts
+// accepts it and maps it to "omit the reasoning parameter", and the Pi client export maps
+// Pi's "off" thinking level onto it (src/clients/config-export.ts). Dropping it here let a
+// provider default re-enable thinking the caller had explicitly turned off — and for the
+// Anthropic families that think by default, omission is not the same as disabled.
+const OUTPUT_CONFIG_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 const OUTPUT_CONFIG_SUMMARIES = new Set(["auto", "concise", "detailed", "none"]);
 
 function contentToText(content: unknown): string {
@@ -45,13 +53,9 @@ function contentToText(content: unknown): string {
   return parts.join("\n");
 }
 
-function imageUrlFromPart(part: Rec): string | null {
-  if (part.type !== "image_url") return null;
-  const imageUrl = part.image_url;
-  if (typeof imageUrl === "string" && imageUrl.length > 0) return imageUrl;
-  if (isRec(imageUrl) && typeof imageUrl.url === "string" && imageUrl.url.length > 0) return imageUrl.url;
-  return null;
-}
+// Recognition moved to src/chat/image-parts.ts so the native fast path's
+// route-eligibility predicate and this translator cannot drift apart again.
+const imageUrlFromPart = chatImageUrlFromPart;
 
 function videoUrlFromPart(part: Rec): string | null {
   if (part.type !== "video_url") return null;
@@ -88,9 +92,55 @@ function userContentToBlocks(content: unknown): Rec[] {
       continue;
     }
     const videoUrl = videoUrlFromPart(raw);
-    if (videoUrl) blocks.push({ type: "input_video", video_url: videoUrl });
+    if (videoUrl) {
+      blocks.push({ type: "input_video", video_url: videoUrl });
+      continue;
+    }
+    const file = fileFromPart(raw);
+    if (file) blocks.push(file);
   }
   return blocks;
+}
+
+/**
+ * A Chat Completions `file` part carrying inline bytes, as the Responses `input_file` block.
+ *
+ * Nothing here recognized the shape, so the part reached the end of the loop with no branch and
+ * was dropped in silence (#5212). A part with no inline bytes is still not translatable and is
+ * left to the untranslated-media refusal, which runs before this loop.
+ */
+function fileFromPart(part: Rec): Rec | null {
+  if (part.type !== "file" && part.type !== "input_file") return null;
+  const file = isRec(part.file) ? part.file : part;
+  const fileData = file.file_data;
+  if (typeof fileData !== "string" || fileData.length === 0) return null;
+  const filename = typeof file.filename === "string" && file.filename.length > 0 ? file.filename : undefined;
+  return { type: "input_file", file_data: fileData, ...(filename ? { filename } : {}) };
+}
+
+/**
+ * The assistant's prior thinking, as plaintext, from either Chat spelling.
+ *
+ * The outbound direction already reconstructs these for providers listed in
+ * `preserveReasoningContentModels` (src/adapters/openai-chat.ts), so a client
+ * replaying a turn sends them back. Dropping them here made the round trip lossy and
+ * left interleaved-thinking providers seeing a bare continuation.
+ *
+ * Only representable plaintext is read. No signature, encrypted payload or
+ * provider-issued item id is reconstructed — see the reasoning item built below.
+ */
+function assistantReasoningText(msg: Rec): string | undefined {
+  if (typeof msg.reasoning_content === "string" && msg.reasoning_content.length > 0) {
+    return msg.reasoning_content;
+  }
+  if (Array.isArray(msg.reasoning_details)) {
+    const segments: string[] = [];
+    for (const raw of msg.reasoning_details) {
+      if (isRec(raw) && typeof raw.text === "string" && raw.text.length > 0) segments.push(raw.text);
+    }
+    if (segments.length > 0) return segments.join("");
+  }
+  return undefined;
 }
 
 function assistantContentToBlocks(content: unknown): Rec[] {
@@ -189,9 +239,65 @@ function toolChoiceToResponses(choice: unknown, body: Rec): void {
     body.tool_choice = { type: "function", name };
     return;
   }
+  if (choice.type === "allowed_tools") {
+    body.tool_choice = allowedToolsChoiceToResponses(choice);
+    return;
+  }
   if (isRec(choice.function) && typeof choice.function.name === "string") {
     body.tool_choice = { type: "function", name: choice.function.name };
   }
+}
+
+/**
+ * Chat Completions nests the subset under `allowed_tools`, Responses carries `mode`/`tools`
+ * on the choice itself, and each entry names its tool under a member keyed by its own type
+ * (`{"type":"function","function":{"name"}}`) rather than a flat `name`. Neither level lines up
+ * with `mapToolChoice`, so an unflattened choice fell past every branch and the caller's subset
+ * was dropped while the full catalogue was still advertised (#5211).
+ *
+ * An entry nobody can name is refused rather than skipped: dropping one widens the very subset
+ * the caller sent this field to narrow.
+ */
+function allowedToolsChoiceToResponses(choice: Rec): Rec {
+  const spec = isRec(choice.allowed_tools) ? choice.allowed_tools : choice;
+  if (!Array.isArray(spec.tools) || spec.tools.length === 0) {
+    throw new ChatCompletionsRequestError("tool_choice.allowed_tools requires a non-empty tools array");
+  }
+  return {
+    type: "allowed_tools",
+    mode: spec.mode === "required" ? "required" : "auto",
+    tools: spec.tools.map(allowedToolEntryToResponses),
+  };
+}
+
+/** Hosted entries are named by their type alone; a function or custom entry must carry a name. */
+const HOSTED_ALLOWED_TOOL_TYPES = new Set([
+  "web_search",
+  "web_search_preview",
+  "image_generation",
+  "image_gen",
+  "tool_search",
+]);
+const NAMED_ALLOWED_TOOL_TYPES = new Set(["function", "custom"]);
+
+function allowedToolEntryToResponses(raw: unknown): Rec {
+  if (!isRec(raw)) {
+    throw new ChatCompletionsRequestError("tool_choice.allowed_tools.tools entries must be objects");
+  }
+  const type = typeof raw.type === "string" && raw.type.length > 0 ? raw.type : "function";
+  if (!NAMED_ALLOWED_TOOL_TYPES.has(type) && !HOSTED_ALLOWED_TOOL_TYPES.has(type)) {
+    // An unknown selector kind is not a narrower subset, it is a subset nobody can evaluate.
+    throw new ChatCompletionsRequestError(`unsupported tool_choice.allowed_tools.tools entry type: ${type}`);
+  }
+  const nested = isRec(raw[type]) ? raw[type] as Rec : undefined;
+  const name = typeof raw.name === "string" && raw.name.length > 0
+    ? raw.name
+    : nested !== undefined && typeof nested.name === "string" && nested.name.length > 0
+      ? nested.name
+      : undefined;
+  if (name !== undefined) return { type, name };
+  if (HOSTED_ALLOWED_TOOL_TYPES.has(type)) return { type };
+  throw new ChatCompletionsRequestError("tool_choice.allowed_tools.tools entries require a name");
 }
 
 function responseFormatToText(format: unknown): Rec | undefined {
@@ -249,6 +355,13 @@ function resolveReasoningSummary(raw: Rec): string | undefined {
  */
 export function chatCompletionsToResponsesBody(raw: unknown): Rec {
   assertChatCompletionsRoutingBody(raw);
+  // Only the translated path reaches this function. Native Chat can retain its
+  // provider-specific file/audio blocks; projecting them here would discard them.
+  const unsupportedMedia = untranslatedChatInputMedia(raw);
+  if (unsupportedMedia) {
+    throw new ChatCompletionsRequestError(untranslatedInputMediaMessage(unsupportedMedia));
+  }
+
 
   const systemParts: string[] = [];
   const input: Rec[] = [];
@@ -270,9 +383,39 @@ export function chatCompletionsToResponsesBody(raw: unknown): Rec {
         break;
       }
       case "assistant": {
+        // A reasoning item precedes the assistant message it belongs to: the
+        // Responses assistant item schema admits only output content blocks, so there
+        // is no attachment point on the message itself, and the parser buffers a
+        // reasoning item and prepends it to the NEXT assistant message. Emitting it
+        // here keeps that adjacency intact.
+        const reasoningText = assistantReasoningText(msg);
+        if (reasoningText !== undefined) {
+          // `summary` is required on a reasoning input item by the OpenAI Responses API, and our
+          // own responsesRequestSchema marks it optional, so a summary-less item validated locally
+          // and was refused upstream with `Missing required parameter: 'input[N].summary'`. It also
+          // has to carry the text, not just satisfy the field: sanitizeReasoningInputContent blanks
+          // `content` for every destination except a `preserveResponsesReasoningContent` provider,
+          // so summary is the only channel that survives to a native backend. This mirrors the
+          // Claude ingress (src/claude/inbound.ts), which has always minted both.
+          input.push({
+            type: "reasoning",
+            summary: [{ type: "summary_text", text: reasoningText }],
+            content: [{ type: "reasoning_text", text: reasoningText }],
+          });
+        }
         const blocks = assistantContentToBlocks(msg.content);
         if (blocks.length > 0) input.push({ type: "message", role: "assistant", content: blocks });
         if (msg.tool_calls !== undefined) toolCallsToItems(msg.tool_calls, input, knownNameByCallId);
+        break;
+      }
+      case "function": {
+        // Native eligibility diverts legacy image results too, but this translator
+        // has no legacy function_call/name pairing. Never silently discard them.
+        if (Array.isArray(msg.content) && msg.content.some(part => isRec(part) && imageUrlFromPart(part))) {
+          throw new ChatCompletionsRequestError(
+            "Legacy function-result image translation is not implemented. Use tool_calls and role:tool with tool_call_id.",
+          );
+        }
         break;
       }
       case "tool": {
@@ -317,6 +460,13 @@ export function chatCompletionsToResponsesBody(raw: unknown): Rec {
   if (typeof maxTokens === "number") body.max_output_tokens = maxTokens;
   if (typeof raw.temperature === "number") body.temperature = raw.temperature;
   if (typeof raw.top_p === "number") body.top_p = raw.top_p;
+  // responsesRequestSchema accepts both, parser.ts reads them into
+  // options.presencePenalty/frequencyPenalty, and the openai-chat adapter writes them
+  // back to the wire. Only this first link was missing, so a Chat caller's penalties
+  // never reached a provider that supports them. Per-model noPenaltyModels opt-outs
+  // still apply at the adapter.
+  if (typeof raw.presence_penalty === "number") body.presence_penalty = raw.presence_penalty;
+  if (typeof raw.frequency_penalty === "number") body.frequency_penalty = raw.frequency_penalty;
   if (raw.stop !== undefined) body.stop = raw.stop;
   if (typeof raw.user === "string") body.user = raw.user;
   if (typeof raw.parallel_tool_calls === "boolean") body.parallel_tool_calls = raw.parallel_tool_calls;

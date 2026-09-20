@@ -28,6 +28,13 @@ import {
   validCachedRouteDecision,
 } from "./log-route-decision";
 import { mergeLogDelta, parseLogPollResponse } from "./log-poll";
+import type { AttemptRecoveryKind, RequestSpendTotals } from "../../../src/usage/telemetry-contract";
+import {
+  classifyRequestOutcome,
+  requestPhysicalSends,
+  requestUnresolvedSends,
+  type RequestOutcomeClass,
+} from "../../../src/usage/request-outcome";
 
 function logsCacheKey(apiBase: string): string {
   return `ocx.logs.list.v1:${apiBase}`;
@@ -53,7 +60,8 @@ type LogUsageStatus = "reported" | "unreported" | "unsupported" | "estimated";
 type MetricUnavailableReason =
   | "usage_missing" | "usage_unsupported" | "output_missing" | "invalid_duration"
   | "price_unmatched" | "invalid_cache_breakdown"
-  | "invalid_usage" | "combo_attempt_unavailable";
+  | "invalid_usage" | "combo_attempt_unavailable"
+  | "ttft_missing" | "decode_window_too_short";
 
 type CostEstimateReason =
   | "usage_estimated"
@@ -92,22 +100,13 @@ type CostResult =
 
 interface LogDisplayMetrics {
   tokPerSecond: TokPerSecondResult;
+  /**
+   * Estimated decode throughput (#4038). Optional because a row cached by an older build has no
+   * such field; absent renders nothing rather than an empty slot.
+   */
+  decodeTokPerSecond?: TokPerSecondResult;
   cost: CostResult;
 }
-
-/**
- * Recovery kinds recorded on a log attempt; rendered as localized labels in the logs
- * detail dialog instead of raw wire values.
- */
-type AttemptRecoveryKind =
-  | "transient-5xx"
-  | "connection-reset"
-  | "oauth-401"
-  | "key-429"
-  | "rate-limit-429"
-  | "anthropic-oauth-429"
-  | "image-413"
-  | "empty-completion";
 
 interface LogAttempt {
   ordinal: number;
@@ -165,6 +164,15 @@ export interface LogEntry {
   durationMs: number;
   errorCode?: string;
   upstreamError?: string;
+  /**
+   * Semantic terminal facts. `/api/logs` has always carried these -- `requestLogDto` spreads the
+   * whole durable entry -- but this page declared neither, so it classified every request by its
+   * numeric HTTP status alone and reported an incomplete 200 as a plain success.
+   */
+  terminalStatus?: string;
+  closeReason?: "terminal" | "client_cancel" | "non_stream" | "body_stall" | "body_overflow";
+  /** Upstream spend for the whole logical request, aggregated across attempts and combo children. */
+  spend?: RequestSpendTotals;
   usageStatus?: LogUsageStatus;
   usage?: UsageBreakdown;
   totalTokens?: number;
@@ -276,6 +284,8 @@ const METRIC_REASON_KEYS = {
   invalid_cache_breakdown: "logs.detail.reason.invalid_cache_breakdown",
   invalid_usage: "logs.detail.reason.invalid_usage",
   combo_attempt_unavailable: "logs.detail.reason.combo_attempt_unavailable",
+  ttft_missing: "logs.detail.reason.ttft_missing",
+  decode_window_too_short: "logs.detail.reason.decode_window_too_short",
 } as const satisfies Record<MetricUnavailableReason, string>;
 
 const ESTIMATE_REASON_KEYS = {
@@ -289,16 +299,27 @@ const ESTIMATE_REASON_KEYS = {
 /**
  * i18n keys for every {@link AttemptRecoveryKind}, so the logs detail dialog renders a
  * localized label instead of the raw wire value (e.g. `rate-limit-429`).
+ *
+ * The union is now the durable roster rather than a copy of it. The copy had drifted to nine of
+ * thirteen members, so `key-401`, `oauth-account-429`, `opaque-blob-rejection` and
+ * `reasoning-effort-downgrade` all reached the operator as "Unknown recovery reason" -- four real
+ * causes rendered as an absence of information. `satisfies Record<AttemptRecoveryKind, string>` is
+ * what now makes the next added kind a typecheck failure here instead of a silent blank.
  */
 const RECOVERY_KIND_KEYS = {
   "transient-5xx": "logs.detail.attempt.recovery.transient5xx",
   "connection-reset": "logs.detail.attempt.recovery.connectionReset",
   "oauth-401": "logs.detail.attempt.recovery.oauth401",
+  "key-401": "logs.detail.attempt.recovery.key401",
   "key-429": "logs.detail.attempt.recovery.key429",
   "rate-limit-429": "logs.detail.attempt.recovery.rateLimit429",
   "anthropic-oauth-429": "logs.detail.attempt.recovery.anthropicOauth429",
+  "oauth-account-429": "logs.detail.attempt.recovery.oauthAccount429",
   "image-413": "logs.detail.attempt.recovery.image413",
   "empty-completion": "logs.detail.attempt.recovery.emptyCompletion",
+  "console-go-upload-retry": "logs.detail.attempt.recovery.consoleGoUpload",
+  "opaque-blob-rejection": "logs.detail.attempt.recovery.opaqueBlobRejection",
+  "reasoning-effort-downgrade": "logs.detail.attempt.recovery.reasoningEffortDowngrade",
 } as const satisfies Record<AttemptRecoveryKind, string>;
 
 /** Map a metric-unavailable reason to its i18n key. */
@@ -322,6 +343,25 @@ function recoveryKindKey(kind: AttemptRecoveryKind) {
 
 function verificationKey(status: MatchedPriceInfo["status"]): "logs.detail.verification.verified" | "logs.detail.verification.derived" {
   return status === "verified" ? "logs.detail.verification.verified" : "logs.detail.verification.derived";
+}
+
+/** i18n key for each shared outcome class, total by construction. */
+const OUTCOME_KEYS = {
+  completed: "logs.detail.outcome.completed",
+  failed: "logs.detail.outcome.failed",
+  incomplete: "logs.detail.outcome.incomplete",
+  aborted: "logs.detail.outcome.aborted",
+} as const satisfies Record<RequestOutcomeClass, string>;
+
+/**
+ * How this request ended, using the same classifier the Prometheus exporter uses.
+ *
+ * Calling the shared function rather than reimplementing the precedence is the point: the numeric
+ * status beside it can be 200 while the answer was never delivered, and reading the status first
+ * is exactly the disagreement this removes.
+ */
+function outcomeKey(entry: Pick<LogEntry, "status" | "terminalStatus" | "closeReason">) {
+  return OUTCOME_KEYS[classifyRequestOutcome(entry)];
 }
 
 function statusColor(status: number): string {
@@ -814,6 +854,14 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                   </td>
                   <td className="num mono log-col-rate">
                     {formatTokPerSecond(log.displayMetrics?.tokPerSecond, localeTag)}
+                    {/* #4038: decode rate stacked under the end-to-end rate it is easy to mistake
+                        for delivery speed. Only rendered when it actually resolved — a row whose
+                        decode window was too short shows the e2e rate alone rather than a blank. */}
+                    {log.displayMetrics?.decodeTokPerSecond?.kind === "value" && (
+                      <span className="logs-stack-end muted" title={t("logs.detail.decodeTokPerSec")}>
+                        {formatTokPerSecond(log.displayMetrics.decodeTokPerSecond, localeTag)}
+                      </span>
+                    )}
                   </td>
                   <td className="num mono log-col-cost">
                     {formatEstimatedUsd(log.displayMetrics?.cost, t, localeTag)}
@@ -953,6 +1001,18 @@ function LogDetailDialog({
           <h4 id="log-detail-basic" className="log-detail-section-title">{t("logs.detail.section.basic")}</h4>
           <div className="log-detail-grid">
             <span className="muted">{t("logs.col.time")}</span><span className="mono">{formatLogDateTime(detail.timestamp, localeTag, serverTimeZone)}</span>
+            <span className="muted">{t("logs.detail.outcome.label")}</span>
+            <span>{t(outcomeKey(detail))}</span>
+            {detail.spend && (
+              <>
+                <span className="muted">{t("logs.detail.sends.label")}</span>
+                <span className="mono">
+                  {requestPhysicalSends(detail.spend)}
+                  {requestUnresolvedSends(detail.spend) > 0
+                    && ` (${t("logs.detail.sends.unresolved")}: ${requestUnresolvedSends(detail.spend)})`}
+                </span>
+              </>
+            )}
             <span className="muted">{t("logs.col.request")}</span>
             <span className="log-detail-request-row">
               <span className="mono log-detail-break">{detail.requestId ?? "\u2014"}</span>
@@ -1033,12 +1093,20 @@ function LogDetailDialog({
           <div className="log-detail-grid">
             <span className="muted">{t("logs.col.duration")}</span><span className="mono">{detail.durationMs}ms</span>
             <span className="muted">{t("logs.col.tokPerSec")}</span><span className="mono">{formatTokPerSecond(detail.displayMetrics?.tokPerSecond, localeTag)}</span>
+            {detail.displayMetrics?.decodeTokPerSecond?.kind === "value" && (
+              <><span className="muted">{t("logs.detail.decodeTokPerSec")}</span><span className="mono">{formatTokPerSecond(detail.displayMetrics.decodeTokPerSecond, localeTag)}</span></>
+            )}
             {detail.firstOutputMs !== undefined && (
               <><span className="muted">{t("logs.detail.ttft")}</span><span className="mono">{detail.firstOutputMs}ms</span></>
             )}
           </div>
           {detail.displayMetrics?.tokPerSecond.kind === "unavailable" && (
             <p className="log-detail-notes-line muted">{t(metricReasonKey(detail.displayMetrics.tokPerSecond.reason))}</p>
+          )}
+          {detail.displayMetrics?.decodeTokPerSecond?.kind === "unavailable" && (
+            <p className="log-detail-notes-line muted">
+              {t("logs.detail.decodeTokPerSec")}: {t(metricReasonKey(detail.displayMetrics.decodeTokPerSecond.reason))}
+            </p>
           )}
         </section>
 
@@ -1124,7 +1192,17 @@ function LogDetailDialog({
                         )}
                       </td>
                       <td className="num mono">{attempt.durationMs}ms</td>
-                      <td className="num mono">{formatTokPerSecond(attempt.displayMetrics?.tokPerSecond, localeTag)}</td>
+                      <td className="num mono">
+                        {formatTokPerSecond(attempt.displayMetrics?.tokPerSecond, localeTag)}
+                        {/* #4038: the DTO already carries a per-attempt decode rate measured on
+                            that attempt's own TTFT, so the attempt table stacks it the same way
+                            the parent row and the list do. */}
+                        {attempt.displayMetrics?.decodeTokPerSecond?.kind === "value" && (
+                          <span className="logs-stack-end muted" title={t("logs.detail.decodeTokPerSec")}>
+                            {formatTokPerSecond(attempt.displayMetrics.decodeTokPerSecond, localeTag)}
+                          </span>
+                        )}
+                      </td>
                       <td className="num mono">{formatEstimatedUsd(attemptCost, t, localeTag)}</td>
                       <td className="log-detail-break">{reason}</td>
                     </tr>

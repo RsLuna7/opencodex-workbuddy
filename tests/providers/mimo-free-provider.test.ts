@@ -12,6 +12,66 @@ import {
   createMimoFreeAdapter,
 } from "../../src/adapters/mimo-free";
 import type { OcxParsedRequest, OcxProviderConfig } from "../../src/types";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { removeTreeWithRetry } from "../helpers/remove-tree";
+import { createRequestExecutionBudget } from "../../src/lib/request-execution-budget";
+import { budgetOwner } from "../helpers/send-budget-owner";
+
+for (const phase of ["bootstrap", "chat", "401-replay"] as const) test.each([307, 308])(`MiMo ${phase} never follows %i`, async status => {
+  const nativeFetch = globalThis.fetch;
+  const previousHome = process.env.OPENCODEX_HOME;
+  const testHome = mkdtempSync(join(tmpdir(), "ocx-mimo-redirect-"));
+  process.env.OPENCODEX_HOME = testHome;
+  resetMimoClientIdCache();
+  resetMimoJwtCache();
+  let targetHits = 0;
+  let originHits = 0;
+  let chatSends = 0;
+  const observed: Array<RequestRedirect | undefined> = [];
+  const target = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => {
+    targetHits++;
+    return Response.json({ jwt: "redirected", ok: true });
+  } });
+  const origin = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => {
+    originHits++;
+    return new Response("redirect", { status, headers: { location: `http://127.0.0.1:${target.port}/target` } });
+  } });
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    if (url !== MIMO_CHAT_URL && url !== "https://api.xiaomimimo.com/api/free-ai/bootstrap") throw new Error("unexpected external request");
+    observed.push(init?.redirect);
+    if (phase === "401-replay") {
+      if (url.endsWith("/bootstrap")) return Response.json({ jwt: "fresh-token" });
+      if (++chatSends === 1) return new Response("expired", { status: 401 });
+    }
+    // Only remap the canonical URL; do not repair the production redirect option.
+    return nativeFetch(`http://127.0.0.1:${origin.port}/mimo`, init);
+  }) as typeof fetch;
+  let response: Response | undefined;
+  try {
+    if (phase === "bootstrap") await expect(getMimoJwt()).rejects.toThrow(`MiMo bootstrap failed: ${status}`);
+    else {
+      const adapter = createMimoFreeAdapter(providerConfigSeed(PROVIDER_REGISTRY.find(entry => entry.id === "mimo-free")!));
+      response = await adapter.fetchResponse!({ url: MIMO_CHAT_URL, method: "POST", headers: { authorization: "Bearer synthetic-token" }, body: "synthetic prompt" }, {});
+      expect(response.status).toBe(status);
+    }
+    expect(targetHits).toBe(0);
+    expect(originHits).toBe(1);
+    expect(observed).toEqual(phase === "401-replay" ? ["manual", "manual", "manual"] : ["manual"]);
+  } finally {
+    globalThis.fetch = nativeFetch;
+    await response?.body?.cancel();
+    await origin.stop(true);
+    await target.stop(true);
+    if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+    else process.env.OPENCODEX_HOME = previousHome;
+    resetMimoClientIdCache();
+    resetMimoJwtCache();
+    removeTreeWithRetry(testHome);
+  }
+});
 
 function minimalRequest(model = "mimo-auto"): OcxParsedRequest {
   return {
@@ -148,7 +208,10 @@ describe("mimo-free JWT cache", () => {
   test("getMimoJwt fetches from bootstrap and caches", async () => {
     const fakeJwt = "header." + Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })).toString("base64") + ".sig";
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = mock(async () => new Response(JSON.stringify({ jwt: fakeJwt }), { status: 200 }));
+    globalThis.fetch = mock(async (_input, init) => {
+      expect(init?.redirect).toBe("manual");
+      return new Response(JSON.stringify({ jwt: fakeJwt }), { status: 200 });
+    });
     try {
       const jwt1 = await getMimoJwt();
       expect(jwt1).toBe(fakeJwt);
@@ -258,11 +321,13 @@ describe("mimo-free auth retry predicate", () => {
     return createMimoFreeAdapter(provider);
   }
 
-  test("401 retries exactly once with a fresh JWT after draining the first body", async () => {
+  test.each(["fallback", "supplied", "prepaid"] as const)("401 retry preserves inference admission and separate bootstrap (%s)", async mode => {
+    const supplied = mode !== "fallback";
     const fakeJwt = "h." + Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })).toString("base64") + ".s";
     const calls: string[] = [];
     const originalFetch = globalThis.fetch;
     globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(init?.redirect).toBe("manual");
       const u = String(url);
       if (u.includes("/bootstrap")) {
         calls.push("bootstrap");
@@ -274,21 +339,42 @@ describe("mimo-free auth retry predicate", () => {
       }
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }) as unknown as typeof fetch;
+    const budget = createRequestExecutionBudget();
+    const { owner, dispose } = budgetOwner(budget);
     try {
       const adapter = adapterForRetry();
+      let suppliedCalls = 0;
+      const executor = (async (input, init) => {
+        expect(String(input)).toBe(MIMO_CHAT_URL);
+        suppliedCalls += 1;
+        return globalThis.fetch(input, init);
+      }) as typeof fetch;
+      if (mode === "prepaid") {
+        budget.used = 3;
+        const hop = owner.reserveCredentialHop("auth-recovery", MIMO_CHAT_URL, true);
+        if (!hop.allowed || !hop.permit) throw new Error("Expected final prepaid send");
+        owner.pendingHopPermit = hop.permit;
+      }
+      const scope = mode === "prepaid" ? owner.adapterDispatchBudget : budget;
+      const observed: number[] = [];
       const res = await adapter.fetchResponse!(
         { url: MIMO_CHAT_URL, method: "POST", headers: { "Authorization": "Bearer stale" }, body: "{}" },
-        {} as never,
+        { ...(supplied ? { executor } : {}), sendBudget: scope, onPhysicalSend: send => observed.push(send.ordinal) },
       );
-      expect(res.status).toBe(200);
+      expect(suppliedCalls).toBe(supplied ? mode === "prepaid" ? 1 : 2 : 0);
+      expect(res.status).toBe(mode === "prepaid" ? 401 : 200);
+      expect(budget.used).toBe(mode === "prepaid" ? 4 : 2);
+      expect(observed).toEqual(mode === "prepaid" ? [1] : [1, 2]);
       // Sequence: first chat with stale token -> 401 -> bootstrap -> retry with fresh JWT.
       expect(calls[0]).toBe("chat:Bearer stale");
-      expect(calls[1]).toBe("bootstrap");
-      expect(calls[2]).toBe(`chat:Bearer ${fakeJwt}`);
-      expect(calls.length).toBe(3);
+      if (mode !== "prepaid") expect(calls[1]).toBe("bootstrap");
+      if (mode === "prepaid") expect(await res.text()).toBe("expired");
+      else expect(calls[2]).toBe(`chat:Bearer ${fakeJwt}`);
+      expect(calls.length).toBe(mode === "prepaid" ? 1 : 3);
     } finally {
       globalThis.fetch = originalFetch;
       resetMimoJwtCache();
+      dispose();
     }
   });
 
@@ -303,6 +389,35 @@ describe("mimo-free auth retry predicate", () => {
       );
       expect(res.status).toBe(403);
       expect((globalThis.fetch as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+      resetMimoJwtCache();
+    }
+  });
+
+  test("a rejected JWT refresh still releases the first 401 body", async () => {
+    // The drain belongs inside `beforeDispatch` so that a budget-refused replay can still hand
+    // the 401 back with a readable body. Within that block it has to come FIRST, because
+    // `getMimoJwt` issues its own bootstrap request and can reject -- and the 401 body would
+    // then never be released.
+    const originalFetch = globalThis.fetch;
+    let cancelled = false;
+    globalThis.fetch = mock(async (url: string | URL | Request) => {
+      if (String(url).includes("/bootstrap")) {
+        return new Response(JSON.stringify({ jwt: "x".repeat(64 * 1024 + 1) }), { status: 200 });
+      }
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new TextEncoder().encode("expired")); },
+        cancel() { cancelled = true; },
+      }), { status: 401 });
+    }) as unknown as typeof fetch;
+    try {
+      const adapter = adapterForRetry();
+      await expect(adapter.fetchResponse!(
+        { url: MIMO_CHAT_URL, method: "POST", headers: { "Authorization": "Bearer stale" }, body: "{}" },
+        {} as never,
+      )).rejects.toThrow("MiMo bootstrap response too large");
+      expect(cancelled).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
       resetMimoJwtCache();

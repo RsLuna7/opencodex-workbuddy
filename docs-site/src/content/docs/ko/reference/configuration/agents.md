@@ -63,7 +63,7 @@ replay 중복 제거는 각 태그 계열의 가장 최근 텍스트와 정확�
 거부하고 역할을 건너뜁니다 (#1190). TOML의 기존 `model_fallback` 줄은 하위 호환성을 위해
 계속 읽히지만 `ocx doctor`가 이를 표시합니다.
 
-opencodex는 비활성, 라우팅 불가, 비정상, 쿨다운 중, 또는 할당량 임계값에 걸린 후보를 건너뜁니다. 사용 가능성 스냅샷은 `subagentModelFallbackPollMs` 동안 캐시됩니다. 암호화된 하위 작업은 정규 네이티브 ChatGPT 대상과 `allowEncryptedV2AgentTasks: true`로 명시적으로 신뢰한 직접 키 인증 Responses 라우트만 후보로 사용합니다. 암호화된 페이로드를 처리할 수 있는 대상이 없으면 읽을 수 없는 암호문을 다른 곳으로 보내지 않고 요청이 실패합니다. 콤보는 먼저 사용 가능한 정규 네이티브 대상을 시도하고, 선택 가능한 네이티브 대상이 없으며 `agentTaskRecovery`가 켜져 있으면 암호화된 `NEW_TASK`를 라우팅된 콤보 전송 전에 한 번 복구합니다.
+opencodex는 비활성, 라우팅 불가, 비정상, 쿨다운 중, 또는 할당량 임계값에 걸린 후보를 건너뜁니다. 사용 가능성 스냅샷은 `subagentModelFallbackPollMs` 동안 캐시됩니다. 암호화된 하위 작업은 정규 네이티브 ChatGPT 대상과 `allowEncryptedV2AgentTasks: true`로 명시적으로 신뢰한 직접 키 인증 Responses 라우트만 후보로 사용합니다. 암호화된 페이로드를 처리할 수 있는 대상이 없으면 읽을 수 없는 암호문을 다른 곳으로 보내지 않고 요청이 실패합니다. 콤보는 먼저 사용 가능한 정규 네이티브 대상을 시도하고, 선택 가능한 네이티브 대상이 없거나 네이티브 시도가 모두 소진되었고 `agentTaskRecovery`가 켜져 있으면 암호화된 `NEW_TASK`를 라우팅된 콤보 전송 전에 한 번 복구합니다. 콤보 복구는 spawn된 하위 턴에만 적용되고, 직접 라우팅 경로는 스레드 도중의 모델 전환도 복구합니다.
 
 ```json
 {
@@ -72,9 +72,9 @@ opencodex는 비활성, 라우팅 불가, 비정상, 쿨다운 중, 또는 할�
   "injectionModel": "gpt-5.5",
   "injectionEffort": "high",
   "syncCodexSubagentDefaults": true,
-  "subagentModelFallback": ["gpt-5.4-mini"],
+  "subagentModelFallback": ["gpt-5.6-luna"],
   "subagentModelFallbackByModel": {
-    "gpt-5.5": ["gpt-5.4-mini"]
+    "gpt-5.5": ["gpt-5.6-luna"]
   },
   "subagentModelFallbackPollMs": 60000,
   "subagentEffortCap": "high"
@@ -86,5 +86,7 @@ opencodex는 비활성, 라우팅 불가, 비정상, 쿨다운 중, 또는 할�
 상한은 v2 협업 기능에만 적용됩니다. 메인 턴은 도구가 v2를 노출할 때 적격이 되고, 하위 턴은 leaf 도구가 더 이상 협업을 노출하지 않더라도 `x-codex-turn-metadata` 안에 codex-rs의 정확한 `x-openai-subagent: collab_spawn` 또는 `"subagent_kind": "thread_spawn"` 표시가 있으면 적격이 됩니다. V1 메인 턴, `multiAgentMode: "v1"`, compaction, review, memory-consolidation 턴은 상한을 적용받지 않습니다.
 
 상한은 노력만 낮춥니다. 모델이 광고한 단계 중 상한 이하에서 가장 높은 단계로 맞춥니다. 모델에 노력 제어가 없거나 맞는 지원 단계가 없으면, opencodex는 노력을 제거하고 제공자 기본값을 적용합니다. `max`와 `ultra`는 허용되며, 대시보드는 `low`부터 `xhigh`까지 제공합니다.
+
+모델 effort pin이 없어도 적용 대상 native Chat Completions 요청에는 설정된 상한이 적용됩니다. pin을 적용하거나 상한이 값을 바꾼 경우에 제공자 전송 값으로 매핑하며, 둘 다 없으면 호출자 값은 원래 표기를 유지합니다.
 
 v1, default, v2 동작에 대한 초보자용 설명은 [Sub-agent surfaces](/guides/sub-agent-surface/)를 참고하세요.

@@ -4,6 +4,7 @@ import {
   printData,
   rejectArgs,
   runCliAction,
+  RuntimeApiError,
   runtimeRequest,
   summaryLines,
   takeBooleanOption,
@@ -21,7 +22,7 @@ import { MAX_COST4_RATE } from "../usage/expected-prices";
 import { isValidCost4Rate } from "../usage/user-cost-overlays";
 
 const USAGE = `Usage:
-  ocx models live [--provider <name>] [--json]
+  ocx models live [--provider <name>] [--free-only] [--json]
   ocx models price <provider/model> [--json]
   ocx models set-price <provider/model> --input N --output N [--cache-read N] [--cache-write N] [--json]
   ocx models set-price <provider/model> --auto [--json]
@@ -52,17 +53,22 @@ type ModelRow = {
   custom?: boolean;
   customId?: string;
   displayName?: string;
+  pricingStatus?: "free" | "paid";
 };
 
 async function live(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   const args = [...argv];
   const wantsJson = takeFlag(args, "--json");
   const provider = takeOption(args, "--provider");
+  // Absent pricingStatus means the provider published no usable per-token pair, so it is
+  // excluded here for the same fail-closed reason the classifier omits it (#3666).
+  const freeOnly = takeFlag(args, "--free-only");
   rejectArgs(args, USAGE);
   const rows = await runtimeRequest<ModelRow[]>("/api/models", {}, deps);
-  const filtered = provider ? rows.filter(row => row.provider === provider) : rows;
+  const byProvider = provider ? rows.filter(row => row.provider === provider) : rows;
+  const filtered = freeOnly ? byProvider.filter(row => row.pricingStatus === "free") : byProvider;
   printData(filtered, wantsJson, filtered.map(row => {
-    const flags = [row.native ? "native" : "routed", row.custom ? "custom" : "", row.initialSelectionPending ? "initial discovery pending" : row.disabled ? "disabled" : "enabled"].filter(Boolean);
+    const flags = [row.native ? "native" : "routed", row.custom ? "custom" : "", row.pricingStatus === "free" ? "free" : "", row.initialSelectionPending ? "initial discovery pending" : row.disabled ? "disabled" : "enabled"].filter(Boolean);
     return `${row.namespaced ?? `${row.provider}/${row.id}`}  [${flags.join(", ")}]`;
   }));
 }
@@ -160,6 +166,22 @@ async function priceRequest(write: boolean, argv: string[], deps: RuntimeApiDeps
     [auto ? `${selector}: automatic pricing restored.` : `${selector}: manual pricing saved.`]);
 }
 
+/**
+ * True for the management handler's own unknown-id 404, and only that.
+ *
+ * Two different listeners answer 404 on this route. `src/server/management/model-routes.ts`
+ * means "no custom model with that id"; a listener that does not route the request at all
+ * reports `{error, method, path}` (src/client/machine-listener.ts), and runtime-api.ts already
+ * renders that shape as a routing statement. Narrowing on the absence of `method`/`path` keeps
+ * this rewrite from relabelling a not-served-here 404 as a missing record — the exact confusion
+ * #4662 was reported as.
+ */
+function unknownCustomModelId(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false;
+  const record = body as Record<string, unknown>;
+  return record.method === undefined && record.path === undefined;
+}
+
 async function edit(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   const args = [...argv];
   const id = args.shift()?.trim();
@@ -199,10 +221,22 @@ async function edit(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   }
   if (defaultEffortRaw !== undefined) patch.defaultReasoningEffort = defaultEffortRaw === "-" ? null : defaultEffortRaw;
   if (Object.keys(patch).length === 0) throw new CliUsageError("at least one edit option is required", USAGE);
-  const result = await runtimeRequest(`/api/custom-models/${encodeURIComponent(id)}`, {
-    method: "PUT",
-    body: JSON.stringify(patch),
-  }, deps);
+  let result: unknown;
+  try {
+    result = await runtimeRequest(`/api/custom-models/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    }, deps);
+  } catch (error) {
+    if (error instanceof RuntimeApiError && error.status === 404 && unknownCustomModelId(error.body)) {
+      throw new RuntimeApiError(
+        `No custom model has id ${id}. Edits address the custom-model id, not the provider/model slug; list the ids with: ocx models list-custom`,
+        404,
+        error.body,
+      );
+    }
+    throw error;
+  }
   printData(result, wantsJson, [`Updated custom model ${id}.`]);
 }
 

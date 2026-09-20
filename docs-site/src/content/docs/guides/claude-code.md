@@ -70,6 +70,7 @@ ocx claude
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `claudeCode.tierModels.haiku ?? claudeCode.smallFastModel` (optional; legacy `ANTHROPIC_SMALL_FAST_MODEL` too) |
 | `ANTHROPIC_DEFAULT_{OPUS,SONNET,FABLE}_MODEL` | `claudeCode.tierModels.*` (optional) |
 | `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT` | `1` when `alwaysEnableEffort` is on (conditional) |
+| `ENABLE_TOOL_SEARCH` | `claudeCode.toolSearch` when set (conditional; off by default — see [MCP tool schemas fill the context](#mcp-tool-schemas-fill-the-context-on-turn-one)) |
 | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` / `DISABLE_COMPACT` | Legacy context override when `maxContextTokens` is set (conditional) |
 Variables you export yourself always win. Extra arguments pass through: `ocx claude -p "hello"`.
 
@@ -181,8 +182,11 @@ Support/Claude/configLibrary` on macOS, `%APPDATA%\Claude\configLibrary` on Wind
 `CLAUDE_USER_DATA_DIR` for an alternate Desktop user-data root. The legacy `Claude-3p` directory is
 not read or deleted automatically.
 
-Non-Anthropic routes receive stable aliases such as `claude-opus-4-8-2026MMDD`. The date-looking
-part is a synthetic route slot, not the model's release date. Real Anthropic Claude routes keep
+Non-Anthropic routes receive stable aliases such as `claude-opus-4-8-YYYYMMDD`, where the year runs
+from 2026 to 2035. The date-looking
+part is a synthetic route slot, not the model's release date. 2026 slots are allocated first, so
+existing aliases keep their ids; the later years are reached only once 2026 fills.
+Real Anthropic Claude routes keep
 their real ids. New routes default to the Opus family, but moving a route does not change the
 provider or model it calls. The legacy apply flags `--static`, `--hybrid`, and `--discovery-only`
 remain available for existing scripts.
@@ -542,6 +546,39 @@ Replay preserves non-hidden signed blocks (including empty thinking) and opaque 
 role; `tool_result` without `tool_use_id`; `tool_use` without id/name; named `tool_choice` without
 name.
 
+### Unicode-property patterns in tool schemas
+
+A JSON Schema `pattern` written for JavaScript may use Unicode property escapes such as
+`\p{Cc}` or `\P{L}`. OpenAI-family backends validate `pattern` by compiling it with Python's
+`re`, which does not support those escapes, and a schema they cannot compile is refused whole —
+so a single such pattern on one built-in tool fails every request in the session, not just calls
+to that tool.
+
+To keep ordinary Artifact parameters working, the `openai-chat` and `openai-responses` adapter
+paths omit scalar `pattern` constraints containing Unicode property escapes in ordinary positive
+schema positions. Sibling constraints, `required`, literal data and supported regexes remain.
+A tool implementation must validate its own inputs because an omitted constraint is not enforced
+by this proxy.
+
+`patternProperties` matchers and their value schemas remain unchanged. Removing a matcher can
+change which keys are evaluated by an ancestor's `unevaluatedProperties`, so local openness is
+not enough to prove a safe transformation. Patterns under `not`, `oneOf`, `if`, `contains`,
+`$defs` and `definitions` also remain unchanged: relaxing those subtrees can change negation,
+branch selection, match counts or the meaning of a reference.
+
+The destination validates these preserved schemas. An ECMA-compatible destination can use the
+original regex; a destination that cannot compile it may reject the schema. OpenCodex does not
+silently replace that contract with one that forbids previously valid arguments.
+
+This is normalization on the selected adapter path, not a provider-wide guarantee. Provider
+configuration and authentication are untouched, and a provider on a different adapter is
+unaffected.
+
+It is a compatibility measure, not a claim that every custom OpenAI-compatible backend rejects
+these patterns. What it costs is worth knowing: an omitted regex is not preserved anywhere and is
+not enforced upstream, so a tool implementation should validate its own inputs rather than relying
+on the schema to reject a malformed argument.
+
 ## Outbound translation (Responses → Messages SSE)
 
 | Responses event | Messages SSE |
@@ -643,6 +680,42 @@ window may be below the auto-compact threshold.
 on Claude model mentions. This is normal for native passthrough; on routed models, opencodex stubs
 it by default (`blockedSkills: ["claude-api"]`).
 
+**MCP tool schemas fill the context on turn one** — Claude Code turns MCP tool deferral off
+whenever `ANTHROPIC_BASE_URL` is not a first-party Anthropic host. The check is keyed on the
+host, not the model, so it applies to every `ocx claude` session: with many connectors
+configured, every tool schema is inlined before you type anything. Re-enable deferral with:
+
+```json
+{ "claudeCode": { "toolSearch": true } }
+```
+
+This is off by default because it only pays off on **native Anthropic passthrough** routes.
+Deferral is a server-side optimisation, not a smaller request: Claude Code still sends every
+tool definition, and Anthropic's API is what keeps deferred schemas out of the model's context
+and answers the `tool_search` server tool with `tool_reference` blocks. A translated (routed)
+model never reaches that machinery — opencodex drops the `tool_search` tool and ignores
+`defer_loading` — so the provider still receives every schema while Claude Code stops counting
+them and therefore stops compacting. With `claudeCode.compatibility: "enforce"` the same
+request is rejected with 400 instead. Turn it on when `ocx claude` is routed to an Anthropic
+model; leave it off for third-party routes until translated deferral is supported.
+
+Accepted values follow Claude Code's own parser: `true`, `"auto"`, `"auto:N"` (N at least 100)
+and `"force"`. A value you export yourself always wins over the injected one.
+
 **Subagent dispatches to wrong model** — Roster agents (`ocx-*`) use `<!-- ocx-route: ... -->`
 directives, not the Agent tool's `model` argument. Make sure the directive matches the intended
 route. Pass `"haiku"` as the model placeholder.
+
+Set `claudeCode.stabilizePromptCache` to `true` in `config.json` to relocate supported trailing Claude harness notices from system instructions to a trailing user message on translated routes. The default is `false`. Enable it only when this role change is appropriate for your clients. It preserves fenced examples and unmatched text; native Anthropic passthrough is unchanged. The metadata-less prompt-cache key then follows stabilized instructions. This does not create conversation identity or guarantee upstream cache hits.
+
+On every translated Chat route, timeline reminders keep their position in the
+conversation, after any pending tool results, and are forwarded with the
+`developer` role. This prevents a newly appended reminder from rewriting the
+leading system prompt, and stops a mid-conversation instruction from arriving
+ahead of the turns it was written to follow. Set `foldDeveloperRoleToSystem` on
+a provider whose upstream rejects the `developer` role; the reminder is then
+sent as `system` in the same position. This applies with or without
+`stabilizePromptCache`, and native Anthropic passthrough is unchanged. Cache
+reuse still requires stable session identity and upstream cache availability.
+Changes to earlier instructions or tools, and conversation compaction, can still
+affect cache hits; preserving reminder order alone does not guarantee reuse.

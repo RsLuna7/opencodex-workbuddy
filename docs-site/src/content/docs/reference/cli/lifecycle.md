@@ -16,16 +16,30 @@ optionally installs the Codex autostart shim.
 
 ## Proxy lifecycle
 
-### `ocx start [--port <port>]`
+### `ocx start [--port <port>] [--socks5 [host:port] | --socks5-off]`
 
-Start the proxy server (preferred port `10100`). If that port is occupied, opencodex selects and
-records another available port. It writes PID/runtime-port state and refuses to start a second live
-instance. On start it syncs each provider's models into Codex's catalog. On shutdown it restores
+Start the proxy server (preferred port `10100`). It writes PID/runtime-port state and refuses to
+start a second live instance. When the preferred port is occupied, `start` asks the holder who it
+is and stops either way: it refuses outright when an opencodex answers there, and reports an
+unidentified holder otherwise. It never moves the listener to another port on its own, because that
+would leave the first proxy running and re-point Codex at the second. An explicit different
+`--port` is still refused when the live proxy shares this `OPENCODEX_HOME`, because observe-only
+and enforced spend accounting both write the same journal. Use a separate `OPENCODEX_HOME` for an
+independent sibling; `port: 0` only asks the OS for that instance's port and does not separate its
+state. On start it syncs each provider's models into Codex's catalog. On shutdown it restores
 native Codex — unless it was launched as a managed service (`OCX_SERVICE=1`).
+
+`--socks5` (default `127.0.0.1:10808`) saves `config.proxy` as a SOCKS5 URL and routes outbound
+HTTP(S) through a real SOCKS5 tunnel. `--socks5-off` clears only that saved SOCKS5 proxy; it
+does not remove an HTTP proxy. The value survives `ocx update` because it lives in config, not in
+the installed package. A proxy username and password may be included in the URL, but startup
+logs redact them.
 
 ```bash
 ocx start
 ocx start --port 8080
+ocx start --port 10100 --socks5
+ocx start --socks5-off
 ```
 
 ### `ocx stop`
@@ -38,6 +52,19 @@ and only a stop running outside the proxy can verify that restart window before 
 your client config — so the dashboard refuses with `respawnable_service`, changes nothing,
 and asks you to run `ocx stop`.
 
+The dashboard also refuses when the proxy is running *as* the installed launchd or systemd
+service. Stopping that manager from inside the proxy would terminate the process before
+native Codex is restored, leaving your client config pointed at a proxy that is gone, so the
+dashboard returns `self_unload_service`, changes nothing, and asks you to run `ocx stop` —
+which stops the service from outside and completes the restore.
+
+A proxy exit alone does not confirm that shared Codex/Grok restoration succeeded. If the stop
+response reports failure, is unreadable, or does not confirm the assigned teardown mode, the CLI
+keeps restoration with the stopping parent after the existing ownership and respawn checks.
+It does not enter the forced-stop fallback for a process already observed to have exited. A
+receipt-backed deferral still leaves final restoration and receipt cleanup with the parent;
+failure to restore shared client configuration keeps the stop failed and its receipt outstanding.
+
 ### `ocx restart`
 
 When a proxy is running, ask that exact attested PID and port to restart in place, wait for its
@@ -49,6 +76,11 @@ closed without an `ensure` or stop/start fallback. After confirming ownership, u
 `ocx start` for a standalone proxy. For a service-managed proxy, use `ocx stop` followed by
 `ocx service start` so supervision is restored.
 
+Port recovery after stop or update respects a failed OCX process check even when the PID was
+recorded before shutdown. A rejected live holder is left running and prevents TCP-row cleanup.
+If it stays unverified, the bounded recovery wait can expire with the port still busy. Check the
+current port holder and retry the restart after the conflict is resolved.
+
 ### `ocx ensure`
 
 Idempotently ensure a background proxy is running, then sync its live model catalog. If
@@ -58,6 +90,14 @@ Idempotently ensure a background proxy is running, then sync its live model cata
 
 Restore native Codex **without** stopping the proxy — strips the injected config lines and routed
 catalog entries so plain `codex` works natively again. `eject` is an alias of `restore`.
+
+Restored catalog output excludes retired native models, including `gpt-5.3-codex-spark`,
+whether stored as bare ids or trusted account-qualified rows. This applies with or without
+a catalog backup; the original backup and historical user-selected configuration are preserved.
+
+Restoration reports failure instead of replacing changed configuration files when a saved journal
+lacks the corresponding injection hashes. The current files and journal remain available for
+review; see [recovery without injection hashes](/guides/codex-integration/#recovery-without-injection-hashes).
 
 Pass `back` to either spelling to re-point plain `codex` at an already-running proxy without changing
 the proxy lifecycle:
@@ -77,6 +117,15 @@ changed to `openai`, `exec` is normalized to `cli`, and the event marker is set.
 legitimate dedicated-provider history. Back up the state and run it only when that full scope is
 intended.
 
+### `ocx recover-history --ocx-compaction <thread-id> --yes`
+
+Repair one thread that was compacted through a routed provider before resuming it through native
+Codex. The command reads the exact thread selected by UUID, saves a private byte-for-byte backup,
+then converts only OpenCodeX-owned `ocx1:` compaction state into a plain summary that native Codex
+can replay. Native encrypted content and other threads are left unchanged. Close the selected
+thread before running the command; a concurrent rollout change makes recovery stop without
+replacing the file.
+
 ### `ocx uninstall` · `ocx remove`
 
 Stop the service and proxy, remove the service and Codex shim, restore native Codex, then remove
@@ -90,7 +139,8 @@ are left in place.
 
 Status and `ocx doctor` compare this CLI's version with the running proxy. If the CLI is newer,
 restart the proxy using the intended current installation; for a background service, run
-`ocx service repair` (`ocx service restart` is an alias). If the proxy is newer, upgrade the CLI
+`ocx service restart`. On macOS, a version skew leaves the service definition byte-identical, so
+`ocx service repair` would reload nothing and keep the old process serving. If the proxy is newer, upgrade the CLI
 or resolve `PATH` to the intended installation. These diagnostics do not repair the service or
 change whether requests are allowed.
 
@@ -214,6 +264,10 @@ and pending history migration. The Codex app-home targeting section also detects
 Orca runtime-home mismatch and explains service migration when applicable. Paths shown by this
 diagnostic redact the OS username. Doctor prints repair hints but does not apply them.
 
+Project-config diagnostics ignore provider examples inside TOML multiline strings, including
+`developer_instructions`. Real provider and profile settings after the closing delimiter are still
+checked, even when an escaped quote immediately precedes that delimiter.
+
 The **OAuth reliability** section reports whether credential storage is writable, whether refresh
 single-flight/lock files can be created under `OPENCODEX_HOME`, non-healthy OAuth or Codex pool
 accounts (redacted ids) with a recovery `Action:`, and a static OK that the Codex forward path does
@@ -221,7 +275,7 @@ not fabricate official-client metadata. Doctor never mutates credentials or appl
 
 ## Catalog sync
 
-### `ocx sync [--restart-codex]`
+### `ocx sync [--restart-codex] [--restart-app-server-only]`
 
 Fetch the live model list from every configured provider and re-inject the merged catalog into Codex.
 Run it after adding a provider or to refresh available models.
@@ -233,14 +287,87 @@ nonzero, prints the concrete reason on stderr, and leaves the existing catalog a
 
 If long-lived Codex `app-server` processes are still running, `ocx sync` warns that they may keep
 serving the previous in-memory model list even though `opencodex-catalog.json` / `models_cache.json`
-were updated. Pass `--restart-codex` to send `SIGTERM` only to matching `codex … app-server` and
-`codex-code-mode-host` processes owned by the current user (active turns may be interrupted). Broad
+were updated. Pass `--restart-codex` to restart matching `codex … app-server` and
+`codex-code-mode-host` processes **and** fully quit and relaunch the Codex desktop app, on macOS,
+Linux, and Windows, so the model picker re-reads the catalog. Live conversations end. Broad
 `pkill -f codex` matching is intentionally avoided.
 
-### `ocx sync-cache [--restart-codex]`
+`--restart-desktop-app` is a deprecated alias of `--restart-codex`. It still works, prints a
+deprecation notice, and is not Windows-only.
+
+`--restart-app-server-only` restores the older, narrower behaviour: `SIGTERM` only to matching
+app-server and code-mode-host processes owned by the current user, with the desktop app left
+running. Active turns may still be interrupted. If it is combined with `--restart-codex` or
+`--restart-desktop-app`, the narrow scope wins, because losing live conversations is unrecoverable
+and a stale picker is not.
+
+When the command runs from inside the Codex app, the restart is handed off to a detached helper
+and this session ends with the app.
+
+### `ocx sync-cache [--restart-codex] [--restart-app-server-only]`
 
 Invalidate Codex's local model picker cache so it is rebuilt from the active opencodex catalog. The
-same stale-`app-server` warning and optional `--restart-codex` behavior as `ocx sync` apply.
+same stale-`app-server` warning and optional restart flags as `ocx sync` apply.
+
+### `ocx catalog pull <https-url> [--auth-env <NAME>] [--json] [--restart-codex] [--restart-app-server-only]`
+
+Install a complete catalog served by another OpenCodex instance's `/v1/catalog` endpoint, then
+synchronize `models_cache.json`. Unlike `ocx sync`, this command does not discover configured
+providers or inject Codex configuration. Unlike `ocx sync-cache`, it replaces the active catalog
+before rebuilding the cache. It works even when the local Codex integration desired state is off.
+
+The URL must be HTTPS; loopback HTTP is accepted for local testing. Embedded URL credentials,
+queries, fragments, redirects, oversized responses, malformed JSON, duplicate or unsafe slugs, and
+unknown `input_modalities` are refused before any local write.
+
+Loopback HTTP requests are refused before authentication headers are attached or any request is sent when `HTTP_PROXY` or `http_proxy` applies without a matching `NO_PROXY` or `no_proxy` bypass. `ALL_PROXY`/`all_proxy` and settings limited to `HTTPS_PROXY`/`https_proxy` do not trigger this HTTP restriction; HTTPS catalog acquisition remains allowed. The refusal message includes neither the proxy address nor the authentication token. Nonempty `http_proxy` and `no_proxy` take precedence over `HTTP_PROXY` and `NO_PROXY`, respectively. For Bun-compatible bypass rules, use hostnames, matching `host:port` entries, bracketed IPv6 addresses such as `[::1]`, or `*`; do not use URLs, paths, or `*.` prefixes.
+
+Authentication is optional and is
+read only by environment-variable reference:
+
+```bash
+export OPENCODEX_CATALOG_AUTH_TOKEN='...'
+ocx catalog pull https://proxy.example.com/v1/catalog \
+  --auth-env OPENCODEX_CATALOG_AUTH_TOKEN
+```
+
+The value is sent as a Bearer token but is never accepted as an argv value. Redirects are refused,
+so authorization cannot cross origins. Catalog and cache writes use the shared Codex catalog lock
+and atomic writer. A failed fetch, validation, lock acquisition, catalog write, or cache rebuild
+preserves the last-known-good files. Identical catalog bytes are a no-op that preserves mtimes and
+never touches processes. `--restart-codex`, `--restart-app-server-only`, and the deprecated
+`--restart-desktop-app` alias mean the same thing here as they do on `ocx sync` and
+`ocx sync-cache`, and they apply only after a real write.
+
+The URL must name `/v1/catalog` at the host root. A reverse proxy that serves the endpoint under a
+path prefix is not supported by this command.
+
+The command downloads the full catalog and compares bytes locally instead of issuing an `ETag` /
+`If-None-Match` conditional request. Identical bytes are treated as a complete no-op, so a
+Codex home whose catalog is correct but whose `models_cache.json` is missing or stale is not
+repaired by this command; use `ocx sync-cache` for that.
+
+`--json` emits one stable envelope on stdout. `schemaVersion`, `ok`, `status`, `catalogWritten`,
+`cacheSynced`, and `codexRestarted` are always present. `codexRestarted` still means app-servers
+only. `desktopAppRestarted` is present only when a desktop restart was requested, and is `true`
+only when the relaunch actually started; a handoff is not a success. `status` is `updated`,
+`unchanged`, or `failed`. A successful pull adds `modelCount`; a failure adds `code`, which is the
+field a script branches on:
+
+| `code` | Meaning | Exit |
+| --- | --- | --- |
+| `usage` | The arguments were not a valid `catalog pull` invocation | 2 |
+| `auth_env_missing` | `--auth-env` named a variable that is not set | 1 |
+| `url_invalid`, `insecure_http_refused` | The URL was refused before any request | 1 |
+| `request_failed`, `redirect_refused`, `http_error` | The request did not produce a usable response | 1 |
+| `body_too_large`, `body_invalid`, `catalog_invalid` | The response was refused before any local write | 1 |
+| `write_failed`, `lock_database`, `unsafe_path` | The coordinated write did not complete; files are unchanged | 1 |
+| `lock_busy` | Another writer holds the Codex catalog lock | 3 |
+| `restart_incomplete` | The catalog and cache landed, but a Codex app-server survived `--restart-codex` or `--restart-app-server-only` | 1 |
+
+`restart_incomplete` is the one failure that reports real writes: `catalogWritten` and
+`cacheSynced` stay true and `ok` is false, because a surviving app-server still serves the
+previous catalog from memory.
 
 ## Background service
 
@@ -275,16 +402,17 @@ Definitions installed before this change still carry the old versioned paths and
 themselves — once the old executable is deleted, no opencodex code runs to fix it. Run
 `ocx service repair` once after upgrading; after that, each service start follows the launcher.
 An already-running proxy is not replaced by an external upgrade: when the installed CLI is newer
-than the running proxy, restart the service (or run `ocx service repair`) so the new build serves.
+than the running proxy, run `ocx service restart` so the new build serves. On macOS, `repair` is not
+enough there: the definition did not change, and a repair that changes nothing reloads nothing.
 If the proxy is newer instead, check the CLI installation and `PATH` as described under
 [`ocx status`](#ocx-status---json).
 
 | Subcommand | Action |
 | --- | --- |
-| none | Install and start when absent; otherwise refresh and restart the existing service. A healthy Windows scheduler definition is reused; a stale definition may be re-registered and require elevation. |
+| none | Install and start when absent; otherwise `repair` the existing service. A healthy Windows scheduler definition is reused; a stale definition may be re-registered and require elevation. |
 | `install` | Create and start the service. Registers it, which on Windows needs elevation. |
-| `repair` | Refresh an installed service in place and restart it. A healthy Windows scheduler definition is reused; a stale definition may be re-registered and require elevation. |
-| `restart` | Alias of `repair`. |
+| `repair` | Refresh an installed service in place. On macOS, the manager is reloaded only when something changed, so a healthy, unchanged job keeps running and the repair is not an outage. On Linux and Windows, the service is restarted; a healthy Windows scheduler definition is reused, while a stale definition may be re-registered and require elevation. |
+| `restart` | The same refresh and a guaranteed restart on every platform. On macOS an unchanged, already-loaded job is kickstarted in place. Not an alias of `repair`. |
 | `start` | Start an installed service. |
 | `stop` | Stop the service and restore native Codex. |
 | `status` | Report service and proxy diagnostics plus log paths. |
@@ -488,7 +616,8 @@ proxy controls. `start` and `stop` control the icon only; use its menu to contro
 
 ### `ocx gui`
 
-Open the [web dashboard](/guides/web-dashboard/) at `http://localhost:<port>`, auto-starting the proxy
+Open the [web dashboard](/guides/web-dashboard/) at `http://localhost:<port>` — or at
+`http://127.0.0.1:<management port>` when hub management ingress is enabled — auto-starting the proxy
 if it is not running.
 
 ## Updating

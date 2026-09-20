@@ -31,7 +31,10 @@ export function parseTwoPartKey(credential: string): { id: string; secret: strin
   return id && secret ? { id, secret } : undefined;
 }
 
-function utf8(s: string): Uint8Array {
+// Explicitly backed by a plain ArrayBuffer: WebCrypto's BufferSource excludes the
+// SharedArrayBuffer variant that a bare Uint8Array is allowed to name, so the narrow
+// annotation is what keeps these buffers usable as digest/decrypt/import inputs.
+function utf8(s: string): Uint8Array<ArrayBuffer> {
   return encoder.encode(s);
 }
 
@@ -49,7 +52,7 @@ function randomHex(n: number): string {
   return hex(crypto.getRandomValues(new Uint8Array(n)));
 }
 
-function fromB64(value: string): Uint8Array {
+function fromB64(value: string): Uint8Array<ArrayBuffer> {
   const binary = atob(value);
   const out = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);

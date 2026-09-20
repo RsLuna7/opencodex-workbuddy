@@ -7,6 +7,12 @@
  * unchanged. The Responses output (SSE or JSON) is converted back to Anthropic shape.
  */
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
+import {
+  admissionModelDeniedResponse,
+  AdmissionModelDeniedError,
+  assertRouteAllowedByScope,
+  resolveAdmissionModelScope,
+} from "./admission-model-scope";
 import { jsonUtf8Bytes } from "../lib/json-byte-size";
 import { sseFieldValue } from "../lib/sse-decoder";
 import { enforceAnthropicImageLimits, sniffImageDimensions } from "../adapters/anthropic-image-guard";
@@ -29,14 +35,19 @@ import {
 } from "../claude/outbound";
 import { clearableDeadline, idleDeadline } from "../lib/abort";
 import { estimateTokens } from "../lib/token-estimate";
-import { NoEligiblePolicyCandidateError, UnknownRoutingPolicyError, routeModel } from "../router";
-import { registryEntryForProviderDestination } from "../providers/registry";
+import { captureRouteStaticPolicy, NoEligiblePolicyCandidateError, UnknownRoutingPolicyError, routeModel } from "../router";
 import { evidenceFromBody } from "../routing/request-evidence";
 import { resolveWireProtocolOverride } from "./adapter-resolve";
 import type { OcxConfig } from "../types";
-import { readJsonRequestBody } from "./request-decompress";
+import { readJsonRequestBody, resolveInboundBodyLimitBytes } from "./request-decompress";
 import { addFinalRequestLog, httpStatusForRequestLogTerminal, recordFirstOutput, type RequestLogContext, type RequestLogEntry } from "./request-log";
-import { conversationIdFromClaudeMetadata, normalizeLogConversationId, sessionLaneIdFromRequest } from "./request-log-conversation";
+import {
+  conversationIdFromClaudeMetadata,
+  getOrAllocateRequestSessionLane,
+  linkRequestSessionLane,
+  normalizeLogConversationId,
+  sessionLaneIdFromRequest,
+} from "./request-log-conversation";
 import { responseWithDeferredRequestLog } from "./relay";
 import { handleResponses } from "./responses";
 import {
@@ -129,9 +140,9 @@ function claudeInboundDisabled(config: OcxConfig): Response | null {
   return null;
 }
 
-async function readAnthropicBody(req: Request, budget: TranslatorBudget): Promise<unknown> {
+async function readAnthropicBody(req: Request, budget: TranslatorBudget, maxBytes: number): Promise<unknown> {
   try {
-    return await readJsonRequestBody(req, budget);
+    return await readJsonRequestBody(req, budget, maxBytes);
   } catch (err) {
     if (isTranslatorBudgetExceededError(err)) throw err;
     throw new AnthropicRequestError(err instanceof Error && err.message ? err.message : "Invalid JSON body");
@@ -415,7 +426,7 @@ async function anthropicNativePassthrough(
   // count_tokens too — counts must match what the real send will contain, and the 32MB
   // body cap applies to it equally. Non-message bodies pass through untouched.
   if (Array.isArray(body.messages)) {
-    await normalizeAnthropicImages(body.messages);
+    await normalizeAnthropicImages(body.messages, { abortSignal: req.signal });
     enforceAnthropicImageLimits(body.messages);
   }
   const headers = new Headers();
@@ -603,7 +614,7 @@ export async function fetchWithHeaderDeadline(
 ): Promise<HeaderDeadlineFetchResult> {
   const deadline = makeDeadline(timeoutMs, parent);
   try {
-    const upstream = await fetchImpl(input, { ...init, signal: deadline.signal, timeout: 0 });
+    const upstream = await fetchImpl(input, { ...init, redirect: "manual", signal: deadline.signal, timeout: 0 });
     return { kind: "response", upstream };
   } catch (error) {
     if (deadline.didExpire()) return { kind: "timeout" };
@@ -632,6 +643,12 @@ export async function handleClaudeMessages(
   }
 }
 
+/**
+ * Translate a Claude Messages request, route it through the Responses pipeline,
+ * and translate the reply back. Runs under a translator budget owned by the
+ * caller; Go session affinity is derived here and handed to the final Go
+ * transport out of band rather than through replay headers.
+ */
 async function handleClaudeMessagesWithBudget(
   req: Request,
   config: OcxConfig,
@@ -655,7 +672,7 @@ async function handleClaudeMessagesWithBudget(
   let fastRow: ParsedFastRowId | null = null;
   let requestedModel = "";
   try {
-    anthropicBody = await readAnthropicBody(req, translatorBudget);
+    anthropicBody = await readAnthropicBody(req, translatorBudget, resolveInboundBodyLimitBytes(config.maxInboundBodyBytes));
     // Defensive [1m] strip (devlog 138): clients normally remove the context-variant
     // marker themselves; the 1M signal we act on is the anthropic-beta header.
     // Case-insensitive — the CLI matches /\[1m\]/i (audit 021 #7).
@@ -779,6 +796,22 @@ async function handleClaudeMessagesWithBudget(
 
   if (!requestedModel) requestedModel = (anthropicBody as Rec).model as string;
   const stream = internalBody.stream === true;
+  /**
+   * This proxy's count of the prompt it is about to forward, computed at most once.
+   *
+   * Two readers want it and they want it under different rules. The usage log takes it as a
+   * floor only for estimated-usage adapters, because its merge is `max(reported, estimate)` and
+   * would otherwise overwrite real usage. `message_start` takes it whenever the upstream sent
+   * no confirmed usage before the first frame, where nothing is merged and the terminal
+   * `message_delta` still corrects it (#4857).
+   */
+  let requestTokenFloor: number | undefined;
+  const claudeRequestTokenFloor = (): number => {
+    if (requestTokenFloor === undefined) {
+      requestTokenFloor = estimateClaudeRequestTokens(anthropicBody as Rec, requestedModel);
+    }
+    return requestTokenFloor;
+  };
   // Routed adapters only support streamed turns; always stream internally and fold
   // the translated Anthropic SSE into a message JSON for non-streaming clients.
   internalBody.stream = true;
@@ -786,19 +819,23 @@ async function handleClaudeMessagesWithBudget(
   // Native ChatGPT passthrough (openai-responses forward) accepts only Codex-shaped
   // bodies: it 400s on sampling params ("Unsupported parameter: max_output_tokens",
   // verified live 2026-07-11). Strip them for that route; routed providers keep them.
-  let nativeRoute = false;
-  let opencodeGoRoute = false;
   try {
     const route = routeModel(config, internalBody.model as string, evidenceFromBody(internalBody));
-    // Match the fixed key-auth destination before per-model wire overrides, including
-    // renamed Go providers without treating custom or lookalike URLs as Go.
-    opencodeGoRoute = registryEntryForProviderDestination(route.provider)?.id === "opencode-go";
+    // Same reason as the native Chat lane: this route can be sent from here, so
+    // the key's scope is applied before the wire is settled.
+    assertRouteAllowedByScope(
+      resolveAdmissionModelScope(config, logIds?.admission),
+      String(internalBody.model ?? ""),
+      route,
+    );
     // Settle the wire once so the sampling decision below reads the effective
     // adapter rather than the provider-wide default (#404).
-    route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, "anthropic");
+    route.staticPolicy = captureRouteStaticPolicy(
+      route.providerName, route.modelId, route.provider, route.staticPolicy.effectiveAlias, "anthropic",
+    );
+    route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, "anthropic", route.staticPolicy);
     logCtx.routeDecision = route.routeDecision;
     if (route.provider.adapter === "openai-responses") {
-      nativeRoute = true;
       delete internalBody.max_output_tokens;
       delete internalBody.temperature;
       delete internalBody.top_p;
@@ -810,7 +847,7 @@ async function handleClaudeMessagesWithBudget(
     // accurate-usage adapters — the request-log merge is max(reported, estimate) and
     // would overwrite real usage (audit 133 R1#7).
     if (route.provider.adapter === "cursor" || route.provider.adapter === "kiro") {
-      logCtx.usageLogInputTokens = estimateClaudeRequestTokens(anthropicBody as Rec, requestedModel);
+      logCtx.usageLogInputTokens = claudeRequestTokenFloor();
     }
     // Effort safety valve (devlog 136 B6, audit 139 R2#2): opus-shaped aliases make
     // every routed model look like a reasoning model to Claude clients, so a forced
@@ -823,6 +860,11 @@ async function handleClaudeMessagesWithBudget(
       if (ladder !== undefined && ladder.length === 0) delete internalBody.reasoning;
     }
   } catch (err) {
+    if (err instanceof AdmissionModelDeniedError) {
+      logCtx.requestedModel = requestedModel;
+      if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 403, { closeReason: "non_stream" });
+      return admissionModelDeniedResponse(err);
+    }
     if (err instanceof UnknownRoutingPolicyError) {
       logCtx.requestedModel = requestedModel;
       if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 404, { closeReason: "non_stream" });
@@ -837,6 +879,7 @@ async function handleClaudeMessagesWithBudget(
   }
 
   const headers = new Headers({ "content-type": "application/json" });
+  let trustedClaudeMainAuth: { authorization: string; chatgptAccountId?: string } | undefined;
   for (const name of FORWARD_HEADERS) {
     // The caller's bearer is the proxy admission token (ocx claude placeholder), never a
     // ChatGPT credential — forwarding it upstream turns into {"detail":"Unauthorized"}.
@@ -852,34 +895,32 @@ async function handleClaudeMessagesWithBudget(
     const { getMainAccountToken } = await import("../codex/main-account");
     const token = getMainAccountToken();
     if (token) {
-      headers.set("authorization", `Bearer ${token.accessToken}`);
+      const authorization = `Bearer ${token.accessToken}`;
+      headers.set("authorization", authorization);
       headers.set("chatgpt-account-id", token.chatgptAccountId);
+      trustedClaudeMainAuth = {
+        authorization,
+        ...(token.chatgptAccountId ? { chatgptAccountId: token.chatgptAccountId } : {}),
+      };
     }
   }
-  if (opencodeGoRoute) {
-    const session = req.headers.get("x-opencode-session");
-    if (session) headers.set("x-opencode-session", session);
-  }
-  const hasExplicitGoSession = opencodeGoRoute
-    && (sessionLaneIdFromRequest(headers) !== undefined
-      || normalizeLogConversationId(headers.get("x-opencode-session")) !== undefined);
-  const synthesizeGoSession = opencodeGoRoute && !hasExplicitGoSession
+  // Carry Go identity out of band: a combo's preflight target may differ from its
+  // actual dispatch/fallback target. Never add Go-only identity to replay headers.
+  const claudeNativeSessionId = cacheKeySource === "metadata"
+    && typeof internalBody.prompt_cache_key === "string"
     && isRec(anthropicBody)
-    && conversationIdFromClaudeMetadata(isRec(anthropicBody.metadata) ? anthropicBody.metadata : undefined) !== undefined;
-  // Go can also use the Responses adapter; its eligibility gate must win on both wires.
-  if (opencodeGoRoute ? synthesizeGoSession : nativeRoute) {
-    // ChatGPT-backend prompt-cache affinity rides the session_id HEADER (codex
-    // clients always send their session uuid; devlog 090 follow-up: body-level
-    // prompt_cache_key alone still yielded cached_tokens:0). Claude Code never sends
-    // the header, so synthesize a stable per-session uuid from the same cache key.
-    // Routed Go requests need this lane too for their x-opencode-session affinity —
-    // but ONLY for a real per-session key (metadata.user_id). The system-hash fallback
-    // key is shared across Desktop conversations, and a shared session_id's backend
-    // semantics are unproven (audit 133 R2#3): body prompt_cache_key only there.
-    if (cacheKeySource === "metadata" && (synthesizeGoSession || !headers.has("session_id")) && typeof internalBody.prompt_cache_key === "string") {
-      headers.set("session_id", uuidFromHex(internalBody.prompt_cache_key));
-    }
-  }
+    && conversationIdFromClaudeMetadata(isRec(anthropicBody.metadata) ? anthropicBody.metadata : undefined) !== undefined
+    ? uuidFromHex(internalBody.prompt_cache_key)
+    : undefined;
+  const metadataGoLane = normalizeLogConversationId(claudeNativeSessionId);
+  // Without any valid conversation identity, fall back to the request-scoped lane
+  // allocated on the admitted client request (#4172): stable across retries and
+  // route reconstruction, distinct per request, and never derived from a shared
+  // system-prompt cache key or from a later synthesized native session_id header.
+  const claudeGoSessionLane = sessionLaneIdFromRequest(headers)
+    ?? normalizeLogConversationId(req.headers.get("x-opencode-session"))
+    ?? metadataGoLane
+    ?? getOrAllocateRequestSessionLane(req);
   let internalReq: Request;
   try {
     // The UTF-16 JSON string and the Request's UTF-8 body coexist until dispatch.
@@ -891,6 +932,7 @@ async function handleClaudeMessagesWithBudget(
         headers,
         body: JSON.stringify(internalBody),
       });
+      linkRequestSessionLane(req, internalReq);
     } finally {
       reservation.release();
     }
@@ -922,7 +964,13 @@ async function handleClaudeMessagesWithBudget(
     // Without this the replay would look native and a Responses-scoped wire default
     // would fire, disagreeing with the pre-flight decision above.
     inboundWire: "anthropic",
+    claudeGoAffinity: { sessionLane: claudeGoSessionLane },
+    claudeNativeSessionId,
     stripClaudeMainAuthForNoncanonicalForward: true,
+    ...(trustedClaudeMainAuth ? { trustedClaudeMainAuth } : {}),
+    // Claude's internal stored-main enrichment is not an original caller credential.
+    nativeCallerAuth: null,
+    callerDirectAuth: null,
     translatorBudget,
     ...(logIds ? { onFirstOutput: () => recordFirstOutput(logCtx, logIds.start) } : {}),
     onNativePassthroughTerminal: status => finalizeNativeLog(httpStatusForRequestLogTerminal(status, logCtx), { terminalStatus: status, closeReason: "terminal" }),
@@ -977,7 +1025,13 @@ async function handleClaudeMessagesWithBudget(
 
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.includes("text/event-stream") && response.body) {
-    const anthropicSse = responsesSseToAnthropicSse(response.body, requestedModel, { translatorBudget });
+    const anthropicSse = responsesSseToAnthropicSse(response.body, requestedModel, {
+      translatorBudget,
+      // Only a floor, and only for the first frame: an upstream that reports usage early wins
+      // over it inside the translator, and the terminal `message_delta` carries the
+      // authoritative count either way (#4857).
+      inputTokenFloor: claudeRequestTokenFloor(),
+    });
     if (stream) {
       return new Response(anthropicSse, {
         status: 200,
@@ -1144,7 +1198,7 @@ export async function handleClaudeCountTokens(
   let body: unknown;
   const translatorBudget = createTranslatorBudget();
   try {
-    body = await readAnthropicBody(req, translatorBudget);
+    body = await readAnthropicBody(req, translatorBudget, resolveInboundBodyLimitBytes(config.maxInboundBodyBytes));
   } catch (err) {
     if (err instanceof DesktopModelMappingUnavailableError) return desktopMappingUnavailableResponse(err);
     if (err instanceof AnthropicRequestError) return anthropicErrorResponse(400, err.message);

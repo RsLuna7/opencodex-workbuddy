@@ -106,30 +106,33 @@ See [SPONSORS.md](./SPONSORS.md).
 
 <!-- sponsors:main — one banner, model developers only; empty until a Main sponsor signs -->
 
-<!-- sponsors:standard — one row per sponsor, in order of signing. Uncomment the table with the first row:
+<!-- sponsors:standard — one row per sponsor, in order of signing -->
 <table>
 <tbody>
 <tr>
-<td width="180"><a href="SPONSOR_URL"><img src="https://raw.githubusercontent.com/lidge-jun/opencodex/main/assets/sponsors/SPONSOR.png" alt="SPONSOR" width="150"></a></td>
-<td>Thanks to SPONSOR for sponsoring this project! BLURB</td>
+<td width="180"><a href="https://www.orcarouter.ai/?utm_source=opencodex&utm_medium=readme"><img src="assets/sponsors/orcarouter.png" alt="OrcaRouter" width="150"></a></td>
+<td>Thanks to <a href="https://www.orcarouter.ai/?utm_source=opencodex&utm_medium=readme">OrcaRouter</a> for sponsoring this project! OrcaRouter is one OpenAI-compatible AI gateway for production AI: adaptive routing that grades every prompt and sends it to the model that clears your bar, automatic failover, routing rules as code, zero-markup provider pricing with prompt caching, and guardrails, an agent firewall, and request logs on every call across 200+ models. Pick <code>OrcaRouter</code> in the Add provider picker or run <code>ocx provider add orcarouter</code>; <code>orcarouter/auto</code> is the adaptive router.</td>
+</tr>
+<tr>
+<td width="180"><a href="https://www.packyapi.com/register?aff=k5KT"><img src="assets/sponsors/packycode.png" alt="PackyCode" width="150"></a></td>
+<td>Thanks to <a href="https://www.packyapi.com/register?aff=k5KT">PackyCode</a> for sponsoring this project! PackyCode is a stable, high-performance API relay provider, offering relay services for Claude Code, Codex, Gemini, and more. With automatic failover, smart routing, and unlimited concurrency, it turns AI into a real productivity tool. <a href="https://www.packyapi.com/register?aff=k5KT">Register via this link</a> and get started! Pick <code>PackyCode</code> in the Add provider picker or run <code>ocx provider add packycode</code>.<br><sub>PackyCode 是一家稳定、高效的 API 中转服务商，提供 Claude Code、Codex、Gemini 等多种中转服务。具备自动故障转移、智能路由和无限并发等多种功能，让 AI 编程成为真正的生产力工具。<a href="https://www.packyapi.com/register?aff=k5KT">点此链接注册</a>，立即开始使用！</sub></td>
 </tr>
 </tbody>
 </table>
--->
 
 ---
 
 <details>
 <summary>Docker Compose</summary>
 
-The repository ships a digest-pinned, non-root Compose build. With Git and Bun installed on the
-host, generate the canonical compatibility manifest before every image build, then initialize
-the data-plane token once through stdin and start the hub:
+The repository ships a digest-pinned, non-root Compose build. The build generates and verifies the
+canonical compatibility manifest from the selected Git snapshot. A local clone needs Git and
+Docker Compose; a remote Git context needs Docker Compose. Neither path needs host Bun or a
+preparation step. Initialize the data-plane token once through stdin and start the hub:
 
 ```bash
 git clone https://github.com/lidge-jun/opencodex.git
 cd opencodex
-bun scripts/generate-compatibility-version.ts
 docker compose build
 openssl rand -hex 32 | docker compose run --rm -T hub bun run docker/bootstrap-token.ts
 docker compose up -d
@@ -140,11 +143,28 @@ curl --fail --silent http://127.0.0.1:10100/readyz
 The default host binding is `127.0.0.1:10100`. Remote exposure requires explicit
 `OPENCODEX_BIND_ADDRESS=<LAN-or-Tailscale-IP> docker compose up -d`; `0.0.0.0` opts into
 all host interfaces. Restrict access with a firewall and an authenticated TLS/tailnet frontend.
-The generated JSON stays untracked; it is copied into the image without including `.git`.
-Regenerate it after source changes, and do not change the source between generation and build.
-The build rejects stale manifests, missing or mismatched files, extra source files, and symlinks.
+The generated JSON stays untracked. The build context admits only `.git/index` and `.git/HEAD` — the
+inventory `git ls-files` reads, about 1 MB rather than the full object store — and they are visible
+only to the build-only manifest stage through a read-only mount, so no `COPY` includes `.git`. An existing host-generated manifest
+is still accepted only after validation; otherwise the build generates one itself. The build rejects
+stale manifests, missing or mismatched files, extra source files, and symlinks.
 It checks every recorded SHA-256 against the build context and copied runtime files, including
 `package.json`, `bun.lock`, and the specifically included `scripts/model-metadata.source.json`.
+
+A remote Git context needs BuildKit to retain Git metadata. This Compose build fragment selects the
+remote snapshot and passes the required built-in argument:
+
+```yaml
+services:
+  hub:
+    pull_policy: build
+    build:
+      context: https://github.com/lidge-jun/opencodex.git#main
+      dockerfile: Dockerfile
+      target: runtime
+      args:
+        BUILDKIT_CONTEXT_KEEP_GIT_DIR: "1"
+```
 
 The token and mutable state stay in the `ocx-state` named volume; no credential is placed in the
 image, Compose file, environment, or shell arguments. See the
@@ -288,14 +308,14 @@ full-slash form keeps working too. Details: [model routing docs](https://opencod
 OpenAI (ChatGPT login or API key), Anthropic, Google Gemini, xAI, Kimi, Azure OpenAI, Ollama
 (local + Cloud), Cursor (experimental), and every OpenAI-compatible endpoint — plus DeepSeek,
 Groq, OpenRouter, Together, Fireworks, Cerebras, Mistral, Hugging Face, NVIDIA NIM, MiniMax,
-Qwen Cloud, SiliconFlow, and more. Full list: `ocx init` or the
+Qwen Cloud, Qoder Global and CN (official PAT + CLI), SiliconFlow, and more. Full list: `ocx init` or the
 [provider docs](https://opencodex.me/guides/providers/).
 
 ## CLI
 
 ```bash
 ocx init                       # interactive setup (writes config, wires Codex, offers the shim)
-ocx start [--port 10100]       # start the proxy in the foreground
+ocx start [--port 10100] [--socks5 [host:port] | --socks5-off]  # SOCKS5 defaults to socks5://127.0.0.1:10808
 ocx stop                       # stop + restore native Codex
 ocx service [install|repair|restart|start|stop|status|uninstall|remove]  # background service
 ocx codex-shim install         # start the proxy on demand whenever `codex` launches
@@ -310,8 +330,9 @@ ocx v2 <...>                   # multi-agent v1/v2 surface controls
 ocx update [--tag preview]     # update opencodex
 ```
 
-Unpinned starts may pick another free port if the preferred one is busy; an explicit `--port`
-never hops. Full reference: [CLI docs](https://opencodex.me/reference/cli/).
+A start whose preferred port is busy stops and names the holder instead of moving to another port,
+so it can never leave a second proxy running beside the first. Free the port, or name a different
+one with `--port`. Full reference: [CLI docs](https://opencodex.me/reference/cli/).
 
 ### Health and readiness
 
@@ -365,6 +386,9 @@ Maintainer source-of-truth notes live under [`structure/`](./structure), contrib
 Report undisclosed vulnerabilities privately through
 [GitHub private vulnerability reporting](https://github.com/lidge-jun/opencodex/security/advisories/new),
 not a public issue.
+That form is the only technical channel — there is no security email. Follow-ups stay in the
+private report itself; a public issue may carry coordination only, never vulnerability details.
+Acknowledging a report is not the same as triaging it, and no first-response target is promised.
 
 ## Development
 

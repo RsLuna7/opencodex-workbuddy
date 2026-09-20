@@ -25,6 +25,7 @@ import { getAccountSet, getCredential, saveCredential, setActiveAccount } from "
 import { handleResponses } from "../../src/server/responses";
 import type { OcxConfig, OcxProviderConfig } from "../../src/types";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
+import { acquireOwnedSpendHome } from "../helpers/owned-spend-home";
 
 const PROVIDER = "workbuddy-test";
 
@@ -289,6 +290,7 @@ describe("WorkBuddy 402 rotates to a spare account", () => {
   const originalFetch = globalThis.fetch;
   const originalHome = process.env.OPENCODEX_HOME;
   let home = "";
+  let releaseSpendHome: (() => void) | undefined;
 
   function config(): OcxConfig {
     return {
@@ -329,9 +331,17 @@ describe("WorkBuddy 402 rotates to a spare account", () => {
     home = mkdtempSync(join(tmpdir(), "ocx-workbuddy-402-"));
     process.env.OPENCODEX_HOME = home;
     clearGenericFailoverHealth("workbuddy");
+    // This block dispatches through handleResponses without starting a server, so it skips
+    // startServer's spend-journal lease. Take the real lease (see the helper's own note) rather
+    // than letting the ledger refuse a write for a process that owns nothing.
+    releaseSpendHome = acquireOwnedSpendHome();
   });
 
   afterEach(() => {
+    // Released FIRST, before the state directory is removed: an open lease inside a directory
+    // being deleted fails the removal on Windows.
+    releaseSpendHome?.();
+    releaseSpendHome = undefined;
     globalThis.fetch = originalFetch;
     clearGenericFailoverHealth("workbuddy");
     if (originalHome === undefined) delete process.env.OPENCODEX_HOME;
@@ -452,13 +462,22 @@ function chatSse(text: string): Response {
 }
 
 describe("WorkBuddy quota rewrite and 402 rotation", () => {
+  let releaseSpendHome: (() => void) | undefined;
+
   beforeEach(() => {
     isolatedHome = mkdtempSync(join(tmpdir(), "ocx-workbuddy-failover-"));
     process.env.OPENCODEX_HOME = isolatedHome;
     clearGenericFailoverHealth();
+    // Same reason as the block above: handleResponses is called directly, so the
+    // spend-journal lease startServer would have taken has to be taken here.
+    releaseSpendHome = acquireOwnedSpendHome();
   });
 
   afterEach(() => {
+    // Released FIRST, before the state directory is removed: an open lease inside a directory
+    // being deleted fails the removal on Windows.
+    releaseSpendHome?.();
+    releaseSpendHome = undefined;
     globalThis.fetch = originalFetch;
     clearGenericFailoverHealth();
     if (originalHome === undefined) delete process.env.OPENCODEX_HOME;

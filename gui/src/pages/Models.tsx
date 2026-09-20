@@ -1,5 +1,5 @@
 import { CodexStaleBanner } from "../components/codex-stale-banner";
-import ModelPickerOrderEditor from "../components/ModelPickerOrderEditor";
+import ModelCatalogSettingsPanels from "../components/ModelCatalogSettingsPanels";
 import ModelDisplayNameDialog from "../components/ModelDisplayNameDialog";
 import ModelPriceDialog from "../components/ModelPriceDialog";
 import { fetchCodexAppServerState } from "../codex-app-server-state";
@@ -13,6 +13,7 @@ import type { TFn, TKey } from "../i18n/shared";
 import { modelLabel } from "../model-display";
 import { formatProviderDisplayName, providerDisplaySlug } from "../provider-icons";
 import { readJsonIfOk, readJsonOrThrow } from "../fetch-json";
+import { ownRecordValue } from "../own-record-value";
 import { describeIntegrationRefusalParts } from "./integrations/refusal-copy";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { setClientResourceData } from "../client-resource";
@@ -67,15 +68,21 @@ import {
   THREAD_OPTIONS,
   writeCollapsedProviders,
   discoveryFailureLabel,
+  filterFreeModelRows,
+  freeOnlyInForce,
+  modelPricingKnown,
   REASONING_EFFORT_LEVELS,
   type ModelRow,
   type ProviderContextCapsResponse,
   type ShadowCallData,
   type V2Status,
 } from "./models-shared";
-import { EmptyProviderHint } from "./models-provider-hints";
+import { DiscoveryDependencyHint, EmptyProviderHint } from "./models-provider-hints";
+import SubagentSurfaceWarningModal from "../components/SubagentSurfaceWarningModal";
+import { SUBAGENT_SURFACE_GUIDE_URL, readSubagentSurfaceAdvisory } from "../subagent-surface";
 import { shadowCallModelOptions } from "./dashboard-shared";
 import { shadowSourceModelBadge, shadowSourceModelLabel } from "./shadow-call-source";
+import { ModelCatalogStateSummary } from "./models-catalog-state";
 
 type CachedModelsPage = {
   models: ModelRow[];
@@ -111,7 +118,6 @@ function parseContextWindowDraft(raw: string): number | null | undefined {
   return Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
-
 /** #2465 per-provider model-preset view, as `GET /api/model-presets` returns it. */
 interface ModelPresetView {
   mode: "preset" | "all" | "custom";
@@ -134,7 +140,7 @@ interface AliasView {
   defaults: { global: boolean; providers: Record<string, boolean> };
 }
 
-export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string; restartEpoch?: number }) {
+export default function Models({ apiBase, restartEpoch = 0, catalogSyncedAt }: { apiBase: string; restartEpoch?: number; catalogSyncedAt?: string }) {
   // Codex app-server staleness (devlog/_fin/260815_gui_codex_restart). Named
   // appServerState, not catalogState: this file already binds that name to the
   // model-catalog resource state, which is an unrelated concept. (Spelling the
@@ -242,6 +248,10 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
   const [disabled, setDisabled] = useState<Set<string>>(() => new Set(cached?.disabled ?? []));
   const [selectedModels, setSelectedModels] = useState<ProviderModelMap | null>(() => cached?.selectedModels ?? null);
   const [search, setSearch] = useState<Record<string, string>>({});
+  // Per-provider Free-only narrowing (#3666). Session UX, not persisted config: it answers
+  // "what can I run for nothing right now", which is a question about this sitting, and the
+  // provider list it applies to changes underneath a stored value.
+  const [freeOnly, setFreeOnly] = useState<Record<string, boolean>>({});
   const [limit, setLimit] = useState<Record<string, number>>({});
   const [contextCaps, setContextCaps] = useState<Record<string, number>>(() => cached?.contextCaps ?? {});
   const [contextCapValues, setContextCapValues] = useState<Record<string, number>>(() => cached?.contextCapValues ?? {});
@@ -302,11 +312,11 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
   // second identical value bails out of React's state diff, so the old timer would dismiss
   // the new toast early. Every publish bumps the generation.
   const [feedbackGen, setFeedbackGen] = useState(0);
-  const publishFeedback = (nextOk: boolean, message: string) => {
+  const publishFeedback = useCallback((nextOk: boolean, message: string) => {
     setOk(nextOk);
     setStatus(message);
     setFeedbackGen(g => g + 1);
-  };
+  }, []);
   // Transient action feedback as a fixed toast: appearing or auto-clearing it never shifts
   // the workspace below (the old inline Notice pushed the whole model grid down by its
   // height on every apply). The timer itself just clears the status again.
@@ -337,6 +347,8 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
   const [threadsCustom, setThreadsCustom] = useState("");
   const [showThreadsCustom, setShowThreadsCustom] = useState(false);
   const [v2HelpOpen, setV2HelpOpen] = useState(false);
+  /** A base/v2 selection waiting on the approval dialog. Null while nothing is pending. */
+  const [pendingSurface, setPendingSurface] = useState<"default" | "v2" | null>(null);
   const [customModalOpen, setCustomModalOpen] = useState(false);
   const [displayNameModel, setDisplayNameModel] = useState<ModelRow | null>(null);
   const [priceModel, setPriceModel] = useState<ModelRow | null>(null);
@@ -695,7 +707,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
         setDisplayNameSaving(false);
       }
     }
-  }, [apiBase, displayNameModel, displayNameRecovery, finishDisplayNameEdit, load, t]);
+  }, [apiBase, displayNameModel, displayNameRecovery, finishDisplayNameEdit, load, publishFeedback, t]);
 
   // Shadow/v2 controls must not wait on the models catalog (live discovery can be slow).
   useEffect(() => {
@@ -805,16 +817,16 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
       setContextError(t("models.contextInvalid"));
       return;
     }
-    const modelWindows: Record<string, number | null> = {};
+    const modelWindows: Record<string, number | null> = Object.create(null); // null prototype: a "__proto__" model ID must store an entry, not invoke the inherited setter
     for (const modelId of contextTouchedModels) {
-      const draft = contextModelDrafts[modelId] ?? "";
+      const draft = ownRecordValue(contextModelDrafts, modelId) ?? "";
       const parsed = parseContextWindowDraft(draft);
       if (parsed === undefined) {
         setContextError(t("models.contextInvalid"));
         return;
       }
       // Compare VALUES, not text. Retyping 64000 as "64,000" is not a change.
-      if (parsed === (contextSnapshot.modelContextWindows[modelId] ?? null)) continue;
+      if (parsed === (ownRecordValue(contextSnapshot.modelContextWindows, modelId) ?? null)) continue;
       modelWindows[modelId] = parsed;
     }
     const defaultChanged = contextDefaultTouched
@@ -1143,7 +1155,11 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
 
   const setMultiAgentMode = async (mode: "v1" | "default" | "v2") => {
     if (!v2 || v2.multiAgentMode === mode) return;
-    await putV2Setting({ multiAgentMode: mode });
+    // v1 applies immediately: confirming a move toward the safe default would be noise.
+    // base and v2 both put ChatGPT-native parents on the v2 surface, where a task handed
+    // to a routed child is undeliverable ciphertext, so those wait for an answer.
+    if (mode === "v1") { await putV2Setting({ multiAgentMode: "v1" }); return; }
+    setPendingSurface(mode);
   };
 
 
@@ -1396,7 +1412,26 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
       model.native === true,
       disabled.has(model.namespaced),
     );
-    const activeCount = rows.filter(isVisible).length;
+    const freeOnlyOn = freeOnly[provider] === true;
+    // The control is offered only where the provider actually published per-token prices.
+    // A provider whose rows are all unclassified — Ollama, a static catalog, anything with no
+    // pricing in /models — would otherwise get a switch whose only possible effect is to empty
+    // the list, which reads as a bug rather than as "this provider does not say".
+    const pricingKnown = modelPricingKnown(rows);
+    // Free-only narrows BEFORE the header counts, search, the enabled-first sort, and the PAGE
+    // slice below. Filtering after the slice would leave free models stranded behind Show more
+    // on a 200-row OpenRouter list, which is the exact case the issue reports.
+    //
+    // `scoped` is the set every count and bulk action reads. Search is deliberately NOT part of
+    // it: the search box has always been a transient find-as-you-type that leaves the counts
+    // alone, while Free only is a narrowing the user holds on, so a header still reading the
+    // whole provider would claim more models than the list under it shows.
+    // Gated on `pricingKnown` through `freeOnlyInForce`: the switch below is hidden when the
+    // provider stops publishing prices, so a narrowing left on from an earlier render must lapse
+    // with it rather than empty the list behind a control that is no longer there.
+    const freeOnlyActive = freeOnlyInForce(freeOnlyOn, rows);
+    const scoped = filterFreeModelRows(rows, freeOnlyActive);
+    const activeCount = scoped.filter(isVisible).length;
     const recentForProvider = modelDiscovery?.recentArrivals[provider] ?? [];
     const recentIds = new Set(recentForProvider.map(row => row.id));
     const capOn = contextCaps[provider] !== undefined;
@@ -1409,7 +1444,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
     const capOptionSet = group.nativeProviderGroup ? NATIVE_CAP_OPTION_SET : CAP_OPTION_SET;
     const discoveryFailure = liveModels && discovery?.status === "failed" ? discovery : undefined;
     const q = (search[provider] ?? "").trim().toLowerCase();
-    const filtered = q ? rows.filter(m => m.id.toLowerCase().includes(q)) : rows;
+    const filtered = q ? scoped.filter(m => m.id.toLowerCase().includes(q)) : scoped;
     // Display-only: enabled models float to the top of each provider group so they
     // stay findable in long lists. The sort is stable, so the server order is kept
     // inside each partition, and this does not affect the picker order above
@@ -1420,16 +1455,20 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
     const remaining = filtered.length - visible.length;
      // An empty provider has nothing to send: keep both bulk buttons inert so we never PUT an
      // empty target list (the management API rejects it with 400).
-     const hasRows = rows.length > 0;
+     // Bulk follows the same scoped set as the counts it sits beside: with Free only on, an
+     // "All on" that enabled the 197 paid rows the header is not counting would be the exact
+     // surprise the header fix exists to prevent. Pending stays keyed to the whole provider,
+     // because initial discovery is a provider state that no display filter can clear.
+     const hasRows = scoped.length > 0;
      const selectionPending = rows.some(model => model.initialSelectionPending);
-     const allOn = !hasRows || rows.every(isVisible);
-     const allOff = !hasRows || rows.every(m => !isVisible(m));
+     const allOn = !hasRows || scoped.every(isVisible);
+     const allOff = !hasRows || scoped.every(m => !isVisible(m));
      const bulkToggle = (enable: boolean) => {
        if (!hasRows || selectionPending) return;
        void applyVisibility(
          "provider",
          provider,
-         rows.map(m => ({ id: m.id, native: m.native === true })),
+         scoped.map(m => ({ id: m.id, native: m.native === true })),
          enable,
        );
      };
@@ -1456,7 +1495,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
              {t("models.discoveryFailedBadge")}
            </span>
          )}
-          <span className="muted mono text-label">{t("models.active", { active: activeCount, total: rows.length })}</span>
+          <span className="muted mono text-label">{t("models.active", { active: activeCount, total: scoped.length })}</span>
           {recentForProvider.length > 0 && <span className="models-chip mono text-caption">{t("models.newCount", { count: recentForProvider.length })}</span>}
           </button>
            <div className="row models-provider-actions">
@@ -1650,6 +1689,25 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
             {rows.length === 0 && (
               <EmptyProviderHint liveModels={liveModels} discovery={discovery} showFailureBadge={false} />
             )}
+            {/* A group WITH rows and a failed fetch got the amber header badge and nothing that
+                explains the dependency; #4075 is the reporter having to discover on their own
+                that turning discovery off is what makes a manually added model usable. */}
+            {rows.length > 0 && discoveryFailure && <DiscoveryDependencyHint />}
+            {pricingKnown && (
+              <div className="row models-provider-hint">
+                <Switch
+                  on={freeOnlyOn}
+                  onClick={() => setFreeOnly(prev => ({ ...prev, [provider]: !freeOnlyOn }))}
+                  label={t("models.freeOnly")}
+                  showLabel
+                />
+              </div>
+            )}
+            {/* Reads `scoped`, not `filtered`: with a search term that matches nothing, the
+                honest message is the search one, not "this provider has no free models". */}
+            {freeOnlyActive && scoped.length === 0 && rows.length > 0 && (
+              <p className="muted text-label" role="status">{t("models.noFreeMatch")}</p>
+            )}
             {rows.length > PAGE / 2 && (
               <input
                 className="input"
@@ -1675,7 +1733,15 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
                  >
                    <div className="row models-model-row">
                      <Switch on={!off} onClick={() => void applyVisibility("models", provider, [{ id: m.id, native: m.native === true }], off)} disabled={busy || m.initialSelectionPending} label={m.native ? m.id : m.namespaced} />
-                     {m.initialSelectionPending && <span className="models-chip muted" role="status">{t("models.initialSelectionPending")}</span>}
+                    {m.initialSelectionPending && <span className="models-chip muted" role="status">{t("models.initialSelectionPending")}</span>}
+                    {/* #1711: listed and selectable, but every usable target is out of credit.
+                        Not a visibility change and not the operator's disable flag — the row is
+                        still offered, which is what the issue asks for. */}
+                    {m.quotaInactiveReason === "no_credit" && (
+                      <span className="models-chip muted" role="status" title={t("models.inactiveNoCreditHint")}>
+                        {t("models.inactiveNoCredit")}
+                      </span>
+                    )}
                      {aliases.models[provider]?.[m.id] && <strong className="mono text-control">{aliases.models[provider][m.id].alias}</strong>}
                      <span className="models-model-identity">
                        <code className="mono text-control" style={{ color: off ? "var(--faint)" : "var(--text)", textDecoration: off ? "line-through" : "none" }}>{m.native ? modelLabel(m.id) : m.namespaced}</code>
@@ -1863,8 +1929,9 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
       if (mode === "most-used") {
         const response = await fetch(`${apiBase}/api/usage?range=all&surface=all`, { signal: bounded.signal });
         if (!current()) return;
-        const payload = await readJsonOrThrow<{ models?: unknown }>(response, t("models.pickerOrder.usageFailed"));
+        const payload = await readJsonOrThrow<{ models?: unknown; usageIncomplete?: unknown }>(response, t("models.pickerOrder.usageFailed"));
         if (!current()) return;
+        if (payload?.usageIncomplete === true) throw new Error(t("models.pickerOrder.usageIncomplete"));
         if (!isModelPickerUsage(payload?.models)) throw new Error(t("models.pickerOrder.usageFailed"));
         usage = payload.models;
       }
@@ -1962,6 +2029,17 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
               </Tooltip>
             </div>
           </div>
+        )}
+        {pendingSurface && (
+          <SubagentSurfaceWarningModal
+            reason="selection"
+            mode={pendingSurface}
+            docsUrl={readSubagentSurfaceAdvisory(v2?.multiAgentSurfaceAdvisory)?.docsUrl ?? SUBAGENT_SURFACE_GUIDE_URL}
+            busy={v2Busy}
+            onContinue={() => { const next = pendingSurface; setPendingSurface(null); void putV2Setting({ multiAgentMode: next, multiAgentSurfaceAdvisoryAcknowledged: true }); }}
+            onChooseV1={() => { setPendingSurface(null); if (v2?.multiAgentMode !== "v1") void putV2Setting({ multiAgentMode: "v1", multiAgentSurfaceAdvisoryAcknowledged: true }); }}
+            onDismiss={() => setPendingSurface(null)}
+          />
         )}
       </div>
 
@@ -2078,8 +2156,8 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
         </>}
         <span className="muted text-label leading-body">{t("models.pickerOrder.hint")}</span>
       </div>
-      {pickerMode === "custom" && <ModelPickerOrderEditor key={apiBase} apiBase={apiBase} active={catalogActive}
-        identities={models} onBusyChange={setPickerBusy} onAccepted={data => acceptPickerOrder(data, true)} />}
+      <ModelCatalogSettingsPanels showOrderEditor={pickerMode === "custom"} apiBase={apiBase} active={catalogActive}
+        identities={models} onBusyChange={setPickerBusy} onAccepted={data => acceptPickerOrder(data, true)} onSaved={() => catalogResource.refresh()} />
 
 
       {(() => {
@@ -2208,7 +2286,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
                     <input
                       className="input"
                       inputMode="numeric"
-                      value={contextModelDrafts[contextModelId] ?? ""}
+                      value={ownRecordValue(contextModelDrafts, contextModelId) ?? ""}
                       onChange={event => {
                         setContextModelDrafts(current => ({
                           ...current,
@@ -2422,15 +2500,15 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
                 onClick={() => {
                   const modelId = customFormModelId.trim();
                   const displayName = customFormDisplayName.trim();
-                  const ctxVal = customFormContextWindow ? Number(customFormContextWindow.replace(/[_,\s]/g, "")) : undefined;
-                  const contextWindow = ctxVal && ctxVal > 0 ? Math.floor(ctxVal) : undefined;
+                  const parsedContextWindow = parseContextWindowDraft(customFormContextWindow); // "350k" -> undefined, never "omitted / cleared"
+                  if (parsedContextWindow === undefined) { setCustomError(t("models.contextInvalid")); return; }
                   if (customModalMode === "add") {
                     const reasoningEfforts = customFormReasoning ? customFormReasoningEfforts : undefined;
                     void addCustomModel(
                       customModalProvider,
                       modelId,
                       displayName || undefined,
-                      contextWindow,
+                      parsedContextWindow ?? undefined,
                       customFormModalities.length > 0 ? customFormModalities : undefined,
                       reasoningEfforts,
                     );
@@ -2440,7 +2518,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
                     void updateCustomModel(customModalId, {
                       modelId,
                       displayName,
-                      contextWindow: contextWindow ?? null,
+                      contextWindow: parsedContextWindow,
                       inputModalities: customFormModalities,
                       reasoningEfforts: customFormReasoning ? customFormReasoningEfforts : null,
                     });
@@ -2574,12 +2652,10 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
       />
       <ModelsTabStrip tab={tab} onSelect={selectTab} meta={tabMeta} />
       {/*
-        One subtitle for the active tab, rendered between the strip and the panels.
-        Only one panel is visible, so a subtitle per panel would be three copies of a
-        thing the user can only ever see one of — and the catalog's five-line copy was
-        pushing the full-height Combos workspace off the viewport.
+        One summary for the active tab. The catalog also names its delivery states;
+        other tabs keep the compact subtitle so their workspaces stay in view.
       */}
-      <p className="page-sub">{t(SUBTITLE_TKEY[tab])}</p>
+      <ModelCatalogStateSummary subtitleKey={SUBTITLE_TKEY[tab]} catalogSyncedAt={catalogSyncedAt} />
 
       {/*
         Panels mount lazily and then stay mounted, hidden — a half-typed combo draft

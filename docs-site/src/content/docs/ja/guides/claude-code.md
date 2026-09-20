@@ -25,6 +25,7 @@ ocx claude
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `claudeCode.tierModels.haiku ?? claudeCode.smallFastModel` (任意、従来の `ANTHROPIC_SMALL_FAST_MODEL` もサポート) |
 | `ANTHROPIC_DEFAULT_{OPUS,SONNET,FABLE}_MODEL` | `claudeCode.tierModels.*` (任意) |
 | `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT` | `alwaysEnableEffort` がオンなら `1` (条件付き) |
+| `ENABLE_TOOL_SEARCH` | `claudeCode.toolSearch` が設定されている場合 (条件付き、既定はオフ) |
 | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` / `DISABLE_COMPACT` | `maxContextTokens` が設定された場合の従来コンテキスト上書き値 (条件付き) |
 直接 export した変数が常に優先します。追加引数はそのまま渡されます: `ocx claude -p "hello"`。
 
@@ -494,3 +495,7 @@ Anthropic バックエンドを明示すると意図的に失敗後停止しま�
 **サブエージェントが誤ったモデルにディスパッチされる** — ロスターエージェント(`ocx-*`)は Agent ツールの `model`
 引数ではなく `<!-- ocx-route: ... -->` ディレクティブを使います。ディレクティブが希望ルートと一致するか確認し、
 モデルプレースホルダとして `"haiku"` を渡してください。
+
+`config.json` の `claudeCode.stabilizePromptCache` を `true` にすると、変換ルートのシステム指示末尾にある対応済み Claude 通知を最後のユーザーメッセージへ移します。既定値は `false` です。このロール変更が適切なクライアントでのみ有効にしてください。コードフェンス内の例と一致しない本文は保持され、Anthropic のネイティブ転送は変わりません。メタデータがない場合のキャッシュキーは安定化した指示から計算されます。会話 ID の生成やキャッシュヒットの保証は行いません。
+
+変換されたすべての Chat ルートで、タイムライン上のリマインダーは保留中のツール結果の後、会話内の元の位置を保ったまま `developer` ロールで転送されます。これにより、新しいリマインダーを追加しても先頭のシステムプロンプトが書き換わらず、会話の途中に置かれた指示がそれより前のターンの前に移動することもありません。上流が `developer` ロールを受け付けない場合は、そのプロバイダーに `foldDeveloperRoleToSystem` を設定してください。同じ位置のまま `system` として送信されます。`stabilizePromptCache` の設定にかかわらず適用され、Anthropic のネイティブ転送は変わりません。キャッシュの再利用には、安定したセッション ID と上流キャッシュの利用可能性が引き続き必要です。過去の指示やツールの変更、会話の圧縮もキャッシュヒットに影響します。リマインダーの順序を保つだけで再利用が保証されるわけではありません。

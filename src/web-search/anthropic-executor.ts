@@ -210,11 +210,12 @@ export async function runAnthropicWebSearch(
       // ignored a bare `Connection: close` (oven-sh/bun#20492).
       recovery => fetch(url, applyUpstreamRecoveryInit({
         method: "POST",
+        redirect: "manual",
         headers,
         body: JSON.stringify(body),
         signal: linkedSignal.signal,
       }, recovery)),
-      { abortSignal: linkedSignal.signal, label: "web-search-sidecar-anthropic" },
+      { replaySafe: true, abortSignal: linkedSignal.signal, label: "web-search-sidecar-anthropic" },
     );
     // Guard before any branch reads the body: the failure branch's `res.text()` ran ahead of
     // the success-path guard, reopening the fetch-resolution-to-reader-attach race
