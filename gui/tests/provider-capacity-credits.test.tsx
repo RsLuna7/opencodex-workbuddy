@@ -49,3 +49,35 @@ test("credits with an unrepresentable expiry still render the balance", () => {
   expect(markup).toContain("US$37.50");
   expect(markup).not.toContain("Billing period ends");
 });
+
+test("points credits group remaining with expiry and do not label the package end as a reset", () => {
+  const expiresAt = Date.UTC(2026, 9, 20, 4, 47);
+  const markup = renderToStaticMarkup(
+    <LanguageProvider>
+      <ProviderCapacityQuota
+        pending={false}
+        report={{
+          updatedAt: 123,
+          quota: {
+            customWindows: [{ label: "WorkBuddy credits", percent: 87, resetAt: expiresAt }],
+            creditsUsd: {
+              used: 1300,
+              limit: 1500,
+              remaining: 200,
+              percent: 87,
+              unit: "points",
+              expiresAt,
+            },
+          },
+        }}
+      />
+    </LanguageProvider>,
+  );
+  expect(markup).toContain("pws-capacity-credits");
+  expect(markup).toContain("Credits balance");
+  expect(markup).toContain("200");
+  expect(markup).toContain("1,500");
+  expect(markup).toContain("Expires");
+  expect(markup).not.toContain("Resets");
+  expect(markup).toContain("87% used");
+});

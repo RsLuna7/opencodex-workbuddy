@@ -108,6 +108,7 @@ export function buildQuotaRows(quota: AccountQuota | null, plan: string | null |
       },
     });
   }
+  const pointsExpiry = displayQuota.creditsUsd?.unit === "points" ? displayQuota.creditsUsd.expiresAt : undefined;
   for (const w of displayQuota.customWindows ?? []) {
     const customLabel = canonicalCustomWindowLabel(w.label);
     const localized = localizeCustomQuotaLabel(customLabel, t);
@@ -118,7 +119,7 @@ export function buildQuotaRows(quota: AccountQuota | null, plan: string | null |
         label: localized,
         limitLabel: localized,
         percent: w.percent,
-        resetAt: w.resetAt,
+        ...(typeof w.resetAt === "number" && w.resetAt !== pointsExpiry ? { resetAt: w.resetAt } : {}),
       },
     });
   }

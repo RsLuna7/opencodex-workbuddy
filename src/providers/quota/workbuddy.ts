@@ -35,7 +35,6 @@ export function workbuddyQuotaFromCredits(
     customWindows: [{
       label: WORKBUDDY_CREDITS_WINDOW_LABEL,
       percent,
-      ...(expiresAt !== undefined ? { resetAt: expiresAt } : {}),
     }],
     creditsUsd: {
       used: boundedUsed,

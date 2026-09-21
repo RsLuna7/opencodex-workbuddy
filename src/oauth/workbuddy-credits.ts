@@ -114,14 +114,22 @@ export function summarizeWorkbuddyPackages(
   totalDosage?: number,
 ): WorkbuddyCreditSnapshot {
   let remain = 0;
-  let used = 0;
-  let size = 0;
+  let activeUsed = 0;
+  let activeSize = 0;
+  let allUsed = 0;
+  let allSize = 0;
   let expiresAt: number | undefined;
   const packages = accounts.map(acct => {
     const nums = packageRemainUsed(acct);
     remain += nums.remain;
-    used += nums.used;
-    size += nums.size;
+    allUsed += nums.used;
+    allSize += nums.size;
+    // Spent packs stay on the bill until they expire, but they are not current
+    // quota: counting them made 200 remaining of two full packs look like 87% used.
+    if (nums.remain > 0) {
+      activeUsed += nums.used;
+      activeSize += nums.size;
+    }
     const end = typeof acct.CycleEndTime === "string" ? acct.CycleEndTime : undefined;
     if (nums.remain > 0 && end) {
       const ms = parseWorkbuddyCstMillis(end);
@@ -135,8 +143,10 @@ export function summarizeWorkbuddyPackages(
       ...(end ? { end } : {}),
     };
   });
+  let used = remain > 0 ? activeUsed : allUsed;
+  let size = remain > 0 ? activeSize : allSize;
   if (size > 0 && size - remain > used) used = size - remain;
-  if (totalDosage !== undefined && totalDosage > size) {
+  if (remain <= 0 && totalDosage !== undefined && totalDosage > size) {
     size = totalDosage;
     if (size - remain > used) used = size - remain;
   }

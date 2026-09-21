@@ -43,9 +43,48 @@ describe("workbuddy credit parse", () => {
       },
     ], 1600);
     expect(snapshot.remain).toBe(300);
+    expect(snapshot.used).toBe(1300);
     expect(snapshot.size).toBe(1600);
     expect(snapshot.packs).toBe(2);
     expect(snapshot.expiresAt).toBe(parseWorkbuddyCstMillis("2026-10-20 12:47:19"));
+  });
+
+  test("summarizeWorkbuddyPackages ignores fully spent packs in used/size", () => {
+    const snapshot = summarizeWorkbuddyPackages([
+      {
+        PackageName: "spent",
+        CycleCapacitySize: 500,
+        CycleCapacityRemain: 0,
+        CycleCapacityUsed: 500,
+        CycleEndTime: "2026-09-30 23:59:59",
+      },
+      {
+        PackageName: "spent-fission",
+        CycleCapacitySize: 800,
+        CycleCapacityRemain: 0,
+        CycleCapacityUsed: 800,
+        CycleEndTime: "2026-10-12 17:58:44",
+      },
+      {
+        PackageName: "open-a",
+        CycleCapacitySize: 100,
+        CycleCapacityRemain: 100,
+        CycleCapacityUsed: 0,
+        CycleEndTime: "2026-10-20 12:47:19",
+      },
+      {
+        PackageName: "open-b",
+        CycleCapacitySize: 100,
+        CycleCapacityRemain: 100,
+        CycleCapacityUsed: 0,
+        CycleEndTime: "2026-10-21 09:09:57",
+      },
+    ], 1500);
+    expect(snapshot.remain).toBe(200);
+    expect(snapshot.used).toBe(0);
+    expect(snapshot.size).toBe(200);
+    expect(snapshot.packs).toBe(4);
+    expect(workbuddyQuotaFromCredits(snapshot.remain, snapshot.used, snapshot.size)?.creditsUsd?.percent).toBe(0);
   });
 
   test("extractWorkbuddyResourceAccounts unwraps the billing envelope", () => {
@@ -63,6 +102,8 @@ describe("workbuddy credit parse", () => {
     expect(quota?.creditsUsd?.remaining).toBe(200);
     expect(quota?.creditsUsd?.percent).toBeCloseTo(1300 / 1500 * 100);
     expect(quota?.customWindows?.[0]?.label).toBe("WorkBuddy credits");
+    expect(quota?.customWindows?.[0]?.resetAt).toBeUndefined();
+    expect(quota?.creditsUsd?.expiresAt).toBe(1_700_000_000_000);
   });
 });
 
