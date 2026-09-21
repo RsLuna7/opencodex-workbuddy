@@ -15,6 +15,14 @@
  * Both are excluded by `isGenericFailoverProvider`.
  */
 import { getAccountSet } from "./store";
+import { workbuddyAccountsShareRealm } from "./codebuddy-realm";
+import { CODEBUDDY_PROVIDER_ID } from "./codebuddy";
+import {
+  isWorkbuddyPoolCooled,
+  noteWorkbuddyPoolCooldown,
+  pickWorkbuddyAccount,
+  preferredWorkbuddyAccount,
+} from "./workbuddy-pool";
 import { getValidAccessSnapshotForAccount, type OAuthAccessSnapshot } from "./index";
 import {
   accountHeadroomPercent,
@@ -203,6 +211,10 @@ function isCooled(
   now: number,
   scope?: GenericCooldownScope,
 ): boolean {
+  if (provider === CODEBUDDY_PROVIDER_ID) {
+    const modelId = scope?.startsWith("model:") ? scope.slice("model:".length) : undefined;
+    if (isWorkbuddyPoolCooled(accountId, modelId, now)) return true;
+  }
   if (readHealth(healthKey(provider, accountId), now)) return true;
   if (!scope) return false;
   return readHealth(healthKey(provider, accountId, scope), now) !== undefined;
@@ -252,10 +264,19 @@ export function applyGenericFailoverCooldown(opts: {
   source?: AccountHealth["cooldownSource"];
 }): void {
   const now = opts.now ?? Date.now();
+  const cooldownMs = Math.max(opts.cooldownMs, 1);
   health.set(healthKey(opts.providerName, opts.accountId, classifyCooldownScope(opts.providerName, opts.modelId)), {
-    cooldownUntil: now + Math.max(opts.cooldownMs, 1),
+    cooldownUntil: now + cooldownMs,
     cooldownSource: opts.source ?? "default",
   });
+  if (opts.providerName === CODEBUDDY_PROVIDER_ID) {
+    noteWorkbuddyPoolCooldown({
+      accountId: opts.accountId,
+      modelId: opts.modelId,
+      untilMs: now + cooldownMs,
+      now,
+    });
+  }
 }
 
 /** True when this provider participates in generic rotation at all. */
@@ -346,15 +367,30 @@ function isProactivePreferenceEnabled(config: OcxConfig, providerName: string, n
  * {@link normalizeRotateTarget}: a resolved `family:gem` would be re-classified as the model
  * `family:gem` and the filter would quietly match nothing.
  */
+function workbuddySameRealmIds(providerName: string, pivotId: string | undefined): Set<string> | undefined {
+  if (providerName !== CODEBUDDY_PROVIDER_ID || !pivotId) return undefined;
+  const set = getAccountSet(providerName);
+  const pivot = set?.accounts.find(account => account.id === pivotId);
+  if (!pivot || !set) return undefined;
+  return new Set(
+    set.accounts
+      .filter(account => workbuddyAccountsShareRealm(pivot.credential, account.credential))
+      .map(account => account.id),
+  );
+}
+
 function eligibleAccountsForScope(
   providerName: string,
   now: number,
   scope?: GenericCooldownScope,
+  realmPeerAccountId?: string,
 ): string[] {
   const set = getAccountSet(providerName);
   if (!set) return [];
+  const realmIds = workbuddySameRealmIds(providerName, realmPeerAccountId);
   return set.accounts
     .filter(account => account.needsReauth !== true && !isCooled(providerName, account.id, now, scope))
+    .filter(account => !realmIds || realmIds.has(account.id))
     .map(account => account.id);
 }
 
@@ -434,7 +470,12 @@ function pickFillFirstGenericAccount(
 ): string | null {
   const stableAll = stableGenericRoster(providerName);
   if (stableAll.length < 2) return null;
-  const eligible = new Set(eligibleAccountsForScope(providerName, now, classifyCooldownScope(providerName, requestedModelId)));
+  const eligible = new Set(eligibleAccountsForScope(
+    providerName,
+    now,
+    classifyCooldownScope(providerName, requestedModelId),
+    activeId,
+  ));
   const stored = config.providers?.[providerName]?.oauthAccountFailover?.autoSwitchThreshold;
   const threshold = typeof stored === "number" && Number.isInteger(stored) && stored >= 0 && stored <= 100
     ? stored
@@ -474,7 +515,12 @@ export function noteGenericPoolSelection(
   const limit = genericStickyLimit(config, providerName);
   const picked = pickRoundRobinAccount(
     poolKey,
-    eligibleAccountsForScope(providerName, Date.now(), classifyCooldownScope(providerName, requestedModelId)),
+    eligibleAccountsForScope(
+      providerName,
+      Date.now(),
+      classifyCooldownScope(providerName, requestedModelId),
+      accountId,
+    ),
     limit,
   );
   // The resolver may have admitted a different account than the ring proposed: a removal, a
@@ -548,9 +594,18 @@ export function rotateGenericOAuthAccountOn429(
     cooldownUntil: now + cooldownMs,
     cooldownSource: source,
   });
+  if (providerName === CODEBUDDY_PROVIDER_ID) {
+    noteWorkbuddyPoolCooldown({
+      accountId: failedAccountId,
+      modelId: scope?.startsWith("model:") ? modelId : undefined,
+      untilMs: now + cooldownMs,
+      now,
+      reason: options?.quotaExhausted ? "quota" : "rate-limit",
+    });
+  }
   sweepExpiredOnWrite(now);
 
-  const eligible = eligibleAccountsForScope(providerName, now, scope).filter(id => id !== failedAccountId);
+  const eligible = eligibleAccountsForScope(providerName, now, scope, failedAccountId).filter(id => id !== failedAccountId);
   if (eligible.length === 0) return null;
   // A rotation means the roster in use just changed; do not answer the next activation question
   // from a count read before the failure.
@@ -563,6 +618,14 @@ export function rotateGenericOAuthAccountOn429(
   const ring = start >= 0 ? [...order.slice(start + 1), ...order.slice(0, start)] : order;
   const candidates = ring.filter(id => id !== failedAccountId && eligible.includes(id));
   if (candidates.length === 0) return null;
+  if (providerName === CODEBUDDY_PROVIDER_ID) {
+    return pickWorkbuddyAccount({
+      modelId,
+      exclude: [failedAccountId],
+      realmPeerAccountId: failedAccountId,
+      now,
+    });
+  }
   // The 429 path branches too. Leaving it on the quota ranking would make a configured
   // strategy inert in practice the moment anything actually failed, which is the case the
   // operator chose the strategy for.
@@ -641,9 +704,13 @@ export function preferredInitialAccount(
   providerName: string,
   now = Date.now(),
   requestedModelId?: string | null,
+  sessionKey?: string,
 ): string | null {
   const provider = config.providers?.[providerName];
   if (!provider || !isGenericFailoverProvider(providerName, provider)) return null;
+  if (providerName === CODEBUDDY_PROVIDER_ID) {
+    return preferredWorkbuddyAccount(config, now, requestedModelId, sessionKey);
+  }
   // Read the same authoritative selection the management writer commits. Caching the
   // active id separately would delay manual selection and account removal.
   const selected = getAccountSet(providerName);
@@ -661,7 +728,7 @@ export function preferredInitialAccount(
   // still honoured inside each pick.
   const strategy = activeGenericStrategy(config, providerName);
   if (strategy === "round-robin") {
-    const eligibleNow = eligibleAccountsForScope(providerName, now, scope);
+    const eligibleNow = eligibleAccountsForScope(providerName, now, scope, active);
     if (eligibleNow.length === 0) return null;
     // PEEK, not pick: this proposal is discardable, and advancing the ring for an account the
     // resolver then rejects would skip a turn for nothing. noteGenericPoolSelection commits.
@@ -725,7 +792,10 @@ function pickSurvivor(
   requestedModelId: string | null | undefined,
   rank: boolean,
 ): string | null {
-  const eligible = order.filter(id => !isCooled(providerName, id, now, scope));
+  const realmIds = workbuddySameRealmIds(providerName, active);
+  const eligible = order
+    .filter(id => !isCooled(providerName, id, now, scope))
+    .filter(id => !realmIds || realmIds.has(id));
   if (eligible.length === 0) return null;
   // Start the ring at the active account so an unranked outcome reproduces today's choice.
   const start = active ? order.indexOf(active) : -1;

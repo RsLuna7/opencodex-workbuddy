@@ -8,9 +8,22 @@
  */
 import type { OAuthController, OAuthCredentials } from "./types";
 import { BOUNDED_BODY_MAX_BYTES, readBoundedResponseBody } from "../lib/bounded-body";
+import { applyWorkbuddyLoginOriginHeaders, applyWorkbuddyRefreshHeaders } from "./codebuddy-headers";
+import {
+  WORKBUDDY_CN_AUTH_ORIGIN,
+  WORKBUDDY_CN_CHAT_BASE,
+  WORKBUDDY_PLUGIN_PREFIX,
+  workbuddyAccountsUrl,
+  workbuddyAuthStateUrl,
+  workbuddyAuthTokenUrl,
+  workbuddyLoginAccountUrl,
+  workbuddySiteProfile,
+  workbuddyTokenRefreshUrl,
+} from "./codebuddy-hosts";
+import { resolveWorkbuddyRealm, type WorkbuddyRealm } from "./codebuddy-realm";
 
-export const CODEBUDDY_AUTH_ORIGIN = "https://www.codebuddy.cn";
-export const CODEBUDDY_CHAT_BASE_URL = "https://copilot.tencent.com/v2";
+export const CODEBUDDY_AUTH_ORIGIN = WORKBUDDY_CN_AUTH_ORIGIN;
+export const CODEBUDDY_CHAT_BASE_URL = WORKBUDDY_CN_CHAT_BASE;
 export const CODEBUDDY_PROVIDER_ID = "workbuddy";
 
 export function applyCodebuddyAccountHeaders(
@@ -41,9 +54,12 @@ const codebuddyFailoverHints = new WeakMap<Response, CodebuddyFailoverHint>();
 
 /** Observed 2026-09-11: "将在 2026-09-11 18:52:21 UTC+8 重置". */
 const CODEBUDDY_RESET_AT_RE = /将在\s+(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})\s*UTC\+8/;
+/** Global 6004: "will reset at 2026-09-19 04:23:04 UTC+8, alternatively…" (buddy-proxy). */
+const CODEBUDDY_RESET_AT_EN_RE =
+  /will reset at\s+(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:\s*(?:UTC|GMT)\s*\+\s*0?8(?::?00)?)?/i;
 
 export function parseCodebuddyResetAtMs(text: string, now = Date.now()): number | undefined {
-  const match = CODEBUDDY_RESET_AT_RE.exec(text);
+  const match = CODEBUDDY_RESET_AT_RE.exec(text) ?? CODEBUDDY_RESET_AT_EN_RE.exec(text);
   if (!match) return undefined;
   const ms = Date.parse(`${match[1]}T${match[2]}+08:00`);
   if (!Number.isFinite(ms) || ms <= now) return undefined;
@@ -124,8 +140,6 @@ export async function recoverCodebuddyFailoverHint(
   return codebuddyFailoverHintFromErrorPayload(text, now);
 }
 
-const AUTH_PREFIX = "/v2/plugin";
-const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
 const POLL_INTERVAL_MS = 1_500;
 const REQUEST_TIMEOUT_MS = 20_000;
 const OAUTH_EXPIRY_SKEW_MS = 5 * 60 * 1000;
@@ -215,15 +229,17 @@ function envelopeOk(body: unknown): boolean {
 }
 
 async function fetchAccountInfo(
+  realm: WorkbuddyRealm,
   accessToken: string,
   state: string,
   domain: string | undefined,
   signal?: AbortSignal,
 ): Promise<{ uid?: string; email?: string; enterpriseId?: string }> {
   const headers: Record<string, string> = { Authorization: `Bearer ${accessToken}` };
+  applyWorkbuddyLoginOriginHeaders(headers, realm);
   if (domain) headers["X-Domain"] = domain;
   const response = await codebuddyFetch(
-    `${CODEBUDDY_AUTH_ORIGIN}${AUTH_PREFIX}/login/account?state=${encodeURIComponent(state)}`,
+    workbuddyLoginAccountUrl(realm, state),
     { method: "GET", headers },
     signal,
   );
@@ -244,6 +260,9 @@ function credentialFromTokens(params: {
   email?: string;
   enterpriseId?: string;
   domain?: string;
+  realm?: WorkbuddyRealm;
+  platform?: string;
+  deviceToken?: string;
   source: OAuthCredentials["source"];
 }): OAuthCredentials {
   const refresh = params.refresh?.trim() || params.access;
@@ -258,28 +277,35 @@ function credentialFromTokens(params: {
   const uid = params.uid;
   const enterpriseId = params.enterpriseId;
   const domain = params.domain;
-  if (uid || enterpriseId || domain) {
+  const realm = resolveWorkbuddyRealm(params.realm, domain);
+  const platform = params.platform?.trim();
+  const deviceToken = params.deviceToken?.trim();
+  if (uid || enterpriseId || domain || params.realm || platform || deviceToken) {
     cred.codebuddy = {
       ...(uid ? { uid } : {}),
       ...(enterpriseId ? { enterpriseId } : {}),
       ...(domain ? { domain } : {}),
+      realm,
+      ...(platform ? { platform } : {}),
+      ...(deviceToken ? { deviceToken } : {}),
     };
   }
   return cred;
 }
 
-export async function validateCodebuddyAccessToken(
+async function validateCodebuddyAccessTokenOnRealm(
+  realm: WorkbuddyRealm,
   accessToken: string,
   signal?: AbortSignal,
-): Promise<OAuthCredentials> {
-  const token = accessToken.trim();
-  if (!token) throw new Error("CodeBuddy token is empty");
+): Promise<OAuthCredentials | undefined> {
+  const headers: Record<string, string> = { Authorization: `Bearer ${accessToken}` };
+  applyWorkbuddyLoginOriginHeaders(headers, realm);
   const response = await codebuddyFetch(
-    `${CODEBUDDY_AUTH_ORIGIN}${AUTH_PREFIX}/accounts`,
-    { method: "GET", headers: { Authorization: `Bearer ${token}` } },
+    workbuddyAccountsUrl(realm),
+    { method: "GET", headers },
     signal,
   );
-  if (!response.ok) throw new Error(`CodeBuddy token validation failed: HTTP ${response.status}`);
+  if (!response.ok) return undefined;
   const body = await readJson(response, signal);
   const accounts = body && typeof body === "object"
     ? (body as { data?: { accounts?: unknown } }).data?.accounts
@@ -288,28 +314,49 @@ export async function validateCodebuddyAccessToken(
   const account = list.find(item => item && typeof item === "object" && (item as { lastLogin?: unknown }).lastLogin === true)
     ?? list[0]
     ?? {};
+  const domain = stringField(account, ["domain"]);
   return credentialFromTokens({
-    access: token,
+    access: accessToken,
     uid: stringField(account, ["uid", "userId", "user_id"]),
     email: stringField(account, ["email", "accountEmail", "account_email", "nickname"]),
     enterpriseId: stringField(account, ["enterpriseId", "enterprise_id"]),
-    domain: stringField(account, ["domain"]),
+    domain,
+    realm: resolveWorkbuddyRealm(realm, domain),
     source: "manual",
   });
 }
 
+export async function validateCodebuddyAccessToken(
+  accessToken: string,
+  signal?: AbortSignal,
+  realm?: WorkbuddyRealm,
+): Promise<OAuthCredentials> {
+  const token = accessToken.trim();
+  if (!token) throw new Error("CodeBuddy token is empty");
+  const order: WorkbuddyRealm[] = realm === "global" ? ["global", "cn"] : realm === "cn" ? ["cn", "global"] : ["cn", "global"];
+  for (const site of order) {
+    const cred = await validateCodebuddyAccessTokenOnRealm(site, token, signal);
+    if (cred) return cred;
+  }
+  throw new Error("CodeBuddy token validation failed");
+}
+
 async function pollAccessToken(
+  realm: WorkbuddyRealm,
+  platform: string,
   state: string,
   signal?: AbortSignal,
 ): Promise<OAuthCredentials> {
-  const deadline = Date.now() + LOGIN_TIMEOUT_MS;
+  const deadline = Date.now() + workbuddySiteProfile(realm).loginTimeoutMs;
+  const originHeaders: Record<string, string> = {};
+  applyWorkbuddyLoginOriginHeaders(originHeaders, realm);
   while (Date.now() < deadline) {
     if (signal?.aborted) {
       throw signal.reason ?? new DOMException("Login cancelled", "AbortError");
     }
     const response = await codebuddyFetch(
-      `${CODEBUDDY_AUTH_ORIGIN}${AUTH_PREFIX}/auth/token?state=${encodeURIComponent(state)}`,
-      { method: "GET" },
+      workbuddyAuthTokenUrl(realm, state),
+      { method: "GET", headers: originHeaders },
       signal,
     );
     const body = await readJson(response, signal);
@@ -321,7 +368,7 @@ async function pollAccessToken(
         const refresh = stringField(data, ["refreshToken", "refresh_token"]);
         let account: { uid?: string; email?: string; enterpriseId?: string } = {};
         try {
-          account = await fetchAccountInfo(access, state, domain, signal);
+          account = await fetchAccountInfo(realm, access, state, domain, signal);
         } catch {
           account = {
             uid: stringField(data, ["uid", "userId", "user_id"]),
@@ -340,6 +387,8 @@ async function pollAccessToken(
           email: account.email,
           enterpriseId: account.enterpriseId,
           domain,
+          realm: resolveWorkbuddyRealm(realm, domain),
+          platform,
           source: "oauth",
         });
       }
@@ -349,51 +398,77 @@ async function pollAccessToken(
   throw new Error("CodeBuddy login timed out. Start the login again.");
 }
 
-async function pasteAccessToken(ctrl: OAuthController): Promise<OAuthCredentials> {
+async function pasteAccessToken(ctrl: OAuthController, realm: WorkbuddyRealm): Promise<OAuthCredentials> {
   while (true) {
     if (ctrl.signal?.aborted) {
       throw ctrl.signal.reason ?? new DOMException("Login cancelled", "AbortError");
     }
     const input = (await ctrl.onManualCodeInput?.())?.trim();
     if (!input) continue;
-    return await validateCodebuddyAccessToken(input, ctrl.signal);
+    return await validateCodebuddyAccessToken(input, ctrl.signal, realm);
   }
 }
 
-export async function loginCodebuddy(ctrl: OAuthController = {}): Promise<OAuthCredentials> {
+async function startAuthState(
+  realm: WorkbuddyRealm,
+  platform: string,
+  signal?: AbortSignal,
+): Promise<{ state: string; authUrl: string } | undefined> {
+  const headers: Record<string, string> = {};
+  applyWorkbuddyLoginOriginHeaders(headers, realm);
+  const start = await codebuddyFetch(
+    workbuddyAuthStateUrl(realm, platform),
+    { method: "POST", headers, body: "{}" },
+    signal,
+  );
+  const body = await readJson(start, signal);
+  const data = body && typeof body === "object" ? (body as { data?: unknown }).data : undefined;
+  const state = stringField(data, ["state"]);
+  if (!state) return undefined;
+  const profile = workbuddySiteProfile(realm);
+  const authUrl = stringField(data, ["authUrl", "auth_url", "url"])
+    ?? `${profile.webOrigin}/login?state=${encodeURIComponent(state)}`;
+  return { state, authUrl };
+}
+
+export async function loginCodebuddy(
+  ctrl: OAuthController = {},
+  opts?: { realm?: WorkbuddyRealm },
+): Promise<OAuthCredentials> {
   if (ctrl.signal?.aborted) {
     throw ctrl.signal.reason ?? new DOMException("Login cancelled", "AbortError");
   }
-  const start = await codebuddyFetch(
-    `${CODEBUDDY_AUTH_ORIGIN}${AUTH_PREFIX}/auth/state?platform=ide`,
-    { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
-    ctrl.signal,
-  );
-  const body = await readJson(start, ctrl.signal);
-  const data = body && typeof body === "object" ? (body as { data?: unknown }).data : undefined;
-  const state = stringField(data, ["state"]);
-  if (!state) throw new Error("CodeBuddy login did not return a state");
-  const verificationUri = stringField(data, ["authUrl", "auth_url", "url"])
-    ?? `${CODEBUDDY_AUTH_ORIGIN}/login?state=${encodeURIComponent(state)}`;
+  const realm = resolveWorkbuddyRealm(opts?.realm);
+  const profile = workbuddySiteProfile(realm);
+  let started: { state: string; authUrl: string; platform: string } | undefined;
+  for (const platform of profile.loginPlatforms) {
+    const attempt = await startAuthState(realm, platform, ctrl.signal);
+    if (attempt) {
+      started = { ...attempt, platform };
+      break;
+    }
+  }
+  if (!started) throw new Error("CodeBuddy login did not return a state");
 
   const pollAbort = new AbortController();
   const onParentAbort = () => pollAbort.abort(ctrl.signal?.reason);
   ctrl.signal?.addEventListener("abort", onParentAbort, { once: true });
   if (ctrl.signal?.aborted) pollAbort.abort(ctrl.signal.reason);
 
+  const siteLabel = realm === "global" ? "WorkBuddy (international)" : "CodeBuddy / WorkBuddy";
   ctrl.onAuth?.({
-    url: verificationUri,
-    instructions: "Sign in to CodeBuddy / WorkBuddy in the browser, or paste an access token below.",
+    url: started.authUrl,
+    instructions: `Sign in to ${siteLabel} in the browser, or paste an access token below.`,
   });
   if (pollAbort.signal.aborted) {
     throw pollAbort.signal.reason ?? new DOMException("Login cancelled", "AbortError");
   }
-  ctrl.onProgress?.("Waiting for CodeBuddy authentication...");
+  ctrl.onProgress?.(`Waiting for ${siteLabel} authentication...`);
 
   try {
-    const poll = pollAccessToken(state, pollAbort.signal);
+    const poll = pollAccessToken(realm, started.platform, started.state, pollAbort.signal);
     if (!ctrl.onManualCodeInput) return await poll;
-    const pasted = pasteAccessToken({ ...ctrl, signal: pollAbort.signal });
+    const pasted = pasteAccessToken({ ...ctrl, signal: pollAbort.signal }, realm);
     return await Promise.race([poll, pasted]);
   } finally {
     pollAbort.abort();
@@ -408,6 +483,7 @@ export async function refreshCodebuddyToken(
 ): Promise<OAuthCredentials> {
   const access = credential?.access?.trim();
   const refresh = refreshToken.trim();
+  const realm = resolveWorkbuddyRealm(credential?.codebuddy?.realm, credential?.codebuddy?.domain);
   if (!refresh || !access || refresh === access) {
     if (!access) throw new Error("CodeBuddy refresh requires an access token");
     return credentialFromTokens({
@@ -417,18 +493,19 @@ export async function refreshCodebuddyToken(
       email: credential?.email,
       enterpriseId: credential?.codebuddy?.enterpriseId,
       domain: credential?.codebuddy?.domain,
+      realm,
+      platform: credential?.codebuddy?.platform,
+      deviceToken: credential?.codebuddy?.deviceToken,
       source: credential?.source ?? "oauth",
     });
   }
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
     Authorization: `Bearer ${access}`,
     "X-Refresh-Token": refresh,
   };
-  const domain = credential?.codebuddy?.domain;
-  if (domain) headers["X-Domain"] = domain;
+  applyWorkbuddyRefreshHeaders(headers, realm, credential?.codebuddy);
   const response = await codebuddyFetch(
-    `${CODEBUDDY_AUTH_ORIGIN}${AUTH_PREFIX}/auth/token/refresh`,
+    workbuddyTokenRefreshUrl(realm),
     { method: "POST", headers, body: "{}" },
     signal,
   );
@@ -440,7 +517,7 @@ export async function refreshCodebuddyToken(
   const data = body && typeof body === "object" ? (body as { data?: unknown }).data : undefined;
   const nextAccess = stringField(data, ["accessToken", "access_token"]) ?? access;
   const nextRefresh = stringField(data, ["refreshToken", "refresh_token"]) ?? refresh;
-  const nextDomain = stringField(data, ["domain"]) ?? domain;
+  const nextDomain = stringField(data, ["domain"]) ?? credential?.codebuddy?.domain;
   return credentialFromTokens({
     access: nextAccess,
     refresh: nextRefresh,
@@ -452,6 +529,9 @@ export async function refreshCodebuddyToken(
     email: credential?.email,
     enterpriseId: credential?.codebuddy?.enterpriseId,
     domain: nextDomain,
+    realm: resolveWorkbuddyRealm(realm, nextDomain),
+    platform: credential?.codebuddy?.platform,
+    deviceToken: credential?.codebuddy?.deviceToken,
     source: credential?.source ?? "oauth",
   });
 }

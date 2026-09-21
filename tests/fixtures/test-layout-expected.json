@@ -1357,6 +1357,8 @@
   "winsw-stop-hardening.test.ts": "windows",
   "winsw.test.ts": "service",
   "workbuddy-account-pool.test.ts": "oauth",
+  "workbuddy-pool.test.ts": "oauth",
+  "workbuddy-realm.test.ts": "oauth",
   "workflow-budget.test.ts": "lib",
   "ws-endpoint.test.ts": "responses",
   "ws-failure-stage.test.ts": "responses",

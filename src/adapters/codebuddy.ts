@@ -4,16 +4,23 @@ import type { OcxParsedRequest, OcxProviderConfig } from "../types";
 import type { AdapterTierMetadata } from "../providers/fastwire";
 import type { TranslatorBudget } from "../lib/translator-budget";
 import { readBoundedResponseBody } from "../lib/bounded-body";
-import { getCredential } from "../oauth/store";
 import {
-  applyCodebuddyAccountHeaders,
   codebuddyFailoverHintFromQuotaCode,
-  CODEBUDDY_CHAT_BASE_URL,
-  CODEBUDDY_PROVIDER_ID,
   rememberCodebuddyFailoverHint,
 } from "../oauth/codebuddy";
+import { applyWorkbuddyChatHeaders } from "../oauth/codebuddy-headers";
+import { isCanonicalWorkbuddyChatBase, workbuddyChatCompletionsUrl } from "../oauth/codebuddy-hosts";
+import { prepareWorkbuddyChatBody } from "../oauth/codebuddy-payload";
+import { resolveWorkbuddyRealm } from "../oauth/codebuddy-realm";
+import {
+  acquireWorkbuddyLease,
+  bindWorkbuddySession,
+  noteWorkbuddyPoolFailure,
+  noteWorkbuddyPoolSuccess,
+  releaseWorkbuddyLease,
+  workbuddyAccountIdForUid,
+} from "../oauth/workbuddy-pool";
 import { createOpenAIChatAdapter } from "./openai-chat";
-import { openaiChatCompletionsUrl } from "./openai-chat-url";
 import { formatOpenAIChatErrorBody } from "./openai-chat";
 
 const CODEBUDDY_MAX_OUTPUT_TOKENS = 32_768;
@@ -23,38 +30,8 @@ const CODEBUDDY_QUOTA_CODE = "14018";
 const CODEBUDDY_MODEL_RATE_QUOTA_CODE = "6004";
 const CODEBUDDY_QUOTA_CODES = new Set([CODEBUDDY_QUOTA_CODE, CODEBUDDY_MODEL_RATE_QUOTA_CODE]);
 
-const STATIC_HEADERS: Record<string, string> = {
-  "Content-Type": "application/json",
-  "X-Product": "SaaS",
-  "X-IDE-Name": "CodeBuddyIDE",
-  "X-Requested-With": "XMLHttpRequest",
-  "User-Agent": "CodeBuddyIDE",
-};
-
 function isCanonicalCodebuddyEndpoint(baseUrl: string): boolean {
-  try {
-    const actual = new URL(baseUrl.trim());
-    const expected = new URL(CODEBUDDY_CHAT_BASE_URL);
-    const norm = (value: URL) => {
-      value.pathname = value.pathname.replace(/\/+$/, "") || "/";
-      return value.toString().replace(/\/$/, "");
-    };
-    return norm(actual) === norm(expected);
-  } catch {
-    return false;
-  }
-}
-
-function applyAccountHeaders(
-  headers: Record<string, string>,
-  routing?: { uid?: string; enterpriseId?: string; domain?: string } | null,
-): void {
-  applyCodebuddyAccountHeaders(
-    headers,
-    routing
-      ? { accountId: routing.uid, codebuddy: routing }
-      : getCredential(CODEBUDDY_PROVIDER_ID),
-  );
+  return isCanonicalWorkbuddyChatBase(baseUrl);
 }
 
 function forceStreamBody(raw: string): string {
@@ -80,6 +57,12 @@ function forceStreamBody(raw: string): string {
     }
   }
   return JSON.stringify(body);
+}
+
+function conversationMeta(parsed: OcxParsedRequest): { conversationId?: string; conversationRequestId?: string } {
+  const conversationId = parsed.options.promptCacheKey?.trim()
+    || parsed._providerContinuation?.cursor?.conversationId?.trim();
+  return conversationId ? { conversationId, conversationRequestId: conversationId } : {};
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -195,11 +178,10 @@ async function rewriteCodebuddyQuotaResponse(
 export function createCodebuddyAdapter(provider: OcxProviderConfig): ProviderAdapter {
   if (!isCanonicalCodebuddyEndpoint(provider.baseUrl)) {
     throw new Error(
-      "The codebuddy adapter only supports the canonical CodeBuddy CN endpoint. Use openai-chat for a custom endpoint.",
+      "The codebuddy adapter only supports the canonical CodeBuddy CN or WorkBuddy Global endpoints. Use openai-chat for a custom endpoint.",
     );
   }
   const base = createOpenAIChatAdapter(provider);
-  const chatUrl = openaiChatCompletionsUrl(CODEBUDDY_CHAT_BASE_URL);
 
   return {
     ...base,
@@ -209,29 +191,54 @@ export function createCodebuddyAdapter(provider: OcxProviderConfig): ProviderAda
 
     async fetchResponse(request: AdapterRequest, ctx?: AdapterFetchContext): Promise<Response> {
       const executor = ctx?.executor ?? globalThis.fetch;
-      const response = await executor(request.url, {
-        method: request.method,
-        headers: request.headers,
-        body: request.body,
-        signal: ctx?.abortSignal,
-      });
-      return rewriteCodebuddyQuotaResponse(response, ctx?.abortSignal);
+      const uid = request.headers["X-User-Id"] ?? request.headers["x-user-id"];
+      const accountId = workbuddyAccountIdForUid(uid);
+      const sessionKey = request.headers["X-Conversation-ID"] ?? request.headers["x-conversation-id"];
+      if (accountId) acquireWorkbuddyLease(accountId);
+      try {
+        const response = await executor(request.url, {
+          method: request.method,
+          headers: request.headers,
+          body: request.body,
+          signal: ctx?.abortSignal,
+        });
+        const rewritten = await rewriteCodebuddyQuotaResponse(response, ctx?.abortSignal);
+        if (accountId && rewritten.ok) {
+          noteWorkbuddyPoolSuccess({ accountId });
+          if (sessionKey) bindWorkbuddySession(sessionKey, accountId);
+        } else if (accountId && rewritten.status >= 500) {
+          noteWorkbuddyPoolFailure({ accountId });
+        }
+        return rewritten;
+      } catch (error) {
+        if (accountId) noteWorkbuddyPoolFailure({ accountId });
+        throw error;
+      } finally {
+        if (accountId) releaseWorkbuddyLease(accountId);
+      }
     },
 
     async buildRequest(parsed: OcxParsedRequest, incoming: IncomingMeta): Promise<AdapterRequest> {
       const baseReq = await base.buildRequest(parsed, incoming);
+      const routing = parsed._codebuddyAuthContext;
+      const realm = resolveWorkbuddyRealm(routing?.realm, routing?.domain);
       const headers: Record<string, string> = {
-        ...STATIC_HEADERS,
         ...(baseReq.headers as Record<string, string> | undefined),
-        ...STATIC_HEADERS,
-        Accept: "text/event-stream",
       };
-      applyAccountHeaders(headers, parsed._codebuddyAuthContext);
+      applyWorkbuddyChatHeaders(headers, realm, routing, {
+        ...conversationMeta(parsed),
+        deviceToken: routing?.deviceToken,
+      });
+      const streamed = forceStreamBody(String(baseReq.body ?? ""));
+      const body = prepareWorkbuddyChatBody(streamed, {
+        ensureSystem: realm === "global",
+        sanitize: true,
+      });
       return {
         ...baseReq,
-        url: chatUrl,
+        url: workbuddyChatCompletionsUrl(realm),
         headers,
-        body: forceStreamBody(String(baseReq.body ?? "")),
+        body,
       };
     },
 

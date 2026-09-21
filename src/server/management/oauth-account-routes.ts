@@ -169,7 +169,14 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
   // the provider's loopback callback server (inside this process) captures the redirect in the
   // background, then the credential is persisted. The GUI opens the URL and polls /api/oauth/status.
   if (url.pathname === "/api/oauth/login" && req.method === "POST") {
-    const body = await readManagementJsonBodyOr(req, {}) as { provider?: string; addAccount?: boolean; accountId?: string; reauth?: boolean; openBrowser?: unknown };
+    const body = await readManagementJsonBodyOr(req, {}) as {
+      provider?: string;
+      addAccount?: boolean;
+      accountId?: string;
+      reauth?: boolean;
+      openBrowser?: unknown;
+      realm?: string;
+    };
     const provider = (body.provider ?? "").trim().toLowerCase();
     if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
     const namespaceCollision = codexAccountNamespaceProviderCollisionError(config.codexAccountNamespaces, provider);
@@ -188,9 +195,13 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
       // request may already have mutated live config and yielded before its save.
       const persistedBaseline = readConfigDiagnostics().config;
       // addAccount / reauth forces a fresh browser identity (skips local-CLI token import).
+      const realm = provider === "workbuddy" && (body.realm === "cn" || body.realm === "global")
+        ? body.realm
+        : undefined;
       const { url: authUrl, instructions, deviceCode } = await startLoginFlow(provider, {
         forceLogin: body.addAccount === true || reauth,
         ...(accountId ? { reauthAccountId: accountId } : {}),
+        ...(realm ? { realm } : {}),
       }, {
         // startLoginFlow returns the authorization URL before background persistence completes.
         // Three-way reconcile settled disk changes so a failed login cannot leave a provider

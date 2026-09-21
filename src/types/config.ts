@@ -934,6 +934,11 @@ export interface OcxConfig {
    */
   workbuddyCheckin?: { auto?: boolean };
   /**
+   * WorkBuddy international-site routing. Default on. `enabled: false` is the
+   * CN-only lock: stored global credentials still exist, but chat/refresh use CN hosts.
+   */
+  workbuddyGlobal?: { enabled?: boolean };
+  /**
    * Shared account-pool kernel, opt-in and off by default.
    *
    * `kernel: true` is what makes a generic OAuth provider's stored `strategy` and
