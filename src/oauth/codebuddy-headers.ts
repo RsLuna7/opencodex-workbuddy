@@ -13,6 +13,7 @@ import {
   WORKBUDDY_CLIENT_VERSION,
   workbuddySiteProfile,
 } from "./codebuddy-hosts";
+import { resolveWorkbuddyDeviceToken } from "./workbuddy-device-token";
 
 export interface WorkbuddyChatMeta {
   conversationId?: string;
@@ -87,7 +88,8 @@ export function applyWorkbuddyChatHeaders(
     headers["X-Machine-ID"] = deriveAccountStableId(uid, "machine");
     headers["X-Session-ID"] = deriveAccountStableId(uid, "session");
   }
-  const deviceToken = meta?.deviceToken ?? routing?.deviceToken;
+  const deviceToken = meta?.deviceToken ?? routing?.deviceToken
+    ?? resolveWorkbuddyDeviceToken();
   if (deviceToken) headers["X-Device-Token"] = deviceToken;
 
   const conversationRequestId = meta?.conversationRequestId?.trim() || randomHex(16);
@@ -129,4 +131,38 @@ export function applyWorkbuddyLoginOriginHeaders(
   headers["X-Requested-With"] = "XMLHttpRequest";
   headers["Origin"] = origin;
   headers["Referer"] = `${origin}/`;
+}
+
+/** Official desktop billing UA (`WorkBuddy/<clientVersion>`, no CLI segment). */
+export function workbuddyBillingUserAgent(): string {
+  return `WorkBuddy/${WORKBUDDY_CLIENT_VERSION}`;
+}
+
+/**
+ * Billing / check-in / trial / growth headers.
+ * Matches workbuddy2api BillingHeaders: short desktop UA, Origin, X-CodeBuddy-Request.
+ */
+export function applyWorkbuddyBillingHeaders(
+  headers: Record<string, string>,
+  realm: WorkbuddyRealm,
+  routing?: CodebuddyOAuthMetadata | null,
+): void {
+  const profile = workbuddySiteProfile(realm);
+  headers["Content-Type"] = "application/json";
+  headers["Accept"] = "application/json";
+  headers["X-Requested-With"] = "XMLHttpRequest";
+  headers["X-CodeBuddy-Request"] = "1";
+  headers["Origin"] = profile.webOrigin;
+  headers["Referer"] = `${profile.webOrigin}/`;
+  headers["Accept-Language"] = realm === "global" ? "en-US" : "zh-CN";
+  headers["User-Agent"] = workbuddyBillingUserAgent();
+  const uid = routing?.uid;
+  if (uid) headers["X-User-Id"] = uid;
+  if (routing?.enterpriseId) {
+    headers["X-Enterprise-Id"] = routing.enterpriseId;
+    headers["X-Tenant-Id"] = routing.enterpriseId;
+  }
+  if (routing?.domain) headers["X-Domain"] = routing.domain;
+  const deviceToken = routing?.deviceToken ?? resolveWorkbuddyDeviceToken();
+  if (deviceToken) headers["X-Device-Token"] = deviceToken;
 }

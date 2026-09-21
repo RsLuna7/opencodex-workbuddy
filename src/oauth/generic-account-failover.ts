@@ -23,6 +23,7 @@ import {
   pickWorkbuddyAccount,
   preferredWorkbuddyAccount,
 } from "./workbuddy-pool";
+import { isWorkbuddyWafIpBlocked } from "./workbuddy-waf";
 import { getValidAccessSnapshotForAccount, type OAuthAccessSnapshot } from "./index";
 import {
   accountHeadroomPercent,
@@ -666,6 +667,9 @@ export function shouldAttemptGenericOAuthFailover(
 ): boolean {
   if (!accountId || failovers >= GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST) return false;
   if (!isGenericOAuthFailoverEnabled(config, providerName)) return false;
+  if (providerName === CODEBUDDY_PROVIDER_ID && status === 403) {
+    return !isWorkbuddyWafIpBlocked();
+  }
   if (status === 429) return true;
   // WorkBuddy rewrites its 14018/6004 business codes to HTTP 402. That status alone is not a
   // rotation signal — an ordinary billing 402 must pass through — so the adapter leaves a hint

@@ -10,6 +10,9 @@
 import { registerOptionalShutdownHook } from "../lib/optional-shutdown-hooks";
 import type { OcxConfig } from "../types";
 import { CODEBUDDY_PROVIDER_ID, refreshCodebuddyToken } from "./codebuddy";
+import { applyWorkbuddyBillingHeaders } from "./codebuddy-headers";
+import { credentialWorkbuddyRealm } from "./codebuddy-realm";
+import { workbuddyFetch } from "./workbuddy-fetch";
 import { setWorkbuddyPoolCredits } from "./workbuddy-pool";
 import { listAccounts, saveAccountCredential } from "./store";
 import type { OAuthCredentials, ProviderAccount } from "./types";
@@ -101,19 +104,15 @@ export function workbuddyCheckinLabel(account: ProviderAccount): string {
 }
 
 export function workbuddyCheckinHeaders(cred: OAuthCredentials): Record<string, string> {
-  const uid = cred.codebuddy?.uid ?? cred.accountId;
   const headers: Record<string, string> = {
-    Accept: "application/json",
-    "Content-Type": "application/json",
     Authorization: `Bearer ${cred.access}`,
-    "User-Agent": "opencodex-workbuddy-checkin",
   };
-  if (uid) headers["X-User-Id"] = uid;
-  if (cred.codebuddy?.domain) headers["X-Domain"] = cred.codebuddy.domain;
-  if (cred.codebuddy?.enterpriseId) {
-    headers["X-Enterprise-Id"] = cred.codebuddy.enterpriseId;
-    headers["X-Tenant-Id"] = cred.codebuddy.enterpriseId;
-  }
+  applyWorkbuddyBillingHeaders(headers, credentialWorkbuddyRealm(cred), {
+    uid: cred.codebuddy?.uid ?? cred.accountId,
+    enterpriseId: cred.codebuddy?.enterpriseId,
+    domain: cred.codebuddy?.domain,
+    deviceToken: cred.codebuddy?.deviceToken,
+  });
   return headers;
 }
 
@@ -225,7 +224,7 @@ export async function checkinWorkbuddyCredential(
       return { ...base, result: "SKIPPED_GLOBAL", http: trial.http, msg: trial.msg };
     }
     const cred = await maybeRefreshAccount(account, opts);
-    const fetchImpl = opts.fetchImpl ?? fetch;
+    const fetchImpl = opts.fetchImpl ?? workbuddyFetch;
     const headers = workbuddyCheckinHeaders(cred);
     const status = await postBilling(WORKBUDDY_CHECKIN_STATUS_PATH, headers, fetchImpl);
     if (status.http === 401 || status.http === 403) {

@@ -21,6 +21,7 @@ import {
   workbuddyTokenRefreshUrl,
 } from "./codebuddy-hosts";
 import { resolveWorkbuddyRealm, type WorkbuddyRealm } from "./codebuddy-realm";
+import { workbuddyFetch } from "./workbuddy-fetch";
 
 export const CODEBUDDY_AUTH_ORIGIN = WORKBUDDY_CN_AUTH_ORIGIN;
 export const CODEBUDDY_CHAT_BASE_URL = WORKBUDDY_CN_CHAT_BASE;
@@ -219,7 +220,7 @@ async function codebuddyFetch(url: string, init: RequestInit, signal?: AbortSign
     ...(signal ? [signal] : []),
     ...(init.signal ? [init.signal] : []),
   ]);
-  return fetch(url, { ...init, signal: merged, headers: authHeaders(init.headers) });
+  return workbuddyFetch(url, { ...init, signal: merged, headers: authHeaders(init.headers) });
 }
 
 function envelopeOk(body: unknown): boolean {

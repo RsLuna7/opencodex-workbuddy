@@ -5,6 +5,7 @@ import type { AdapterTierMetadata } from "../providers/fastwire";
 import type { TranslatorBudget } from "../lib/translator-budget";
 import { readBoundedResponseBody } from "../lib/bounded-body";
 import {
+  CODEBUDDY_PROVIDER_ID,
   codebuddyFailoverHintFromQuotaCode,
   rememberCodebuddyFailoverHint,
 } from "../oauth/codebuddy";
@@ -12,6 +13,8 @@ import { applyWorkbuddyChatHeaders } from "../oauth/codebuddy-headers";
 import { isCanonicalWorkbuddyChatBase, workbuddyChatCompletionsUrl } from "../oauth/codebuddy-hosts";
 import { prepareWorkbuddyChatBody } from "../oauth/codebuddy-payload";
 import { resolveWorkbuddyRealm } from "../oauth/codebuddy-realm";
+import { applyGenericFailoverCooldown } from "../oauth/generic-account-failover";
+import { workbuddyFetch } from "../oauth/workbuddy-fetch";
 import {
   acquireWorkbuddyLease,
   bindWorkbuddySession,
@@ -20,6 +23,11 @@ import {
   releaseWorkbuddyLease,
   workbuddyAccountIdForUid,
 } from "../oauth/workbuddy-pool";
+import {
+  inspectWorkbuddyWafBlock,
+  noteWorkbuddyWafHit,
+  WORKBUDDY_WAF_ACCOUNT_COOLDOWN_MS,
+} from "../oauth/workbuddy-waf";
 import { createOpenAIChatAdapter } from "./openai-chat";
 import { formatOpenAIChatErrorBody } from "./openai-chat";
 
@@ -190,7 +198,7 @@ export function createCodebuddyAdapter(provider: OcxProviderConfig): ProviderAda
     formatErrorBody: formatCodebuddyErrorBody,
 
     async fetchResponse(request: AdapterRequest, ctx?: AdapterFetchContext): Promise<Response> {
-      const executor = ctx?.executor ?? globalThis.fetch;
+      const executor = ctx?.executor ?? workbuddyFetch;
       const uid = request.headers["X-User-Id"] ?? request.headers["x-user-id"];
       const accountId = workbuddyAccountIdForUid(uid);
       const sessionKey = request.headers["X-Conversation-ID"] ?? request.headers["x-conversation-id"];
@@ -206,6 +214,14 @@ export function createCodebuddyAdapter(provider: OcxProviderConfig): ProviderAda
         if (accountId && rewritten.ok) {
           noteWorkbuddyPoolSuccess({ accountId });
           if (sessionKey) bindWorkbuddySession(sessionKey, accountId);
+        } else if (accountId && rewritten.status === 403
+          && await inspectWorkbuddyWafBlock(rewritten, ctx?.abortSignal)) {
+          applyGenericFailoverCooldown({
+            providerName: CODEBUDDY_PROVIDER_ID,
+            accountId,
+            cooldownMs: WORKBUDDY_WAF_ACCOUNT_COOLDOWN_MS,
+          });
+          noteWorkbuddyWafHit(uid ?? accountId);
         } else if (accountId && rewritten.status >= 500) {
           noteWorkbuddyPoolFailure({ accountId });
         }

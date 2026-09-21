@@ -9,6 +9,7 @@ WorkBuddy 额度：
 - 加号：`ocx account login workbuddy`（中国站）。国际站：`ocx account login workbuddy --realm global`。列表：`ocx account list workbuddy`。换号只在同一站点内进行。
 - 每日签到：`ocx account checkin workbuddy`（可加 `--status` 只查不领）。代理在配置了 WorkBuddy 时每天 09:10 和 21:10（北京时间）自动签；国际站账号改领一次性 trial 加油包。配置 `"workbuddyCheckin": { "auto": false }` 可关掉自动签，手动命令仍可用。
 - 冷却、熔断、积分账本落在 `~/.opencodex/workbuddy-pool.json`，重启代理会接着用。
+- 出站钉 HTTP/1.1；签到/trial UA 是官方桌面短形态 `WorkBuddy/5.5.4`。WAF 403（无业务信封）软冷却该号，60 秒内两个不同号都中则停止换号。可选把官方桌面的 device token 文件路径放到环境变量 `OPENCODEX_WORKBUDDY_DEVICE_TOKEN_FILE`（只读、不写入 `auth.json`）。
 
 上游 remote 名是 `upstream`（`lidge-jun/opencodex`）。你的 GitHub 是 `origin`。
 

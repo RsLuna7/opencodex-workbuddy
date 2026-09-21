@@ -1431,5 +1431,6 @@
   "api-key-scope-alpha-search.test.ts": "server",
   "workbuddy-checkin.test.ts": "oauth",
   "workbuddy-growth.test.ts": "oauth",
+  "workbuddy-hardening.test.ts": "oauth",
   "cli-account-checkin.test.ts": "cli"
 }

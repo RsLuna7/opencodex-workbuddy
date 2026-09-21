@@ -10,6 +10,7 @@ import { CODEBUDDY_PROVIDER_ID, refreshCodebuddyToken } from "./codebuddy";
 import { workbuddyCheckinHeaders } from "./codebuddy-checkin";
 import { workbuddySiteProfile } from "./codebuddy-hosts";
 import { credentialWorkbuddyRealm } from "./codebuddy-realm";
+import { workbuddyFetch } from "./workbuddy-fetch";
 import { listAccounts } from "./store";
 import { setWorkbuddyPoolCredits } from "./workbuddy-pool";
 import type { OAuthCredentials, ProviderAccount } from "./types";
@@ -108,7 +109,7 @@ export async function claimWorkbuddyTrial(
   if (credentialWorkbuddyRealm(account.credential) !== "global") {
     return { ...base, result: "SKIPPED_CN" };
   }
-  const fetchImpl = deps.fetchImpl ?? fetch;
+  const fetchImpl = deps.fetchImpl ?? workbuddyFetch;
   const headers = workbuddyCheckinHeaders(account.credential);
   const origin = originFor(account.credential, "billing");
   try {
@@ -220,7 +221,7 @@ export async function runWorkbuddyGrowthTick(
   deps: WorkbuddyGrowthDeps = {},
 ): Promise<WorkbuddyGrowthResult[]> {
   const accounts = (deps.listAccountsImpl ?? listAccounts)(CODEBUDDY_PROVIDER_ID);
-  const fetchImpl = deps.fetchImpl ?? fetch;
+  const fetchImpl = deps.fetchImpl ?? workbuddyFetch;
   const out: WorkbuddyGrowthResult[] = [];
   for (const account of accounts) {
     const realm = credentialWorkbuddyRealm(account.credential);

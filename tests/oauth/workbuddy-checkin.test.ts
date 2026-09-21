@@ -9,9 +9,11 @@ import {
   runWorkbuddyCheckin,
   workbuddyCheckinActivationRequired,
   workbuddyCheckinExitCode,
+  workbuddyCheckinHeaders,
   WORKBUDDY_CHECKIN_CLAIM_PATH,
   WORKBUDDY_CHECKIN_STATUS_PATH,
 } from "../../src/oauth/codebuddy-checkin";
+import { workbuddyBillingUserAgent } from "../../src/oauth/codebuddy-headers";
 import { resetOptionalShutdownHooksForTests } from "../../src/lib/optional-shutdown-hooks";
 import { saveCredential } from "../../src/oauth/store";
 import type { OAuthCredentials, ProviderAccount } from "../../src/oauth/types";
@@ -59,6 +61,12 @@ describe("nextWorkbuddyCheckinDelayMs", () => {
 });
 
 describe("checkinWorkbuddyCredential", () => {
+  test("billing UA matches the official desktop short form", () => {
+    const headers = workbuddyCheckinHeaders(account().credential);
+    expect(headers["User-Agent"]).toBe(workbuddyBillingUserAgent());
+    expect(headers["User-Agent"]).not.toContain("opencodex");
+  });
+
   test("status-only never posts the claim endpoint", async () => {
     const paths: string[] = [];
     const fetchImpl: typeof fetch = async (input) => {

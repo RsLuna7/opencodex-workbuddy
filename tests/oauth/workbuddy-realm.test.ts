@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applyWorkbuddyChatHeaders } from "../../src/oauth/codebuddy-headers";
+import { applyWorkbuddyBillingHeaders, applyWorkbuddyChatHeaders, workbuddyBillingUserAgent } from "../../src/oauth/codebuddy-headers";
 import {
   isCanonicalWorkbuddyChatBase,
   WORKBUDDY_CN_CHAT_BASE,
@@ -114,6 +114,16 @@ describe("workbuddy headers", () => {
     expect(headers["User-Agent"]).toContain("WorkBuddy AI");
     expect(headers["X-Machine-ID"]).toHaveLength(36);
     expect(headers["X-Session-ID"]).toHaveLength(36);
+  });
+
+  test("billing headers use the desktop WorkBuddy UA", () => {
+    const headers: Record<string, string> = {};
+    applyWorkbuddyBillingHeaders(headers, "cn", { uid: "u1", domain: "copilot.tencent.com" });
+    expect(headers["User-Agent"]).toBe(workbuddyBillingUserAgent());
+    expect(headers["User-Agent"]).toBe("WorkBuddy/5.5.4");
+    expect(headers["X-CodeBuddy-Request"]).toBe("1");
+    expect(headers["Origin"]).toBe("https://www.codebuddy.cn");
+    expect(headers["Accept-Language"]).toBe("zh-CN");
   });
 });
 
