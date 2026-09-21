@@ -4,6 +4,7 @@
 
 WorkBuddy 额度：
 
+- 仪表盘「提供方 → WorkBuddy → 账户」会查每个号的剩余积分（`get-user-resource`）。国内号账户名右侧显示方形标签：已签到/未签到、每日任务/任务未做。刷新额度会重新拉账单。
 - 业务码 **14018**（整号额度）和 **6004**（单模型 24h 频率）改写成 HTTP **402** `insufficient_quota`，避免 Codex 把 429 空转重试。
 - 存了 **≥2 个号** 时，ocx 在内部换号：6004 只冷却「这个号 × 这个模型」（尽量跟上游重置时刻），不改你手动选中的当前号；14018 冷却整号。单号安装是 no-op。
 - 加号：`ocx account login workbuddy`（中国站）。国际站：`ocx account login workbuddy --realm global`。列表：`ocx account list workbuddy`。换号只在同一站点内进行。

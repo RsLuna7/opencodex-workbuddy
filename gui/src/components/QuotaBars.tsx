@@ -60,6 +60,8 @@ function localizeCustomQuotaLabel(rawLabel: string, t: TFn): string {
       return t("quota.cursorApiUsage");
     case "Total subscription credits":
       return t("quota.totalSubscriptionCredits");
+    case "WorkBuddy credits":
+      return t("quota.workbuddyCredits");
     default:
       return rawLabel;
   }
@@ -120,7 +122,7 @@ export function buildQuotaRows(quota: AccountQuota | null, plan: string | null |
       },
     });
   }
-  if (displayQuota.creditsUsd && typeof displayQuota.creditsUsd.percent === "number") {
+  if (displayQuota.creditsUsd && typeof displayQuota.creditsUsd.percent === "number" && displayQuota.creditsUsd.unit !== "points") {
     const hasSubscriptionCreditsCustom = displayQuota.customWindows?.some(
       w => canonicalCustomWindowLabel(w.label) === SUBSCRIPTION_CREDITS_LABEL,
     );
@@ -152,7 +154,7 @@ export function maxQuotaUtilisation(quota: AccountQuota | null): number {
   const hasSubscriptionCreditsCustom = quota.customWindows?.some(
     w => canonicalCustomWindowLabel(w.label) === SUBSCRIPTION_CREDITS_LABEL,
   );
-  if (!hasSubscriptionCreditsCustom && typeof quota.creditsUsd?.percent === "number") {
+  if (!hasSubscriptionCreditsCustom && typeof quota.creditsUsd?.percent === "number" && quota.creditsUsd.unit !== "points") {
     vals.push(quota.creditsUsd.percent);
   }
   return vals.length ? Math.max(...vals) : -1;

@@ -357,6 +357,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
           ...(quotaMode === "probe" ? { quotaUnavailable: row.unavailable === true,
             ...(row.unavailable && row.quotaFailure && row.quotaFailureIsCurrent?.() === true ? { quotaFailure: row.quotaFailure } : {}),
           } : {}),
+          ...(row.workbuddy ? { workbuddy: row.workbuddy } : {}),
         };
       }),
     });

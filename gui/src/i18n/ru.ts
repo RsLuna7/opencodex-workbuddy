@@ -2972,4 +2972,11 @@ export const ru: Record<TKey, string> = {
   "remote.event.status": "Состояние",
   "remote.event.tool": "Удалённый инструмент",
   "remote.event.error": "Ошибка",
+  "quota.creditsExpires": "Expires {date}",
+  "quota.creditsPointsRemaining": "{remaining} / {limit}",
+  "quota.workbuddyCredits": "Credits",
+  "pws.workbuddy.checkedIn": "Checked in",
+  "pws.workbuddy.dailyTask": "Daily task",
+  "pws.workbuddy.notCheckedIn": "Not checked in",
+  "pws.workbuddy.dailyTaskOpen": "Task open",
 };

@@ -1,4 +1,4 @@
-import type { QuotaFailureCode } from "../../../../src/providers/quota-types";
+import type { QuotaFailureCode, WorkbuddyAccountActivity } from "../../../../src/providers/quota-types";
 /**
  * provider-workspace/types.ts — shared view-model types for the Providers
  * workspace shell/rail/detail (WP080a). Data shapes only; no React.
@@ -50,6 +50,7 @@ export interface AccountQuotaReading {
   quotaFailure?: QuotaFailureCode;
   /** Client-owned enrichment state, never inferred from missing quota data. */
   quotaPending?: boolean;
+  workbuddy?: WorkbuddyAccountActivity;
 }
 
 export type OAuthAccountRow = AccountQuotaReading & {
@@ -62,6 +63,7 @@ export type OAuthAccountRow = AccountQuotaReading & {
   healthLabel?: string;
   healthSummary?: string;
   healthAction?: string;
+  workbuddy?: WorkbuddyAccountActivity;
 };
 
 export type ApiKeyRow = AccountQuotaReading & {

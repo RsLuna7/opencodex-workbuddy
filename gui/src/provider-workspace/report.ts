@@ -170,6 +170,9 @@ function quotaFromUnknown(quota: unknown, fallbackUpdatedAt?: number): AccountQu
         percent: creditsPercent,
         ...(creditsExpiresAt !== undefined ? { expiresAt: creditsExpiresAt } : {}),
         ...(typeof creditsRaw?.unlimited === "boolean" ? { unlimited: creditsRaw.unlimited } : {}),
+        ...(creditsRaw?.unit === "points" || creditsRaw?.unit === "usd"
+          ? { unit: creditsRaw.unit as "usd" | "points" }
+          : {}),
       }
     : undefined;
   const out: AccountQuota = {

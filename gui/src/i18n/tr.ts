@@ -2972,4 +2972,11 @@ export const tr: Record<TKey, string> = {
   "remote.event.status": "Durum",
   "remote.event.tool": "Uzak araç",
   "remote.event.error": "Hata",
+  "quota.creditsExpires": "Expires {date}",
+  "quota.creditsPointsRemaining": "{remaining} / {limit}",
+  "quota.workbuddyCredits": "Credits",
+  "pws.workbuddy.checkedIn": "Checked in",
+  "pws.workbuddy.dailyTask": "Daily task",
+  "pws.workbuddy.notCheckedIn": "Not checked in",
+  "pws.workbuddy.dailyTaskOpen": "Task open",
 };

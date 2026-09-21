@@ -76,10 +76,12 @@ export function ProviderCapacityQuota({ report, pending }: { report: ProviderQuo
     }).format(date);
   };
   const localeTag = bcp47(locale);
-  const formatCredits = (value: number) => new Intl.NumberFormat(localeTag, {
-    style: "currency",
-    currency: "USD",
-  }).format(value);
+  const formatCredits = (value: number) => credits?.unit === "points"
+    ? new Intl.NumberFormat(localeTag, { maximumFractionDigits: 0 }).format(value)
+    : new Intl.NumberFormat(localeTag, {
+      style: "currency",
+      currency: "USD",
+    }).format(value);
   const formatPeriodEnd = (value: number) => {
     const date = asDate(value);
     return date === null ? null : new Intl.DateTimeFormat(localeTag, { dateStyle: "medium" }).format(date);
@@ -106,12 +108,19 @@ export function ProviderCapacityQuota({ report, pending }: { report: ProviderQuo
           {credits && (
             <div className="pws-capacity-recovery">
               <span>{t("quota.creditsBalance")}</span>
-              <strong>{formatCredits(credits.remaining)}</strong>
+              <strong>
+                {credits.unit === "points"
+                  ? t("quota.creditsPointsRemaining", {
+                    remaining: formatCredits(credits.remaining),
+                    limit: formatCredits(credits.limit),
+                  })
+                  : formatCredits(credits.remaining)}
+              </strong>
             </div>
           )}
           {periodEnd !== null && (
             <div className="pws-capacity-recovery">
-              <span>{t("quota.creditsPeriodEnds", { date: periodEnd })}</span>
+              <span>{t(credits?.unit === "points" ? "quota.creditsExpires" : "quota.creditsPeriodEnds", { date: periodEnd })}</span>
             </div>
           )}
           {recoveryRows.flatMap(({ key, label, window }) => {

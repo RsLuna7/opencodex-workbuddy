@@ -2971,4 +2971,11 @@ export const ko: Record<TKey, string> = {
   "remote.event.status": "상태",
   "remote.event.tool": "원격 도구",
   "remote.event.error": "오류",
+  "quota.creditsExpires": "Expires {date}",
+  "quota.creditsPointsRemaining": "{remaining} / {limit}",
+  "quota.workbuddyCredits": "Credits",
+  "pws.workbuddy.checkedIn": "Checked in",
+  "pws.workbuddy.dailyTask": "Daily task",
+  "pws.workbuddy.notCheckedIn": "Not checked in",
+  "pws.workbuddy.dailyTaskOpen": "Task open",
 };

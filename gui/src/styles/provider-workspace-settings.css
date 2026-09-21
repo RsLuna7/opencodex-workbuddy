@@ -77,6 +77,13 @@
 .pwi-auth-row-main:focus-visible,
 .pwi-auth-row-remove:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
 .pwi-auth-row-label  { font-size: var(--text-control); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pwi-auth-task-badges { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; margin-left: 4px; }
+.pwi-auth-task-badge {
+  border-radius: 4px;
+  padding: 1px 7px;
+  font-family: var(--font-ui);
+  letter-spacing: 0;
+}
 .pwi-auth-row-remove {
   background: none; border: none; cursor: pointer; padding: 2px;
   color: var(--muted); border-radius: var(--radius-2xs);

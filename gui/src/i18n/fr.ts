@@ -2937,4 +2937,11 @@ export const fr: Record<TKey, string> = {
   "remote.event.status": "État",
   "remote.event.tool": "Outil distant",
   "remote.event.error": "Erreur",
+  "quota.creditsExpires": "Expire le {date}",
+  "quota.creditsPointsRemaining": "{remaining} / {limit}",
+  "quota.workbuddyCredits": "Crédits",
+  "pws.workbuddy.checkedIn": "Pointage effectué",
+  "pws.workbuddy.notCheckedIn": "Pas encore pointé",
+  "pws.workbuddy.dailyTask": "Tâche quotidienne",
+  "pws.workbuddy.dailyTaskOpen": "Tâche à faire",
 };

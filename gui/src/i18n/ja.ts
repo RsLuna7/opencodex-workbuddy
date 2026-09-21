@@ -2970,4 +2970,11 @@ export const ja: Record<TKey, string> = {
   "remote.event.status": "状態",
   "remote.event.tool": "リモートツール",
   "remote.event.error": "エラー",
+  "quota.creditsExpires": "Expires {date}",
+  "quota.creditsPointsRemaining": "{remaining} / {limit}",
+  "quota.workbuddyCredits": "Credits",
+  "pws.workbuddy.checkedIn": "Checked in",
+  "pws.workbuddy.dailyTask": "Daily task",
+  "pws.workbuddy.notCheckedIn": "Not checked in",
+  "pws.workbuddy.dailyTaskOpen": "Task open",
 };
