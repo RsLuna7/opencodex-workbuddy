@@ -1,0 +1,37 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - button "前往仪表板" [ref=e6] [cursor=pointer]:
+      - img "opencodex 徽标" [ref=e7]
+      - generic [ref=e8]: opencodex
+      - generic "2.61.0" [ref=e9]: v2.61.0
+    - navigation [ref=e10]:
+      - button "仪表盘" [ref=e12] [cursor=pointer]
+      - button "Codex 设置" [ref=e19] [cursor=pointer]
+      - button "提供方" [ref=e23] [cursor=pointer]
+      - button "模型" [ref=e29] [cursor=pointer]
+      - button "子代理" [ref=e34] [cursor=pointer]
+      - button "日志与调试" [ref=e41] [cursor=pointer]
+      - button "用量" [ref=e45] [cursor=pointer]
+      - button "存储" [ref=e49] [cursor=pointer]
+      - button "远程工作区" [ref=e53] [cursor=pointer]
+      - button "集成" [ref=e58] [cursor=pointer]
+    - generic [ref=e62]:
+      - combobox "语言" [ref=e68] [cursor=pointer]:
+        - generic [ref=e69]: 中文
+      - 'button "主题: 跟随系统" [ref=e72] [cursor=pointer]':
+        - generic [ref=e76]: 跟随系统
+      - generic [ref=e77]:
+        - generic [ref=e78]: 代理
+        - generic [ref=e79]:
+          - button "停止代理" [ref=e80] [cursor=pointer]
+          - button "重新加载 Codex 模型列表" [ref=e83] [cursor=pointer]
+      - generic [ref=e86]:
+        - link "GitHub" [ref=e87] [cursor=pointer]:
+          - /url: https://github.com/lidge-jun/opencodex
+        - generic [ref=e90]:
+          - button "在 GitHub 上加星" [ref=e91] [cursor=pointer]
+          - button "检查更新" [ref=e94] [cursor=pointer]
+  - main [ref=e97]:
+    - generic [ref=e98]:
+      - heading "提供方" [level=2] [ref=e100]
+      - paragraph [ref=e104]: 加载中…
