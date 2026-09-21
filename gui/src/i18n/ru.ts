@@ -1374,6 +1374,7 @@ export const ru: Record<TKey, string> = {
   "pws.noModelMatch": "Нет моделей, соответствующих фильтру.",
   "pws.adapterBaseRequired": "Укажите адаптер и базовый URL.",
   "pws.addAccount": "Добавить аккаунт",
+  "pws.addGlobalAccount": "Добавить глобальный аккаунт",
   "pws.addKey": "Добавить API-ключ",
   "pws.apiKeys": "API-ключи",
   "pws.authMode": "Режим аутентификации",

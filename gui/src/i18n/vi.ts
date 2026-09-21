@@ -1370,6 +1370,7 @@ export const vi: Record<TKey, string> = {
   "pws.noModels": "Không phát hiện model nào cho provider này.",
   "pws.adapterBaseRequired": "Bắt buộc phải có Adapter và Base URL.",
   "pws.addAccount": "Thêm tài khoản",
+  "pws.addGlobalAccount": "Thêm tài khoản quốc tế",
   "pws.addKey": "Thêm API key",
   "pws.apiKeys": "API Keys",
   "pws.authMode": "Chế độ xác thực",

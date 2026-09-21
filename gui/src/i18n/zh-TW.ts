@@ -1160,6 +1160,7 @@ export const zhTW: Record<TKey, string> = {
   "pws.noModelMatch": "沒有符合篩選條件的模型。",
   "pws.adapterBaseRequired": "介面卡和基本 URL 為必填項。",
   "pws.addAccount": "新增帳號",
+  "pws.addGlobalAccount": "新增國際站帳號",
   "pws.addKey": "新增 API 金鑰",
   "pws.apiKeys": "API 金鑰",
   "pws.authMode": "認證方式",

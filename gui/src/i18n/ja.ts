@@ -1303,6 +1303,7 @@ export const ja: Record<TKey, string> = {
   "pws.noModelMatch": "フィルタに一致するモデルがありません。",
   "pws.adapterBaseRequired": "アダプターとベース URL は必須です。",
   "pws.addAccount": "アカウントを追加",
+  "pws.addGlobalAccount": "グローバルアカウントを追加",
   "pws.addKey": "API キーを追加",
   "pws.apiKeys": "API キー",
   "pws.authMode": "認証モード",

@@ -2271,6 +2271,7 @@ export const zh: Record<TKey, string> = {
  "pws.noModelMatch": "没有匹配筛选的模型。",
   "pws.adapterBaseRequired": "适配器和基本 URL 为必填项。",
   "pws.addAccount": "添加账户",
+  "pws.addGlobalAccount": "添加国际站账号",
   "pws.addKey": "添加 API 密钥",
   "pws.apiKeys": "API 密钥",
   "pws.authMode": "认证方式",

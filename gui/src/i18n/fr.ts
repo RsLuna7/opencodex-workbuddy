@@ -1379,6 +1379,7 @@ export const fr: Record<TKey, string> = {
   "pws.noModelMatch": "Aucun modèle ne correspond au filtre.",
   "pws.adapterBaseRequired": "L’adaptateur et l’URL de base sont requis.",
   "pws.addAccount": "Ajouter un compte",
+  "pws.addGlobalAccount": "Ajouter un compte international",
   "pws.addKey": "Ajouter une clé API",
   "pws.apiKeys": "Clés API",
   "pws.authMode": "Mode d’authentification",

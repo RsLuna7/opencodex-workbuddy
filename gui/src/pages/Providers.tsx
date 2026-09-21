@@ -233,7 +233,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   // Without it, a reauth that reached the modal would resume as a plain login and target
   // the active account instead of the one the user clicked.
   const [oauthTosPending, setOauthTosPending] = useState<
-    { provider: string; addAccount: boolean; accountId?: string } | null
+    { provider: string; addAccount: boolean; accountId?: string; realm?: "cn" | "global" } | null
   >(null);
   /** Bumped after OAuth login so ProviderDetails switches to the Accounts tab. */
   const [accountsFocus, setAccountsFocus] = useState<{ token: number; provider: string | null }>({
@@ -481,13 +481,13 @@ export default function Providers({ apiBase }: { apiBase: string }) {
    * in could refresh a high-risk credential without ever seeing the ToS modal — the map
    * gated the first login and nothing after it.
    */
-  const requestLoginOAuth = (provider: string, addAccount = false, accountId?: string) => {
+  const requestLoginOAuth = (provider: string, addAccount = false, accountId?: string, realm?: "cn" | "global") => {
     if (busy === provider) return;
     if (oauthTosRisk(provider)) {
-      setOauthTosPending({ provider, addAccount, ...(accountId ? { accountId } : {}) });
+      setOauthTosPending({ provider, addAccount, ...(accountId ? { accountId } : {}), ...(realm ? { realm } : {}) });
       return;
     }
-    void loginOAuth(provider, addAccount, accountId);
+    void loginOAuth(provider, addAccount, accountId, realm);
   };
 
   if (!config) {
@@ -514,7 +514,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const accountLoginStatus = buildAccountLoginStatus(config, oauthStatusWithCodex);
   const isForwardProvider = (name: string) => config.providers[name]?.authMode === "forward";
 
-  const onAccountLogin = async (provider: string, addAccount = false) => {
+  const onAccountLogin = async (provider: string, addAccount = false, realm?: "cn" | "global") => {
     if (provider === "openai") {
       if (busy === "openai") return;
       const configured = config.providers.openai;
@@ -548,7 +548,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     }
     // API-key rows have no OAuth login path (catalog hides the button).
     if (config.providers[provider]?.authMode === "oauth" || oauthProviders.includes(provider)) {
-      requestLoginOAuth(provider, addAccount);
+      requestLoginOAuth(provider, addAccount, undefined, realm);
     }
   };
 
@@ -726,7 +726,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
           const pending = oauthTosPending;
           if (!pending) return;
           setOauthTosPending(null);
-          void loginOAuth(pending.provider, pending.addAccount, pending.accountId);
+          void loginOAuth(pending.provider, pending.addAccount, pending.accountId, pending.realm);
         }}
       />
     </>

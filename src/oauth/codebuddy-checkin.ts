@@ -10,6 +10,7 @@
 import { registerOptionalShutdownHook } from "../lib/optional-shutdown-hooks";
 import type { OcxConfig } from "../types";
 import { CODEBUDDY_PROVIDER_ID, refreshCodebuddyToken } from "./codebuddy";
+import { setWorkbuddyPoolCredits } from "./workbuddy-pool";
 import { listAccounts, saveAccountCredential } from "./store";
 import type { OAuthCredentials, ProviderAccount } from "./types";
 
@@ -18,6 +19,7 @@ export const WORKBUDDY_CHECKIN_STATUS_PATH = "/v2/billing/meter/checkin-activity
 export const WORKBUDDY_CHECKIN_CLAIM_PATH = "/v2/billing/meter/daily-checkin";
 export const WORKBUDDY_CHECKIN_HOUR = 9;
 export const WORKBUDDY_CHECKIN_MINUTE = 10;
+export const WORKBUDDY_CHECKIN_EVENING_HOUR = 21;
 
 const REQUEST_TIMEOUT_MS = 20_000;
 const REFRESH_SKEW_MS = 24 * 60 * 60 * 1000;
@@ -132,12 +134,7 @@ export function compactCheckinStatus(data: Record<string, unknown>): Partial<Wor
   return out;
 }
 
-/** Milliseconds until the next 09:10 Asia/Shanghai wall-clock. Exact hour:minute is tomorrow. */
-export function nextWorkbuddyCheckinDelayMs(
-  now = Date.now(),
-  hour = WORKBUDDY_CHECKIN_HOUR,
-  minute = WORKBUDDY_CHECKIN_MINUTE,
-): number {
+function delayUntilCst(now: number, hour: number, minute: number): number {
   const local = new Date(now + CST_OFFSET_MS);
   let target = Date.UTC(
     local.getUTCFullYear(),
@@ -150,6 +147,19 @@ export function nextWorkbuddyCheckinDelayMs(
   ) - CST_OFFSET_MS;
   if (target <= now) target += DAY_MS;
   return target - now;
+}
+
+/** Milliseconds until the next 09:10 or 21:10 Asia/Shanghai slot. A named hour:minute is that slot only. */
+export function nextWorkbuddyCheckinDelayMs(
+  now = Date.now(),
+  hour?: number,
+  minute = WORKBUDDY_CHECKIN_MINUTE,
+): number {
+  if (hour !== undefined) return delayUntilCst(now, hour, minute);
+  return Math.min(
+    delayUntilCst(now, WORKBUDDY_CHECKIN_HOUR, WORKBUDDY_CHECKIN_MINUTE),
+    delayUntilCst(now, WORKBUDDY_CHECKIN_EVENING_HOUR, WORKBUDDY_CHECKIN_MINUTE),
+  );
 }
 
 function envelopeOk(payload: BillingPayload, httpStatus: number): boolean {
@@ -207,7 +217,12 @@ export async function checkinWorkbuddyCredential(
   const base = { accountId: account.id, label };
   try {
     if (!isCnWorkbuddyCredential(account.credential)) {
-      return { ...base, result: "SKIPPED_GLOBAL" };
+      if (opts.statusOnly) return { ...base, result: "SKIPPED_GLOBAL" };
+      const { claimWorkbuddyTrial } = await import("./workbuddy-growth");
+      const trial = await claimWorkbuddyTrial(account, opts);
+      if (trial.result === "CLAIMED") return { ...base, result: "CLAIMED" };
+      if (trial.result === "ALREADY_CLAIMED") return { ...base, result: "ALREADY_CLAIMED", http: trial.http };
+      return { ...base, result: "SKIPPED_GLOBAL", http: trial.http, msg: trial.msg };
     }
     const cred = await maybeRefreshAccount(account, opts);
     const fetchImpl = opts.fetchImpl ?? fetch;
@@ -246,6 +261,10 @@ export async function checkinWorkbuddyCredential(
           ? claim.payload.data as Record<string, unknown>
           : {};
         const credit = claimData.credit ?? claimData.credits ?? verifiedData.today_credit;
+        const total = verifiedData.total_credits ?? credit;
+        if (typeof total === "number" && Number.isFinite(total)) {
+          setWorkbuddyPoolCredits(account.id, total);
+        }
         return {
           ...base,
           result: already && claimData.credit === undefined ? "ALREADY_CLAIMED" : "CLAIMED",

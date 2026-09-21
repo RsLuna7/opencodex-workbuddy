@@ -1406,6 +1406,7 @@ export const en = {
  "pws.noModelMatch": "No models match the filter.",
   "pws.adapterBaseRequired": "Adapter and base URL are required.",
   "pws.addAccount": "Add account",
+  "pws.addGlobalAccount": "Add Global account",
   "pws.addKey": "Add API key",
   "pws.apiKeys": "API Keys",
   "pws.authMode": "Auth mode",

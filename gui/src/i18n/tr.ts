@@ -1393,6 +1393,7 @@ export const tr: Record<TKey, string> = {
   "pws.noModelMatch": "Filtreyle eşleşen model yok.",
   "pws.adapterBaseRequired": "Adaptör ve taban URL gereklidir.",
   "pws.addAccount": "Hesap ekle",
+  "pws.addGlobalAccount": "Küresel hesap ekle",
   "pws.addKey": "API anahtarı ekle",
   "pws.apiKeys": "API Anahtarları",
   "pws.authMode": "Kimlik doğrulama modu",

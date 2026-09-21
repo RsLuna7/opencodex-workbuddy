@@ -2290,6 +2290,7 @@ export const ko: Record<TKey, string> = {
  "pws.noModelMatch": "필터와 일치하는 모델이 없습니다.",
   "pws.adapterBaseRequired": "어댑터와 기본 URL은 필수입니다.",
   "pws.addAccount": "계정 추가",
+  "pws.addGlobalAccount": "글로벌 계정 추가",
   "pws.addKey": "API 키 추가",
   "pws.apiKeys": "API 키",
   "pws.authMode": "인증 방식",

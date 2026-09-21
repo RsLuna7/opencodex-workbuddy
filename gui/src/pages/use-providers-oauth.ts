@@ -88,7 +88,7 @@ export function useProvidersOAuth({
     notify(t("prov.loginCancelled", { provider: oauthLabel(provider) }), false);
   }, [aliveRef, bumpLoginGeneration, cancelServerLogin, notify, setBusy, setLoginInfo, t]);
 
-  const loginOAuth = async (provider: string, addAccount = false, accountId?: string) => {
+  const loginOAuth = async (provider: string, addAccount = false, accountId?: string, realm?: "cn" | "global") => {
     const generation = bumpLoginGeneration(provider);
     activeLoginGenerationsRef.current.set(provider, generation);
     const reauthTargetId = accountId?.trim() || undefined;
@@ -109,6 +109,7 @@ export function useProvidersOAuth({
             ...openBrowserRequestField(),
             ...(addAccount || reauthTargetId ? { addAccount: true } : {}),
             ...(reauthTargetId ? { accountId: reauthTargetId, reauth: true } : {}),
+            ...(provider === "workbuddy" && realm ? { realm } : {}),
           }),
         });
       });

@@ -7,7 +7,7 @@ WorkBuddy 额度：
 - 业务码 **14018**（整号额度）和 **6004**（单模型 24h 频率）改写成 HTTP **402** `insufficient_quota`，避免 Codex 把 429 空转重试。
 - 存了 **≥2 个号** 时，ocx 在内部换号：6004 只冷却「这个号 × 这个模型」（尽量跟上游重置时刻），不改你手动选中的当前号；14018 冷却整号。单号安装是 no-op。
 - 加号：`ocx account login workbuddy`（中国站）。国际站：`ocx account login workbuddy --realm global`。列表：`ocx account list workbuddy`。换号只在同一站点内进行。
-- 每日签到：`ocx account checkin workbuddy`（可加 `--status` 只查不领）。代理在配置了 WorkBuddy 时每天 09:10（北京时间）自动签；配置 `"workbuddyCheckin": { "auto": false }` 可关掉自动签，手动命令仍可用。
+- 每日签到：`ocx account checkin workbuddy`（可加 `--status` 只查不领）。代理在配置了 WorkBuddy 时每天 09:10 和 21:10（北京时间）自动签；国际站账号改领一次性 trial 加油包。配置 `"workbuddyCheckin": { "auto": false }` 可关掉自动签，手动命令仍可用。
 - 冷却、熔断、积分账本落在 `~/.opencodex/workbuddy-pool.json`，重启代理会接着用。
 
 上游 remote 名是 `upstream`（`lidge-jun/opencodex`）。你的 GitHub 是 `origin`。
