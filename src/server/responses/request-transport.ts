@@ -618,7 +618,15 @@ export async function prepareResponsesTransport(
         // measured as spent. A null answer means "use the active account", so every provider
         // without quota evidence keeps the resolution it has today.
         const preferredAccountId = isGenericFailoverProvider(route.providerName, route.provider)
-          ? preferredInitialAccount(config, route.providerName, Date.now(), route.modelId)
+          ? preferredInitialAccount(
+            config,
+            route.providerName,
+            Date.now(),
+            route.modelId,
+            route.providerName === CODEBUDDY_PROVIDER_ID
+              ? parsed.options.promptCacheKey?.trim() || undefined
+              : undefined,
+          )
           : null;
         // Resolved account-scoped, NOT through failoverAccountSnapshot: that helper marks a
         // rotation site, and rotation sites must apply their credential through

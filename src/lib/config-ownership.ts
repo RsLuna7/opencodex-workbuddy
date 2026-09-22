@@ -39,6 +39,7 @@ const INITIAL_OWNED_PATHS = [
   ".star-prompted",
   "artifacts",
   "auth.json",
+  "workbuddy-pool.json",
   "auth.store.lock",
   "admin-api-token",
   "catalog-backup.json",

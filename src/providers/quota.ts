@@ -42,8 +42,6 @@ import {
   accountQuotaInflight,
   explicitAccountEpoch,
   explicitAccountReader,
-  explicitQuotaConfig,
-  explicitQuotaDestination,
   explicitQuotaIdentity,
   getTokenForAccountQuotaProbe,
   hasPassiveAccountQuota,
@@ -59,16 +57,15 @@ import {
   fetchAnthropicQuota,
   fetchAnthropicUsageQuota,
   fetchChatGptForwardQuota,
-  fetchCursorQuota,
   fetchKiroQuota,
   fetchMuseKeyQuota,
   fetchPassiveProviderQuota,
-  fetchXaiQuota,
 } from "./quota/vendor-probes-oauth";
-import { fetchCommandCodeQuota, fetchKimiQuota, keyQuotaReaderForProvider } from "./quota/vendor-probes-key";
+import { keyQuotaReaderForProvider } from "./quota/vendor-probes-key";
 import { antigravityQuotaDiagnosticIdentity, fetchAntigravityQuota, probeAntigravityUsageQuota } from "./quota/antigravity";
+import { fetchExplicitAccountQuota, fetchExplicitCurrentQuota } from "./quota/explicit-readers";
 
-export type { ProviderQuota, ProviderQuotaCreditsUsd, ProviderQuotaWindow } from "./quota-types";
+export type { ProviderQuota, ProviderQuotaCreditsUsd, ProviderQuotaWindow, WorkbuddyAccountActivity } from "./quota-types";
 export { QUOTA_RESPONSE_MAX_BYTES } from "./quota-wire";
 export {
   clearProviderQuotaCache,
@@ -338,83 +335,6 @@ export async function fetchProviderQuotaReports(config: OcxConfig, forceRefresh 
   }
 }
 
-async function readExplicitAccountQuota(provider: string, accountId: string, configured?: OcxProviderConfig): Promise<{
-  result: ProviderQuotaProbeResult;
-  identity: string | undefined;
-  isCurrent: () => boolean;
-} | null> {
-  const target = explicitQuotaConfig(provider, configured);
-  if (!target || !explicitQuotaDestination(provider, target)) return null;
-  const config = { ...target };
-  const epoch = explicitAccountEpoch;
-  const accessToken = await getTokenForAccountQuotaProbe(provider, accountId);
-  const credential = getAccountCredential(provider, accountId);
-  if (!credential || credential.access !== accessToken) return null;
-  // Pair the post-renewal credential with the destination captured before renewal.
-  const identity = explicitQuotaIdentity(provider, accountId, config);
-  const isCurrent = () => epoch === explicitAccountEpoch
-    && identity === explicitQuotaIdentity(provider, accountId, configured);
-  if (!isCurrent()) return null;
-  let result: ProviderQuotaProbeResult;
-  switch (provider) {
-    case "xai": result = await fetchXaiQuota(provider, { accessToken, upstreamAccountId: credential.accountId }); break;
-    case "cursor": result = await fetchCursorQuota(provider, accessToken); break;
-    case "kimi": result = await fetchKimiQuota(provider, config, accessToken); break;
-    case "command-code": result = await fetchCommandCodeQuota(provider, config, accessToken); break;
-    default: return null;
-  }
-  return { result, identity, isCurrent };
-}
-
-async function fetchExplicitAccountQuota(provider: string, accountId: string, force: boolean, configured?: OcxProviderConfig): Promise<AccountQuotaCacheEntry> {
-  const key = accountCacheKey(provider, accountId);
-  const identity = explicitQuotaIdentity(provider, accountId, configured);
-  const previous = accountQuotaCache.get(key);
-  const cached = identity && previous?.identity === identity && previous.isCurrent?.() ? previous : undefined;
-  if (!force && cached && Date.now() - cached.ts < ACCOUNT_QUOTA_TTL_MS
-    && (!cached.quota || Date.now() - cached.quota.updatedAt < LAST_GOOD_MAX_AGE_MS)) return cached;
-  const flightKey = `${key}\u0000${identity ?? "missing"}`;
-  const running = accountQuotaInflight.get(flightKey);
-  if (running) return running;
-  const epoch = explicitAccountEpoch;
-  const lastGood = cached?.quota && Date.now() - cached.quota.updatedAt < LAST_GOOD_MAX_AGE_MS ? cached.quota : null;
-  const flight = (async (): Promise<AccountQuotaCacheEntry> => {
-    let read: Awaited<ReturnType<typeof readExplicitAccountQuota>> = null;
-    try { read = await readExplicitAccountQuota(provider, accountId, configured); } catch { /* unavailable */ }
-    const isCurrent = read?.isCurrent ?? (() => epoch === explicitAccountEpoch && !!identity
-      && identity === explicitQuotaIdentity(provider, accountId, configured));
-    const result = read?.result;
-    const current = epoch === explicitAccountEpoch && isCurrent();
-    const quota = current && result && typeof result !== "symbol" ? result.quota : null;
-    const empty = result === AUTHORITATIVE_EMPTY_QUOTA;
-    const entry: AccountQuotaCacheEntry = {
-      ts: Date.now(),
-      quota: quota ?? (current && result !== TERMINAL_QUOTA_FAILURE && !empty
-        && lastGood && Date.now() - lastGood.updatedAt < LAST_GOOD_MAX_AGE_MS ? lastGood : null),
-      ...(!current || (!quota && !empty) ? { unavailable: true as const } : {}),
-      identity: read?.identity ?? identity,
-      isCurrent: () => epoch === explicitAccountEpoch && isCurrent(),
-    };
-    if (entry.isCurrent?.()) accountQuotaCache.set(key, entry);
-    return entry;
-  })().finally(() => { if (accountQuotaInflight.get(flightKey) === flight) accountQuotaInflight.delete(flightKey); });
-  accountQuotaInflight.set(flightKey, flight);
-  return flight;
-}
-
-async function fetchExplicitCurrentQuota(provider: string, config: OcxProviderConfig, liveConfig: OcxConfig): Promise<ProviderQuotaProbeResult> {
-  const id = getAccountSet(provider)?.activeAccountId;
-  if (!id) return null;
-  const read = await readExplicitAccountQuota(provider, id, config);
-  if (!read) return null;
-  const isCurrent = () => liveConfig.providers[provider] === config
-    && read.isCurrent() && getAccountSet(provider)?.activeAccountId === id;
-  if (!isCurrent()) return TERMINAL_QUOTA_FAILURE;
-  if (read.result && typeof read.result !== "symbol") accountReportCurrent.set(read.result, isCurrent);
-  return read.result;
-}
-
-
 async function fetchAccountQuota(
   provider: string,
   accountId: string,
@@ -544,6 +464,7 @@ export async function fetchProviderAccountQuotas(
       quota: provider === "anthropic" ? normalizeAnthropicQuota(entry.quota, Date.now()) : entry.quota,
       ...(entry.unavailable ? { unavailable: true as const } : {}),
       ...(entry.unavailable && entry.quotaFailure && entry.quotaFailureIsCurrent?.() === true ? { quotaFailure: entry.quotaFailure } : {}),
+      ...(entry.workbuddy ? { workbuddy: entry.workbuddy } : {}),
     };
     if (entry.quotaFailureIsCurrent) Object.defineProperty(result, "quotaFailureIsCurrent", { value: entry.quotaFailureIsCurrent });
     if (!explicitAccountReader(provider)) return result;

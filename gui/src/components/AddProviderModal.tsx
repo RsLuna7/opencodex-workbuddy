@@ -46,7 +46,7 @@ export default function AddProviderModal({
   accountBusy?: string | null;
   /** Login hint for an Accounts-tab login in flight, owned by the providers page. */
   accountLoginHint?: CatalogLoginHint | null;
-  onAccountLogin?: (provider: string, addAccount?: boolean) => void;
+  onAccountLogin?: (provider: string, addAccount?: boolean, realm?: "cn" | "global") => void;
   onAccountCancelLogin?: (provider: string) => void;
   onAccountLogout?: (provider: string) => void;
   onAccountManage?: (provider: string) => void;

@@ -9,9 +9,11 @@ import {
   runWorkbuddyCheckin,
   workbuddyCheckinActivationRequired,
   workbuddyCheckinExitCode,
+  workbuddyCheckinHeaders,
   WORKBUDDY_CHECKIN_CLAIM_PATH,
   WORKBUDDY_CHECKIN_STATUS_PATH,
 } from "../../src/oauth/codebuddy-checkin";
+import { workbuddyBillingUserAgent } from "../../src/oauth/codebuddy-headers";
 import { resetOptionalShutdownHooksForTests } from "../../src/lib/optional-shutdown-hooks";
 import { saveCredential } from "../../src/oauth/store";
 import type { OAuthCredentials, ProviderAccount } from "../../src/oauth/types";
@@ -47,15 +49,24 @@ describe("nextWorkbuddyCheckinDelayMs", () => {
     expect(nextWorkbuddyCheckinDelayMs(now)).toBe(10 * 60 * 1000);
   });
 
-  test("at or after 09:10 Asia/Shanghai waits until tomorrow", () => {
+  test("at 09:10 Asia/Shanghai waits until 21:10", () => {
     const now = Date.parse("2026-09-21T09:10:00+08:00");
-    expect(nextWorkbuddyCheckinDelayMs(now)).toBe(24 * 60 * 60 * 1000);
-    const later = Date.parse("2026-09-21T21:00:00+08:00");
-    expect(nextWorkbuddyCheckinDelayMs(later)).toBe(12 * 60 * 60 * 1000 + 10 * 60 * 1000);
+    expect(nextWorkbuddyCheckinDelayMs(now)).toBe(12 * 60 * 60 * 1000);
+  });
+
+  test("at 21:10 Asia/Shanghai waits until tomorrow 09:10", () => {
+    const now = Date.parse("2026-09-21T21:10:00+08:00");
+    expect(nextWorkbuddyCheckinDelayMs(now)).toBe(12 * 60 * 60 * 1000);
   });
 });
 
 describe("checkinWorkbuddyCredential", () => {
+  test("billing UA matches the official desktop short form", () => {
+    const headers = workbuddyCheckinHeaders(account().credential);
+    expect(headers["User-Agent"]).toBe(workbuddyBillingUserAgent());
+    expect(headers["User-Agent"]).not.toContain("opencodex");
+  });
+
   test("status-only never posts the claim endpoint", async () => {
     const paths: string[] = [];
     const fetchImpl: typeof fetch = async (input) => {
@@ -110,15 +121,30 @@ describe("checkinWorkbuddyCredential", () => {
     expect(paths).toEqual([WORKBUDDY_CHECKIN_STATUS_PATH]);
   });
 
-  test("skips Global workbuddy.ai accounts", async () => {
+  test("status-only still skips Global workbuddy.ai accounts", async () => {
     const result = await checkinWorkbuddyCredential(account({
       codebuddy: { uid: "uid-g", domain: "www.workbuddy.ai" },
     }), {
+      statusOnly: true,
       fetchImpl: async () => {
         throw new Error("must not call billing");
       },
     });
     expect(result.result).toBe("SKIPPED_GLOBAL");
+  });
+
+  test("Global accounts claim the one-shot trial pack", async () => {
+    const paths: string[] = [];
+    const result = await checkinWorkbuddyCredential(account({
+      codebuddy: { uid: "uid-g", domain: "www.workbuddy.ai", realm: "global" },
+    }), {
+      fetchImpl: async (input) => {
+        paths.push(new URL(String(input)).pathname);
+        return jsonResponse({ code: 14051, msg: "already claimed" });
+      },
+    });
+    expect(result.result).toBe("ALREADY_CLAIMED");
+    expect(paths).toEqual(["/billing/ide/trial"]);
   });
 });
 

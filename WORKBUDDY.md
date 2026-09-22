@@ -1,14 +1,16 @@
 # 本分支：OpenCodex + WorkBuddy
 
-基于官方 **v2.48.0**。额外功能：腾讯 WorkBuddy / CodeBuddy 中国站作为 OAuth 提供方，登录后实时拉模型目录。同分支还有 **ZCode Plan**（`zai-plan`），见 [ZAI-PLAN.md](./ZAI-PLAN.md)。
+基于官方 **v2.48.0**。额外功能：腾讯 WorkBuddy / CodeBuddy **中国站 + 国际站**作为 OAuth 提供方（同一个 `workbuddy` 槽，域写在账号上）。选择器仍是 `workbuddy/<model>`，请求打当前账号所属站点。同分支还有 **ZCode Plan**（`zai-plan`），见 [ZAI-PLAN.md](./ZAI-PLAN.md)。
 
 WorkBuddy 额度：
 
+- 仪表盘「提供方 → WorkBuddy → 账户」会查每个号的剩余积分（`get-user-resource`）。国内号账户名右侧显示方形标签：已签到/未签到、每日任务/任务未做。刷新额度会重新拉账单。
 - 业务码 **14018**（整号额度）和 **6004**（单模型 24h 频率）改写成 HTTP **402** `insufficient_quota`，避免 Codex 把 429 空转重试。
 - 存了 **≥2 个号** 时，ocx 在内部换号：6004 只冷却「这个号 × 这个模型」（尽量跟上游重置时刻），不改你手动选中的当前号；14018 冷却整号。单号安装是 no-op。
-- 加号：`ocx account login workbuddy`（会开浏览器；必须换一个腾讯账号）。列表：`ocx account list workbuddy`。
-- 每日签到：`ocx account checkin workbuddy`（可加 `--status` 只查不领）。代理在配置了 WorkBuddy 时每天 09:10（北京时间）自动签；配置 `"workbuddyCheckin": { "auto": false }` 可关掉自动签，手动命令仍可用。
-- 冷却在进程内存里，重启代理会忘。
+- 加号：`ocx account login workbuddy`（中国站）。国际站：`ocx account login workbuddy --realm global`。列表：`ocx account list workbuddy`。换号只在同一站点内进行。
+- 每日签到：`ocx account checkin workbuddy`（可加 `--status` 只查不领）。代理在配置了 WorkBuddy 时每天 09:10 和 21:10（北京时间）自动签；国际站账号改领一次性 trial 加油包。配置 `"workbuddyCheckin": { "auto": false }` 可关掉自动签，手动命令仍可用。
+- 冷却、熔断、积分账本落在 `~/.opencodex/workbuddy-pool.json`，重启代理会接着用。
+- 出站钉 HTTP/1.1；签到/trial UA 是官方桌面短形态 `WorkBuddy/5.5.4`。WAF 403（无业务信封）软冷却该号，60 秒内两个不同号都中则停止换号。可选把官方桌面的 device token 文件路径放到环境变量 `OPENCODEX_WORKBUDDY_DEVICE_TOKEN_FILE`（只读、不写入 `auth.json`）。
 
 上游 remote 名是 `upstream`（`lidge-jun/opencodex`）。你的 GitHub 是 `origin`。
 

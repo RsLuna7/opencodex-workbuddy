@@ -33,7 +33,7 @@ function writeStdoutFully(text: string): void {
 }
 
 const USAGE = `Usage:
-  ocx account login <provider> [--id <account-id>] [--reauth] [--device] [--code -] [--no-wait] [--json]
+  ocx account login <provider> [--id <account-id>] [--reauth] [--device] [--realm cn|global] [--code -] [--no-wait] [--json]
   ocx account code <provider> [--flow <flow-id>] [--json]   (reads the code from stdin)
   ocx account cancel <provider> [--flow <flow-id>] [--json]
   ocx account reset-credits <account-id|main> [--consume --yes [--operation-id <uuid>]] [--json]
@@ -125,6 +125,7 @@ async function login(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   const reauth = takeFlag(args, "--reauth");
   const device = takeFlag(args, "--device");
   const id = takeOption(args, "--id");
+  const realmRaw = takeOption(args, "--realm");
   const suppliedCode = takeOptionWithSyntax(args, "--code");
   if (!provider) throw new CliUsageError("provider is required", USAGE);
   // A bare leftover here is plausibly the authorization code itself: this flow takes one
@@ -206,9 +207,25 @@ async function login(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   }
 
   if (id && !reauth) throw new CliUsageError("--id is only valid with --reauth for provider OAuth accounts", USAGE);
+  let realm: "cn" | "global" | undefined;
+  if (realmRaw) {
+    const normalized = realmRaw.trim().toLowerCase();
+    if (normalized !== "cn" && normalized !== "global") {
+      throw new CliUsageError("--realm must be cn or global", USAGE);
+    }
+    if (provider !== "workbuddy") {
+      throw new CliUsageError("--realm is only valid for workbuddy", USAGE);
+    }
+    realm = normalized;
+  }
   const start = await runtimeRequest<LoginStart>("/api/oauth/login", {
     method: "POST",
-    body: JSON.stringify({ provider, addAccount: !reauth, ...(reauth && id ? { accountId: id, reauth: true } : {}) }),
+    body: JSON.stringify({
+      provider,
+      addAccount: !reauth,
+      ...(reauth && id ? { accountId: id, reauth: true } : {}),
+      ...(realm ? { realm } : {}),
+    }),
   }, deps);
   if (!wantsJson) {
     const block = [

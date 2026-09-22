@@ -325,11 +325,15 @@ export interface ImageBridgeDeps {
    * `retryParsed` is the exact iteration-local request the retry will be built from. The loop
    * sends a shallow copy of the outer parsed request, so a rotation that rebinds only the outer
    * object never reaches the wire. Optional so existing callers keep compiling.
+   *
+   * The loop also offers HTTP 402 here. WorkBuddy rewrites 6004/14018 to 402, and the hook
+   * recovers that hint from `refusal`. An ordinary billing 402 makes the hook return null.
    */
   on429?: (
     retryAfterHeader: string | null,
     responseHeaders?: Headers,
     retryParsed?: OcxParsedRequest,
+    refusal?: Response,
   ) => ProviderAdapter | null | Promise<ProviderAdapter | null>;
   /** Opt-in same-target 429 policy (key-auth providers). When present, 429 replays on the SAME key before on429 rotation. */
   retryOn429Policy?: Required<RateLimitRetryPolicy> | null;
@@ -663,9 +667,14 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
         yield { type: "heartbeat" };
         prepared = await fetchOnce(adapter, "rate-limit-429");
       }
-      // 429 key-failover parity with web-search / normal routed path.
-      while (prepared.response.status === 429 && deps.on429) {
-        const rotated = await deps.on429(prepared.response.headers.get("retry-after"), prepared.response.headers, iterParsed);
+      // Credential failover parity with web-search / normal routed path: 429 plus WorkBuddy 402.
+      while ((prepared.response.status === 429 || prepared.response.status === 402) && deps.on429) {
+        const rotated = await deps.on429(
+          prepared.response.headers.get("retry-after"),
+          prepared.response.headers,
+          iterParsed,
+          prepared.response,
+        );
         if (!rotated) break;
         try { void prepared.response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
         adapter = rotated;

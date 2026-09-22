@@ -59,7 +59,7 @@ export function ProvidersPageModals({
   oauthTosPending: { provider: string; addAccount: boolean } | null;
   onCloseAdd: () => void;
   onAdded: (name: string) => void;
-  onAccountLogin: (provider: string, addAccount?: boolean) => void;
+  onAccountLogin: (provider: string, addAccount?: boolean, realm?: "cn" | "global") => void;
   onAccountCancelLogin: (provider: string) => void;
   onAccountLogout: (provider: string) => void;
   onAccountManage?: (provider: string) => void;

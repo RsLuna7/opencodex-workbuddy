@@ -21,6 +21,7 @@ export interface AccountQuota {
     percent: number;
     expiresAt?: number;
     unlimited?: boolean;
+    unit?: "usd" | "points";
   };
   resetCredits?: number;
   updatedAt: number;

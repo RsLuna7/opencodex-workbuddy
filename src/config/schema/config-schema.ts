@@ -221,6 +221,9 @@ export const configSchema = z.object({
   workbuddyCheckin: z.object({
     auto: z.boolean().optional(),
   }).optional().catch(undefined),
+  workbuddyGlobal: z.object({
+    enabled: z.boolean().optional(),
+  }).optional().catch(undefined),
   // Same degrade-to-off rule as the flags above: a hand-edited typo in an opt-in pool
   // feature must never cost the operator their providers.
   pool: z.object({
