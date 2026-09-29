@@ -46,6 +46,7 @@ import {
   NATIVE_GPT6_ASTRA_MODEL,
   NATIVE_GPT6_LUNA_MODEL,
   NATIVE_GPT6_SOL_MODEL,
+  NATIVE_GPT61_SOL_MODEL,
   NATIVE_RESERVE_MODEL,
   NATIVE_OPENAI_CAPABILITY_ALIAS_MODELS,
   NATIVE_OPENAI_MODELS,
@@ -66,6 +67,7 @@ export {
   NATIVE_GPT6_ASTRA_MODEL,
   NATIVE_GPT6_LUNA_MODEL,
   NATIVE_GPT6_SOL_MODEL,
+  NATIVE_GPT61_SOL_MODEL,
   NATIVE_OPENAI_CAPABILITY_ALIAS_MODELS,
   NATIVE_OPENAI_MODELS,
   SELF_DESCRIBED_NATIVE_OPENAI_MODELS,
@@ -85,6 +87,8 @@ export const DOCUMENTED_NATIVE_OPENAI_ADDITIONS = [
   // client_version >= 0.155.0, so an installed catalog built by an older client lacks them.
   // Astra Minor is deliberately absent: it is gated, and nativeOpenAiSlugs() would drop it anyway.
   NATIVE_GPT6_SOL_MODEL, NATIVE_GPT6_LUNA_MODEL,
+  // GPT-6.1 Sol needs client_version >= 0.153.0 upstream; older installed catalogs lack it.
+  NATIVE_GPT61_SOL_MODEL,
 ];
 
 export function configuredNativeAliasSlugs(
@@ -186,15 +190,18 @@ export const NATIVE_OPENAI_CONTEXT_OVERRIDES: Record<string, { contextWindow?: n
   // family's measured 922,000 clamp — advertising 922,000 here over-stated the ceiling by 50k.
   // maxInputTokens is clamped to the resolved window by nativeOpenAiMaxInputTokens, so this reads
   // 272,000 by default and 872,000 only under the long-window opt-in.
-  [NATIVE_GPT6_ASTRA_MODEL]: { contextWindow: 272_000, maxContextWindow: 872_000, maxInputTokens: 872_000 },
+  [NATIVE_GPT6_ASTRA_MODEL]: { ...NATIVE_GPT6_CONTEXT },
   // Sol and Luna ship the same 272,000 / 872,000 pair in their roster rows (probe of
   // /backend-api/codex/models?client_version=0.155.0, 2026-09-23). Unmeasured here, so they take
   // the row's own ceiling rather than the GPT-5.6 family's measured 922,000.
-  [NATIVE_GPT6_SOL_MODEL]: { contextWindow: 272_000, maxContextWindow: 872_000, maxInputTokens: 872_000 },
-  [NATIVE_GPT6_LUNA_MODEL]: { contextWindow: 272_000, maxContextWindow: 872_000, maxInputTokens: 872_000 },
+  [NATIVE_GPT6_SOL_MODEL]: { ...NATIVE_GPT6_CONTEXT },
+  [NATIVE_GPT6_LUNA_MODEL]: { ...NATIVE_GPT6_CONTEXT },
+  // GPT-6.1 Sol's row (openai/codex models.json after #49318) ships the same 272,000 / 872,000 pair.
+  [NATIVE_GPT61_SOL_MODEL]: { ...NATIVE_GPT6_CONTEXT },
   // Astra Minor borrows Astra's row, so it inherits Astra's numbers. No account we hold can reach
   // it, so this is inheritance, not a measurement.
-  [NATIVE_GPT6_ASTRA_MINOR_MODEL]: { contextWindow: 272_000, maxContextWindow: 872_000, maxInputTokens: 872_000 },
+  [NATIVE_GPT6_ASTRA_MINOR_MODEL]: { ...NATIVE_GPT6_CONTEXT },
+  // Configured natives (providers.openai.models) are added at registration with the same pair.
 };
 
 // Snapshot rows plus roster-captured rows the snapshot lacks (see pinned-models.ts).

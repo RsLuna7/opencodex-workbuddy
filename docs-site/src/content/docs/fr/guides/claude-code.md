@@ -121,7 +121,105 @@ Sur macOS, l'intégration automatique (`claudeCode.systemEnv`) suit la même ré
 `claude` lancée sans passer par `ocx` se comporte donc de la même manière. Le fichier d'environnement est un instantané actualisé au
 démarrage du proxy ou lors de l'enregistrement des paramètres, tandis que `ocx claude` effectue toujours une résolution immédiate.
 
+<<<<<<< HEAD
 ## Profil Claude Desktop
+=======
+## Modes Claude Desktop : passerelle (par défaut) et first-party
+
+Choisissez le mode dans **Claude → Bureau → Mode de connexion** ou avec
+`ocx claude desktop apply --first-party|--gateway`. Les deux modes sont exclusifs.
+
+### Passerelle (par défaut)
+
+Une nouvelle installation applique par défaut le profil passerelle : toute l'application utilise
+OpenCodex, y compris l'onglet Chat. Les fonctions réservées à claude.ai ne sont alors pas disponibles.
+Les anciens indicateurs `--static`, `--hybrid` et `--discovery-only` sélectionnent aussi ce mode.
+
+### First-party (sur demande)
+
+:::caution[Risque pour le compte]
+Le mode first-party fait passer le trafic de votre abonnement Claude par un proxy local d'interception.
+Anthropic peut y voir une violation de ses conditions et suspendre votre compte. La passerelle est
+le choix par défaut ; n'activez first-party que si vous acceptez ce risque.
+:::
+
+Le mode first-party de Desktop route son onglet Code et ses sous-agents via OpenCodex. La CLI Claude Code autonome possède un interrupteur distinct. Les deux lisent les mêmes réglages de proxy et d’autorité dans `settings.json` : si un seul mode est actif, l’autre client traverse encore le proxy local, où TLS se termine, mais ses requêtes Messages sont relayées sans modification vers Anthropic.
+
+Le mode est enregistré dans `claudeCode.desktopMode`. Une installation ayant déjà appliqué le mode
+first-party, même avant cette version, le conserve ; un profil passerelle existant reste aussi en
+passerelle. Sans mode explicite, le profil passerelle sélectionné et détenu par OpenCodex, puis son
+empreinte enregistrée, priment sur les réglages first-party détenus dans `settings.json` ; sans ces
+indices, le mode est passerelle. Un environnement écrit uniquement pour le first-party de la CLI ne constitue pas une preuve que Desktop est en mode first-party. La synchronisation du catalogue et la mise à jour de la liste des
+modèles n'écrivent jamais un profil passerelle sur une installation first-party. Si
+`claudeCode.intercept.enabled: false`, l'application d'un mode first-party existant est refusée
+(`intercept_disabled`) ; une nouvelle installation applique la passerelle. Un proxy d'entreprise
+étranger n'est pas écrasé. Quittez complètement Desktop puis rouvrez-le après un changement.
+
+### First-party de la CLI Claude Code
+
+Activez l’interrupteur dans Claude → Code ou lancez `ocx claude config set --first-party on` ; utilisez `off` pour désactiver. L’activation est refusée si le proxy local est indisponible, si l’autorité ne peut être préparée, si les réglages sont illisibles ou si des clés appartiennent à un autre programme. La désactivation reste enregistrable. Avec le seul first-party Desktop actif, définissez `NO_PROXY='*'` dans le shell pour un terminal entièrement natif. Le risque pour le compte décrit ci-dessus s’applique aussi à la CLI.
+Désactiver le routage Claude conserve les variables de proxy gérées. Tant que le listener fonctionne, toutes les requêtes Messages sont relayées sans modification ; après son arrêt, `claude` ne peut plus se connecter avant le lancement d’OpenCodex ou la désactivation du first-party Desktop/CLI. Le lancement natif via `ocx claude` ne définit `NO_PROXY=*` que pour un environnement géré sans proxy HTTPS hérité d’un autre programme. Sinon il conserve ce proxy et avertit que l’interception définie dans les réglages reste active ; désactivez le first-party ou retirez ce réglage.
+L’interface distingue les réglages illisibles (unknown), une URL opencodex avec jeton mais une AC étrangère (foreign : corrigez HTTPS_PROXY / NODE_EXTRA_CA_CERTS à la main) et le routage Claude désactivé avec un listener encore actif qui relaie sans modification (disabled : désactivez first-party avant le redémarrage). Sans listener, l’état est stopped ; avec une AC gérée mais un port ou jeton incorrect, il est broken. Avec le first-party actif et une interception indisponible, stopped et broken affichent routingOff : le routage Claude ou l’interception est désactivé, ou cette machine est cliente d’un autre hub opencodex ; réactivez l’interception ici ou désactivez first-party pour supprimer les réglages. Si l’interception est disponible, stopped demande de lancer opencodex et broken conseille `ocx ensure` ou un redémarrage. La CLI activée sans proxy est non appliquée ; un seul client activé avec un proxy opérationnel partage le relais ; aucun client activé avec un proxy restant produit un avertissement de réglage résiduel.
+unknown signifie qu’opencodex ne peut pas déterminer si les réglages pointent encore vers son proxy. Un proxy sans jeton sur 127.0.0.1 avec une AC étrangère est local : sa propriété est incertaine ; supprimez HTTPS_PROXY de ~/.claude/settings.json si vous ne l’utilisez plus. disabled exige des réglages appliqués correspondant au listener ; un port ou jeton différent donne broken même si le routage est désactivé.
+
+### Mode picker : modèles opencodex dans le sélecteur Code first-party
+
+Le mode picker fait partie du mode first-party. Sur macOS, il est activé par défaut lorsque first-party
+est sélectionné, sauf si `claudeCode.intercept.picker: false` est défini. Il modifie le sélecteur de
+modèles de l'onglet Code de Desktop first-party pour y afficher les modèles opencodex disponibles par
+leur nom. Lors de la première activation, macOS peut demander l'autorisation d'une autorité de certification
+locale dans le trousseau de connexion. Cette autorité est limitée à `claude.ai` et à ses sous-domaines.
+Sa clé de signature n'existe que dans le processus OpenCodex en cours : chaque redémarrage d'OpenCodex
+publie une nouvelle autorité et macOS demande donc de nouveau votre confiance — approuvez la demande,
+ou lancez ensuite `ocx claude desktop picker trust`, après chaque redémarrage.
+
+Lorsque le mode picker est actif, Claude Desktop accède au réseau par OpenCodex. Si OpenCodex s'arrête,
+Desktop reste hors ligne jusqu'à son redémarrage complet ou jusqu'à la désactivation du mode picker.
+Consultez l'état avec `ocx claude desktop picker status`, relancez l'étape de confiance avec
+`ocx claude desktop picker trust`, ou désactivez-le avec `ocx claude desktop picker off`. Le tableau
+de bord propose le même interrupteur dans **Claude → Bureau**. Après la sélection du profil picker,
+quittez complètement puis rouvrez Claude Desktop.
+
+Le mode picker fait partie de first-party : le [risque pour le compte du mode first-party](#first-party-sur-demande)
+s'applique donc aussi à ce mode.
+
+### Utiliser les modèles opencodex depuis l'onglet Code de Desktop (associations first-party)
+
+En mode first-party, le sélecteur de modèles de l'onglet Code appartient à claude.ai : ses lignes
+(Opus 5.5, Sonnet 5, Haiku 4.5 et les anciens modèles sous **More models**) viennent de votre
+compte, et aucun réglage local ne peut y ajouter une ligne opencodex. Ce qui arrive à OpenCodex,
+c'est l'identifiant de modèle Anthropic du sélecteur à chaque requête ; on associe donc une ligne
+du sélecteur à une route opencodex :
+
+```bash
+ocx claude desktop bind claude-sonnet-4-6 xai/grok-4.7
+ocx claude desktop bind claude-opus-4-6 native/gpt-6.1-sol
+ocx claude desktop unbind claude-opus-4-6
+```
+
+ou utilisez **Claude → Bureau → Associations de modèles de l'onglet Code** dans le tableau de bord.
+Choisir **Sonnet 4.6** dans l'onglet Code est alors servi par `xai/grok-4.7`. Le sélecteur garde le
+nom Anthropic, et le modèle continue d'être présenté comme ce modèle Claude par le prompt système de
+Claude Code ; préférez donc des lignes que vous n'utilisez pas par ailleurs (les entrées
+**More models** sont de bonnes candidates). Les associations s'appliquent dès la requête suivante ;
+Desktop n'a pas besoin d'être relancé.
+
+- Les routes suivent le vocabulaire des routes Desktop : `provider/model`, ou `native/<slug>` pour
+  le pool OpenAI natif. La route doit figurer comme disponible dans le tableau de bord.
+- Un identifiant de sélecteur daté (`claude-haiku-4-5-20251001`) correspond à une association non
+  datée (`claude-haiku-4-5`), et les sélections `[1m]` et du mode rapide suivent la même association.
+- Les associations sont enregistrées dans `claudeCode.intercept.modelMap` et ne s'appliquent qu'au
+  trafic Claude Code qui passe par le proxy d'interception local : l'onglet Code de Desktop et la CLI
+  `claude` autonome en mode first-party. Les sessions `ocx claude` et le point d'entrée public
+  `/v1/messages` les ignorent ; le `claudeCode.modelMap` global continue de s'appliquer partout, et
+  une association l'emporte sur lui pour le même identifiant.
+- `ocx claude desktop status --json` rapporte les associations en vigueur sous
+  `firstParty.modelBindings`.
+
+## Profil Claude Desktop (mode passerelle)
+
+Le profil ci-dessous n'est écrit que lorsque le mode passerelle est sélectionné.
+>>>>>>> cfa56e34d (feat(models): GPT-6.1 Sol across providers as the Sol default, and TokenLab per-model wires (#6263))
 
 Claude Desktop utilise un profil distinct de Claude Code. Ouvrez **Claude → Bureau** dans le
 tableau de bord afin de placer chaque route disponible dans l'une des quatre familles : Opus, Fable, Sonnet ou Haiku.

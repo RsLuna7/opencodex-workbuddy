@@ -328,11 +328,44 @@ describe("resolveMatchedPrice", () => {
     expect(resolveMatchedPrice("openrouter", "anthropic-claude-3.5-sonnet")).toBeNull();
   });
 
-  test("16. shipped overlay membership: 134 keys, including canonical Fable 5.1, Opus 5, OpenCode Go and compatibility prices", () => {
-    expect(EXPECTED_PRICE_OVERLAYS.length).toBe(134);
+  test("Kimi Coding wires share K3 API reference estimates, not plan billing", () => {
+    const expected = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 };
+    for (const provider of ["kimi", "kimi-code", "kimi-responses"]) {
+      for (const model of ["k3", "k3[1m]", "k3-256k"]) {
+        const price = resolveMatchedPrice(provider, model, undefined, []);
+        expect(price?.cost4).toEqual(expected);
+        expect(price?.source).toBe("expected");
+        expect(price?.status).toBe("verified-derived");
+        expect(price?.sourceRef).toContain("default 5-minute cache-write");
+        expect(price?.sourceRef).toContain("not Code Plan billing/quota");
+      }
+      const usage = { inputTokens: 100, outputTokens: 10 };
+      const input = { provider, model: "kimi-for-coding", usageStatus: "reported" as const, usage };
+      expect(resolveMatchedPrice(provider, input.model, undefined, [])).toBeNull();
+      expect(estimateRequestCost(input, undefined, [])).toBeNull();
+      expect(estimateAttemptCost({ ...input, ordinal: 1 }, undefined, undefined, [])).toBeNull();
+      expect(estimateComboCost([
+        { ...input, model: "k3", ordinal: 1 },
+        { ...input, ordinal: 2 },
+      ], undefined, undefined, [])).toBeNull();
+      const override: ExpectedPriceOverlay = {
+        provider, modelId: input.model, cost4: expected,
+        source: "config:modelCosts", verifiedAt: "user-configured", status: "verified",
+      };
+      expect(resolveMatchedPrice(provider, input.model, undefined, [override])?.source).toBe("user");
+      expect(estimateRequestCost(input, undefined, [override])?.cost.total).toBeGreaterThan(0);
+    }
+  });
+
+  test("16. shipped overlay membership: 152 keys, including canonical Fable 5.1, Opus 5, Opus 5.5, Sonnet 5.5, GPT-6.1 Sol, OpenCode Go and compatibility prices", () => {
+    expect(EXPECTED_PRICE_OVERLAYS.length).toBe(152);
     expect(EXPECTED_PRICE_OVERLAYS.some(row => row.status === "unverified")).toBe(false);
     const keys = new Set(EXPECTED_PRICE_OVERLAYS.map(row => `${row.provider}/${row.modelId}`));
     for (const expected of [
+      "openai-apikey/gpt-6.1-sol",
+      "openai/gpt-6.1-sol",
+      "devin/gpt-6-1-sol",
+      "devin-cli/gpt-6-1-sol",
       "anthropic/claude-fable-5-1",
       "anthropic-apikey/claude-fable-5-1",
       "cursor/claude-fable-5-1",

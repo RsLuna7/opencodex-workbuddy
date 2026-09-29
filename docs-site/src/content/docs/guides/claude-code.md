@@ -137,7 +137,155 @@ the proxy starts or you save settings, while `ocx claude` always resolves live.
 
 ## Claude Desktop profile
 
+<<<<<<< HEAD
 Claude Desktop uses a separate profile from Claude Code. Open **Claude → Desktop** in the
+=======
+Claude Desktop can use OpenCodex in one of two mutually exclusive modes. Pick it in
+**Claude → Desktop → Connection mode** in the dashboard or with `ocx claude desktop apply
+--first-party|--gateway`.
+
+### Gateway (default)
+
+New installs use **gateway** by default. Its third-party profile, described below, switches the
+whole app to OpenCodex as its inference gateway. Chat runs locally through OpenCodex and the
+claude.ai-only features are unavailable. The legacy `--static` / `--hybrid` /
+`--discovery-only` flags also select gateway.
+
+### First-party (opt-in)
+
+:::caution[Account risk]
+First-party mode sends your Claude subscription traffic through a local interception proxy.
+Anthropic may treat this as a violation of its terms and suspend the account. Gateway is the
+default; choose first-party only if you accept that risk.
+:::
+
+Desktop itself is not reconfigured: it stays
+signed in to claude.ai, and the Chat tab, connectors, cloud sessions and remote control keep
+working. OpenCodex only writes two variables into the `env` block of `~/.claude/settings.json`
+(honoured by `CLAUDE_CONFIG_DIR`):
+
+```json
+{
+  "env": {
+    "HTTPS_PROXY": "http://opencodex:<per-install token>@127.0.0.1:10200",
+    "NODE_EXTRA_CA_CERTS": "<home>/.opencodex/claude-intercept/ca.pem"
+  }
+}
+```
+
+Claude Desktop first-party routes its Code tab and subagents through OpenCodex. The standalone Claude Code CLI has a separate first-party switch. Both clients read the same `~/.claude/settings.json` proxy and CA settings: if only one switch is on, the other client still transits the local proxy, where TLS terminates, but its Messages requests relay to Anthropic unchanged. Other Anthropic paths relay unchanged and unrelated hosts remain blind tunnels.
+
+:::note[Windows system proxy (Clash, v2rayN, corporate proxies)]
+When a Windows system proxy is on, Claude Desktop hands it to the Code tab as `HTTPS_PROXY`, and
+that value takes precedence over the OpenCodex proxy in `~/.claude/settings.json`. The Code tab
+then goes around OpenCodex and routed models fail there, while the standalone CLI keeps working.
+Add `api.anthropic.com` to your proxy client's system-proxy bypass list (in Clash Verge,
+`system_proxy_bypass`), then fully quit and reopen Claude Desktop. `ocx doctor` reports this
+under "Claude Desktop first-party vs Windows system proxy". It cannot evaluate a PAC script or
+automatic proxy detection (WPAD, "Automatically detect settings"), so it reports those as unknown;
+with either, make the script return `DIRECT` for `api.anthropic.com` or turn detection off. If the
+first-party settings are stale, it asks you to run `ocx ensure` instead of reporting `ok`.
+:::
+
+Subagents on routed (non-Claude) models do not use Claude Code's server-side message threads, because only Anthropic stores that state. OpenCodex declines a threaded request for such a model, and Claude Code resends that turn, and the turns after it, with the full conversation.
+
+Mode is persisted as `claudeCode.desktopMode`. Installs that already applied either mode retain it,
+including first-party installs from before the mode was persisted. An explicit mode takes priority;
+otherwise an owned selected gateway row, an applied gateway fingerprint, or owned first-party
+settings in `~/.claude/settings.json` determine the existing mode before the gateway default.
+A catalog sync or roster update never writes a gateway profile over a resolved first-party install.
+A CLI-only first-party env is not evidence that Desktop is in first-party mode.
+Switching first applies the replacement,
+then removes the other mode's configuration (only values OpenCodex wrote — a foreign `HTTPS_PROXY` or
+`NODE_EXTRA_CA_CERTS`, for example a corporate proxy, is never overwritten and the apply is
+refused instead). A failed replacement preserves the previous connection. If retiring the old
+configuration fails after the replacement was written, the command reports incomplete cleanup;
+resolve that error before restarting Desktop. A committed gateway keeps its saved mode and profile
+marker even when first-party settings cleanup fails. Fully quit and reopen Desktop after a successful switch. `ocx ensure` refreshes a stale
+first-party env when the integration is ON and removes it when OFF. Set
+`claudeCode.intercept.enabled: false` to disable the proxy entirely; first-party then cannot be
+applied. An apply for an existing first-party install is refused when the intercept is disabled;
+new installs apply gateway. On a connected client the proxy runs on the
+hub, so `ocx claude desktop apply` there uses the gateway profile.
+
+### Picker mode: opencodex models in the first-party Code-tab picker
+
+Picker mode is part of first-party mode. On macOS it is on by default when first-party is selected,
+unless `claudeCode.intercept.picker: false` is set. It changes the first-party Desktop Code-tab picker
+so it lists available opencodex models by name. The first time it is enabled, macOS may ask you to
+trust a local certificate authority in the login keychain. That authority is constrained to `claude.ai`
+and its subdomains. Its signing key exists only inside the running OpenCodex process, so every
+OpenCodex restart publishes a fresh authority and macOS asks you to trust it again — approve the
+prompt, or later run `ocx claude desktop picker trust`, after each restart.
+
+On restart OpenCodex first removes the previous authority from the keychain. If that removal fails
+(for example because you decline the keychain prompt), the picker stays off for this run so two
+authorities are never trusted side by side. Desktop keeps its network connection: the proxy address
+in its profile still answers, but only as a plain relay that does not read claude.ai traffic, and the
+picker lists Anthropic's own models until the removal succeeds. OpenCodex remembers which certificate
+still needs removal and retries on the next restart; `ocx claude desktop picker status` shows the
+picker as unavailable meanwhile.
+
+While picker mode is on, Claude Desktop reaches the network through OpenCodex. If OpenCodex stops,
+Desktop is offline until you fully restart it or turn picker mode off. Check the state with
+`ocx claude desktop picker status`; use `ocx claude desktop picker trust` to repeat the trust step,
+or turn it off with `ocx claude desktop picker off`. The dashboard has the same picker toggle under
+**Claude → Desktop**. After the picker profile is selected, fully quit and reopen Claude Desktop.
+
+Picker mode is part of first-party mode, so the [first-party account risk](#first-party-opt-in)
+applies to it as well.
+
+### Use opencodex models from the Desktop Code tab (first-party bindings)
+
+In first-party mode the Code tab's model picker belongs to claude.ai: its rows (Opus 5.5,
+Sonnet 5, Haiku 4.5, and the older models under **More models**) come from your account, and no
+local setting can add an opencodex row. What reaches OpenCodex is the picker's Anthropic model id on
+every request, so you bind a picker row to an opencodex route instead:
+
+```bash
+ocx claude desktop bind claude-sonnet-4-6 xai/grok-4.7
+ocx claude desktop bind claude-opus-4-6 native/gpt-6.1-sol
+ocx claude desktop unbind claude-opus-4-6
+```
+
+or use **Claude → Desktop → Code tab model bindings** in the dashboard. Picking **Sonnet 4.6** in
+the Code tab is then served by `xai/grok-4.7`. The picker keeps Anthropic's label, and the model is
+still introduced to itself as that Claude model by Claude Code's system prompt, so prefer rows you
+do not otherwise use (the **More models** entries are good candidates). Bindings take effect on the
+next request; Desktop does not need a restart.
+
+- Routes use the Desktop route vocabulary: `provider/model`, or `native/<slug>` for the native
+  OpenAI pool. A route must be one the dashboard lists as available.
+- A dated picker id (`claude-haiku-4-5-20251001`) matches an undated binding (`claude-haiku-4-5`),
+  and `[1m]` and fast-mode selections follow the same binding.
+- Bindings are stored in `claudeCode.intercept.modelMap` and apply only to Claude Code traffic that
+  arrives through the local intercept proxy: Desktop's Code tab and the standalone `claude` CLI in
+  first-party mode. `ocx claude` sessions and the public `/v1/messages` endpoint ignore them; the
+  global `claudeCode.modelMap` still applies everywhere, and a binding wins over it for the same id.
+- `ocx claude desktop status --json` reports the bindings in effect under `firstParty.modelBindings`.
+
+### Claude Code CLI first-party
+
+Turn on the CLI switch in Claude → Code, or run `ocx claude config set --first-party on`; use `off` to disable it. The switch is immediate and refuses `{enabled:false, cliFirstParty:true}` before any field is saved; it may also refuse to turn on if the local intercept is unavailable, the CA cannot be prepared, settings cannot be read, or a foreign proxy setting owns the keys. Off persists even when the intercept is unavailable; disabling Claude routing alone leaves an owned settings env untouched. For fully native terminal traffic with only Desktop first-party on, set `NO_PROXY='*'` in the shell. This still carries the first-party account risk stated above.
+Disabling Claude routing leaves the owned settings env untouched. While the bound listener still runs, every Messages request relays unchanged; after it stops, plain `claude` cannot connect until OpenCodex runs or Desktop/CLI first-party is turned off. Native `ocx claude` sets `NO_PROXY=*` only for an owned env without a foreign inherited `HTTPS_PROXY`/`https_proxy`. With a foreign proxy it preserves that value and warns that the settings-owned intercept still applies; turn Desktop/CLI first-party off or unset the setting.
+The UI distinguishes uncertainty about whether settings still point at its proxy (unknown), a token-bearing opencodex proxy with a foreign CA (foreign: fix HTTPS_PROXY / NODE_EXTRA_CA_CERTS manually), and a tokenless loopback proxy beside a foreign CA (local: ownership is unconfirmed; remove HTTPS_PROXY if unused). With matching applied settings and a bound listener but Claude routing off, disabled means requests relay unchanged until restart; turn first-party off to remove settings. An owned URL with no listener is stopped; a bound listener with an owned CA but mismatched port or token is broken even when routing is off. With an intent on, stopped or broken plus ineligible interception displays routingOff: Claude routing or the intercept is off, or this machine is a client of another opencodex hub; enable interception on this machine or turn first-party off to remove the settings. Only when interception is eligible does stopped advise starting opencodex and broken advise `ocx ensure` or restart. CLI intent with no proxy is not applied; one intent with a live proxy gets the shared-relay notice; any remaining proxy with neither intent is residual, unless unknown, foreign, or local takes precedence.
+
+- Model discovery (`/model` → "From gateway") is not available; Claude Code only queries
+  `GET /v1/models` on a configured gateway. Bind a built-in Anthropic model id to a route
+  (`ocx claude desktop bind`, above), use `modelMap`, or type an alias directly.
+- `ANTHROPIC_SMALL_FAST_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL` are chosen by the CLI before the
+  request is sent; set them in `settings.json` yourself if a sidecar or subagent should use a
+  mapped id.
+- `ocx claude` and first-party coexist: a session started with `ocx claude` talks to
+  `ANTHROPIC_BASE_URL` (plain HTTP on loopback), which `HTTPS_PROXY` does not cover, so that
+  process reaches OpenCodex directly and the proxy simply sees no traffic from it.
+- Claude Code honours `HTTPS_PROXY`/`NODE_EXTRA_CA_CERTS` as documented for corporate proxies;
+  a CLI release that stops doing so would stop routing, not break login.
+
+## Claude Desktop profile (gateway mode)
+
+The profile below is written only in gateway mode. Claude Desktop uses a separate profile from Claude Code. Open **Claude → Desktop** in the
+>>>>>>> cfa56e34d (feat(models): GPT-6.1 Sol across providers as the Sol default, and TokenLab per-model wires (#6263))
 dashboard to place each available route in one of four families: Opus, Fable, Sonnet, or Haiku.
 All routes start in Opus on a new profile. The first Opus route becomes the initial overall
 default, and every non-empty family always has one family default.

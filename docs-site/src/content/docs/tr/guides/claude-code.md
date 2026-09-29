@@ -200,6 +200,41 @@ Yeni rotalar varsayılan olarak Opus ailesine gider, ancak bir rotayı taşımak
 `--static`, `--hybrid` ve `--discovery-only` mevcut betikler için kullanılabilir
 durumda kalır.
 
+<<<<<<< HEAD
+=======
+### Desktop Code sekmesinden opencodex modellerini kullanma (first-party bağlantıları)
+
+First-party modunda Code sekmesinin model seçici claude.ai'ye aittir: satırları (Opus 5.5,
+Sonnet 5, Haiku 4.5 ve **More models** altındaki eski modeller) hesabınızdan gelir ve hiçbir yerel
+ayar opencodex satırı ekleyemez. OpenCodex'e ulaşan, her istekte seçicinin Anthropic model
+kimliğidir; bu yüzden bir seçici satırını bir opencodex rotasına bağlarsınız:
+
+```bash
+ocx claude desktop bind claude-sonnet-4-6 xai/grok-4.7
+ocx claude desktop bind claude-opus-4-6 native/gpt-6.1-sol
+ocx claude desktop unbind claude-opus-4-6
+```
+
+veya kontrol panelinde **Claude → Desktop → Code sekmesi model bağlantıları**'nı kullanın. Bundan
+sonra Code sekmesinde **Sonnet 4.6** seçildiğinde istek `xai/grok-4.7` tarafından sunulur. Seçicide
+Anthropic etiketi görünmeye devam eder ve Claude Code'un sistem istemi modelin kendisine hâlâ o
+Claude modeli olduğunu söyler; bu yüzden normalde kullanmadığınız satırları tercih edin
+(**More models** girdileri iyi adaylardır). Bağlantılar bir sonraki istekte geçerli olur; Desktop'ı
+yeniden başlatmak gerekmez.
+
+- Rotalar Desktop rota sözlüğünü kullanır: `provider/model` veya yerel OpenAI havuzu için
+  `native/<slug>`. Rota, kontrol panelinde kullanılabilir olarak listelenen bir rota olmalıdır.
+- Tarihli bir seçici kimliği (`claude-haiku-4-5-20251001`) tarihsiz bir bağlantıyla
+  (`claude-haiku-4-5`) eşleşir; `[1m]` ve hızlı mod seçimleri de aynı bağlantıyı izler.
+- Bağlantılar `claudeCode.intercept.modelMap`'te saklanır ve yalnızca yerel intercept proxy'sinden
+  geçen Claude Code trafiğine uygulanır: first-party modundaki Desktop Code sekmesi ve bağımsız
+  `claude` CLI'si. `ocx claude` oturumları ve genel `/v1/messages` uç noktası bunları yok sayar;
+  genel `claudeCode.modelMap` her yerde geçerli olmaya devam eder ve aynı kimlik için bağlantı
+  ona üstün gelir.
+- `ocx claude desktop status --json`, geçerli bağlantıları `firstParty.modelBindings` altında
+  raporlar.
+
+>>>>>>> cfa56e34d (feat(models): GPT-6.1 Sol across providers as the Sol default, and TokenLab per-model wires (#6263))
 ## Sistem Ortamı Entegrasyonu
 
 `claudeCode.systemEnv` değeri `true` olarak ayarlandığında (varsayılan:

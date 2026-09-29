@@ -95,6 +95,93 @@ hook を削除します。Claude Desktop は独立した profile を使用し、
 `claudeCode.nativePassthrough: false` でオフにでき、`claudeCode.anthropicBaseUrl` で別のアドレスを
 指定できます。
 
+<<<<<<< HEAD
+=======
+## Claude Desktop のモード: ゲートウェイ（デフォルト）と 1P
+
+ダッシュボードの **Claude → Desktop → 接続モード**、または
+`ocx claude desktop apply --first-party|--gateway` で排他的なモードを選びます。
+
+### ゲートウェイ（デフォルト）
+
+新規インストールではゲートウェイプロファイルが適用され、Chat タブを含むアプリ全体が
+OpenCodex を使います。claude.ai 専用の機能は利用できません。従来の `--static`、`--hybrid`、
+`--discovery-only` もゲートウェイを選びます。
+
+### 1P（オプトイン）
+
+:::caution[アカウントのリスク]
+1P モードでは Claude サブスクリプションの通信がローカルのインターセプトプロキシを通ります。
+Anthropic がこれを利用規約違反とみなし、アカウントを停止する可能性があります。デフォルトは
+ゲートウェイです。このリスクを受け入れる場合にのみ 1P を選んでください。
+:::
+
+Desktop の 1P は Code タブとそのサブエージェントを OpenCodex に接続します。単独の Claude Code CLI には別の 1P スイッチがあります。両者は同じ `settings.json` のプロキシと CA 設定を読むため、一方だけオンでももう一方はローカルプロキシを通ります。その場合 TLS はローカルで終端しますが、Messages 要求は変更せず Anthropic に中継します。
+
+モードは `claudeCode.desktopMode` に保存されます。明示的に、またはこの更新以前に 1P を
+適用した環境は 1P を維持し、既存のゲートウェイも維持します。明示設定がない場合は、
+OpenCodex 所有の選択済みゲートウェイ行、保存済みのゲートウェイ指紋、所有する
+`settings.json` の 1P 設定の順に判定し、証拠がなければゲートウェイです。CLI の 1P だけのために書かれた環境変数は、Desktop が 1P モードである証拠にはなりません。
+カタログ同期やモデル一覧の更新が 1P 環境にゲートウェイプロファイルを書くことはありません。
+`claudeCode.intercept.enabled: false` なら既存の 1P 環境での適用は
+`intercept_disabled` で拒否され、新規環境はゲートウェイを適用します。外部の企業プロキシ
+設定は上書きしません。モード変更後は Desktop を完全に終了して開き直してください。
+
+### Claude Code CLI の 1P
+
+Claude → Code で CLI の 1P をオンにするか、`ocx claude config set --first-party on` を実行します。オフには `off` を使います。プロキシの停止、CA の準備失敗、設定の読み取り失敗、他プログラムが所有するキーがある場合、オンへの切り替えは拒否されます。オフはプロキシが使えなくても保存できます。Desktop の 1P だけがオンのとき、ターミナルから完全に直接接続するにはシェルで `NO_PROXY='*'` を設定してください。上記のアカウントリスクは CLI にも適用されます。
+Claude のルーティングを無効にしても管理対象の設定環境変数は残ります。リスナーが動いている間はすべての Messages 要求を変更せず中継しますが、停止後は OpenCodex を起動するか Desktop/CLI の 1P をオフにするまで通常の `claude` は接続できません。`ocx claude` は管理対象の設定があり、外部の HTTPS プロキシを継承していない場合だけ `NO_PROXY=*` を設定します。外部プロキシは保持し、設定側の傍受が続くため 1P をオフにするか設定を解除するよう警告します。
+画面では設定を読めない unknown、opencodex のトークン付き URL と管理外 CA が組み合わさった foreign、Claude ルーティングがオフでも動作中のリスナーが要求をそのまま中継する disabled を区別します。foreign は HTTPS_PROXY / NODE_EXTRA_CA_CERTS を手動で直し、disabled は再起動前に 1P をオフにして設定を消してください。リスナーがなければ stopped、管理対象 CA でもポートやトークンが違えば broken です。1P がオンでもインターセプトを提供できなければ、stopped と broken は routingOff を表示します。Claude ルーティングまたはインターセプトがオフか、この端末が別の opencodex ハブのクライアントであるため、この端末で再度有効にするか 1P をオフにして設定を削除するよう案内します。インターセプトを提供できる設定の場合だけ、stopped は opencodex の起動、broken は `ocx ensure` または再起動を案内します。CLI だけオンでプロキシ設定がなければ未適用、片方だけオンで正常なら共有中継、両方オフでも設定が残れば残留設定を表示します。
+unknown は設定がまだ opencodex のプロキシを指すか判断できない状態です。外部 CA とトークンなしの 127.0.0.1 プロキシがある場合は local と表示します。所有者を確認できないため、使っていなければ ~/.claude/settings.json から HTTPS_PROXY を削除してください。disabled は設定と動作中のリスナーが一致する場合だけで、ポートやトークンが違えばルーティングがオフでも broken です。
+
+### Picker モード: 1P の Code タブで opencodex モデルを表示する
+
+Picker モードは 1P モードの一部です。macOS で 1P を選ぶとデフォルトで有効になりますが、
+`claudeCode.intercept.picker: false` を設定した場合は無効です。1P の Desktop の Code タブにある
+モデルピッカーを書き換え、利用できる opencodex モデルを名前付きで表示します。初回の有効化時は、
+macOS がログインキーチェーン内のローカル証明書認証局を信頼するよう求めることがあります。この認証局の
+制約は `claude.ai` とそのサブドメインに限られます。署名鍵は実行中の OpenCodex プロセス内にだけ存在する
+ため、OpenCodex を再起動するたびに新しい認証局が発行され、macOS が再び信頼を求めます。再起動のたびに
+プロンプトを承認するか、あとから `ocx claude desktop picker trust` を実行してください。
+
+Picker モードが有効な間、Claude Desktop のネットワークは OpenCodex を経由します。OpenCodex が停止
+すると、Picker モードをオフにするか Desktop を完全に再起動するまで Desktop はオフラインになります。
+状態は `ocx claude desktop picker status`、信頼操作は `ocx claude desktop picker trust` で確認・実行できます。
+`ocx claude desktop picker off` またはダッシュボードの **Claude → Desktop** の切り替えでオフにできます。
+Picker プロファイルを選択した後は、Claude Desktop を完全に終了して開き直してください。
+
+Picker モードは 1P の一部なので、[1P のアカウントリスク](#1pオプトイン)も同じように適用されます。
+
+### Code タブで opencodex モデルを使う（1P バインディング）
+
+1P モードでは、Code タブのモデルピッカーは claude.ai が提供します。各行（Opus 5.5、Sonnet 5、
+Haiku 4.5、**More models** 以下の旧モデル）はアカウントから来るもので、ローカル設定で
+opencodex の行を追加することはできません。OpenCodex に届くのは、リクエストごとのピッカーの
+Anthropic モデル ID なので、代わりにピッカーの行を opencodex のルートにバインドします。
+
+```bash
+ocx claude desktop bind claude-sonnet-4-6 xai/grok-4.7
+ocx claude desktop bind claude-opus-4-6 native/gpt-6.1-sol
+ocx claude desktop unbind claude-opus-4-6
+```
+
+ダッシュボードの **Claude → Desktop → Code タブのモデルバインディング** からも同じ操作ができます。
+こうすると Code タブで **Sonnet 4.6** を選んだとき `xai/grok-4.7` が応答します。ピッカーには
+Anthropic の名前がそのまま表示され、Claude Code のシステムプロンプトもモデルにその Claude モデルだと
+伝えるため、普段使わない行（**More models** の項目が候補）を選ぶのがおすすめです。バインディングは
+次のリクエストから有効になり、Desktop の再起動は不要です。
+
+- ルートは Desktop のルート表記を使います: `provider/model`、ネイティブ OpenAI プールは
+  `native/<slug>`。ダッシュボードで利用可能と表示されているルートのみ指定できます。
+- 日付付きのピッカー ID（`claude-haiku-4-5-20251001`）は日付なしのバインディング
+  （`claude-haiku-4-5`）にマッチし、`[1m]` とファストモードの選択も同じバインディングに従います。
+- バインディングは `claudeCode.intercept.modelMap` に保存され、ローカルのインターセプトプロキシを
+  通る Claude Code トラフィック（1P モードの Desktop Code タブとターミナルの `claude` CLI）にのみ
+  適用されます。`ocx claude` セッションと公開 `/v1/messages` エンドポイントはこれを無視します。
+  グローバルな `claudeCode.modelMap` は引き続き全体に適用され、同じ ID ではバインディングが優先します。
+- 有効なバインディングは `ocx claude desktop status --json` の `firstParty.modelBindings` で確認できます。
+
+>>>>>>> cfa56e34d (feat(models): GPT-6.1 Sol across providers as the Sol default, and TokenLab per-model wires (#6263))
 ## リモートハブに接続した Claude Desktop
 
 接続中のマシンで `ocx claude desktop apply` または `ocx claude desktop` を実行すると、

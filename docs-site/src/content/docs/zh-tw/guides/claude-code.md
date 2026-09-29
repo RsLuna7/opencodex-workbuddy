@@ -192,6 +192,36 @@ Desktop 設定檔、模型家族分組及預設值由 hub 管理。在 hub 上�
 只有代理存取憑證不會啟用原生 Anthropic 透傳，但經過轉換的 Anthropic 路由仍可使用提示快取。
 重播保真與快取命中率比較仍是獨立工作。
 
+<<<<<<< HEAD
+=======
+### 在 Desktop Code 分頁使用 opencodex 模型（第一方綁定）
+
+在第一方模式中，Code 分頁的模型選擇器屬於 claude.ai：其中的項目（Opus 5.5、Sonnet 5、
+Haiku 4.5 以及 **More models** 下的舊模型）來自你的帳號，任何本機設定都無法新增 opencodex
+項目。OpenCodex 在每個請求中收到的是選擇器裡的 Anthropic 模型 ID，因此改為把選擇器項目綁定到
+opencodex 路由：
+
+```bash
+ocx claude desktop bind claude-sonnet-4-6 xai/grok-4.7
+ocx claude desktop bind claude-opus-4-6 native/gpt-6.1-sol
+ocx claude desktop unbind claude-opus-4-6
+```
+
+也可以在儀表板中透過 **Claude → Desktop → Code 分頁模型綁定** 完成同樣操作。綁定之後，在
+Code 分頁選擇 **Sonnet 4.6** 時會由 `xai/grok-4.7` 回應。選擇器仍顯示 Anthropic 名稱，且
+Claude Code 的系統提示仍會把模型介紹為那個 Claude 模型，所以建議選擇平時不用的項目
+（**More models** 中的項目是不錯的候選）。綁定於下一個請求即生效，無需重新啟動 Desktop。
+
+- 路由使用 Desktop 路由記法：`provider/model`，原生 OpenAI 池使用 `native/<slug>`。路由必須
+  是儀表板中列為可用的路由。
+- 帶日期的選擇器 ID（`claude-haiku-4-5-20251001`）會匹配無日期的綁定（`claude-haiku-4-5`），
+  `[1m]` 和快速模式選擇也遵循同一綁定。
+- 綁定保存在 `claudeCode.intercept.modelMap` 中，僅適用於經由本機攔截代理的 Claude Code 流量：
+  第一方模式下的 Desktop Code 分頁和獨立的 `claude` CLI。`ocx claude` 工作階段和公開的
+  `/v1/messages` 端點會忽略綁定；全域 `claudeCode.modelMap` 仍然處處生效，同一 ID 時綁定優先。
+- `ocx claude desktop status --json` 在 `firstParty.modelBindings` 中報告目前生效的綁定。
+
+>>>>>>> cfa56e34d (feat(models): GPT-6.1 Sol across providers as the Sol default, and TokenLab per-model wires (#6263))
 ### 金鑰輪換、復原與中斷連線
 
 金鑰輪換和復原會同步更新本機連線憑證與該連線管理的 Desktop 設定中的金鑰，無須為了移轉
