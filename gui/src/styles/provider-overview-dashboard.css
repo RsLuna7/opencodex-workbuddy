@@ -73,7 +73,7 @@
 }
 
 .pws-dashboard-card--ok .pws-dashboard-card-count { color: var(--green, #22c55e); }
-.pws-dashboard-card--warn .pws-dashboard-card-count { color: var(--yellow, #eab308); }
+.pws-dashboard-card--warn .pws-dashboard-card-count { color: var(--amber); }
 .pws-dashboard-card--muted .pws-dashboard-card-count { color: var(--fg-muted, #888); }
 
 .pws-dashboard-card-label {
@@ -112,15 +112,15 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  color: var(--yellow, #eab308);
+  color: var(--amber);
   text-transform: none;
   font-size: 0.82rem;
   letter-spacing: 0;
 }
 
 .pws-dashboard-row--attention {
-  border-color: color-mix(in srgb, var(--yellow, #eab308) 40%, var(--border));
-  background: color-mix(in srgb, var(--yellow, #eab308) 8%, var(--bg-secondary, var(--bg)));
+  border-color: color-mix(in srgb, var(--amber) 40%, var(--border));
+  background: color-mix(in srgb, var(--amber) 8%, var(--bg-secondary, var(--bg)));
 }
 
 /* Clickable provider rows */
@@ -148,7 +148,7 @@
 }
 
 .pws-dashboard-row:hover {
-  background: var(--bg-hover, rgba(128, 128, 128, 0.08));
+  background: var(--hover);
 }
 
 .pws-dashboard-row-icon {

@@ -338,6 +338,13 @@ Codex account panels expose no Spark quota toggle or setting and retain quota re
 
 ## Dashboard surfaces
 
+Dashboard typography uses `--font-ui` for interface/prose and `--font-code` for machine data.
+Shared sizes and theme colors come from `gui/src/styles.css`; CSS token references without a
+fallback are checked by `gui/tests/design-token-references.test.ts`. Remote messages keep the UI
+font while JSON editors use the code font; device removal preserves visible keyboard focus and
+44px touch targets on coarse pointers. `gui/tests/ui-consistency-browser.ts` checks these roles
+against real CSS in Chromium across light/dark themes and desktop/mobile viewports.
+
 Dashboard localization uses the English `gui/src/i18n/en.ts` catalog as the complete key and
 placeholder contract. Every registered locale, including Vietnamese, supplies the same keys;
 locale-specific Compatibility Lab, log-guard, routing, vision, status-code, and quota-formatting

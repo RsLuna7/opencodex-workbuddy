@@ -178,7 +178,7 @@
 }
 .pwi-json-textarea {
   width: 100%; min-height: 180px; padding: 10px 12px;
-  font-family: ui-monospace, "SF Mono", "Cascadia Code", "Segoe UI Mono", Menlo, monospace;
+  font-family: var(--font-code);
   font-size: var(--text-label); line-height: 1.5; tab-size: 2;
   color: var(--text); background: var(--raised); border: 1px solid var(--border);
   border-radius: var(--radius-xs); resize: vertical;
