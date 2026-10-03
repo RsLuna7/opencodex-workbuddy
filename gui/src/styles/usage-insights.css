@@ -88,7 +88,7 @@
 .insight-calendar-wrap { display: flex; gap: var(--space-3); margin-top: var(--space-6); }
 .insight-weekdays { display: flex; flex-direction: column; justify-content: space-between; align-self: flex-start; height: 130px; padding-top: 20px; padding-bottom: 15px; color: var(--muted); font-size: var(--text-label); min-width: 22px; }
 .insight-calendar-scroll { overflow-x: auto; min-width: 0; flex: 1; padding: var(--space-1); scrollbar-width: thin; scrollbar-color: var(--insight-purple-muted) var(--rail); }
-.insight-calendar { display: grid; grid-template-columns: repeat(var(--insight-weeks), minmax(14px, 1fr)); gap: var(--space-1); min-width: calc(var(--insight-weeks) * 18px); }
+.insight-calendar { --insight-weeks: 1; display: grid; grid-template-columns: repeat(var(--insight-weeks), minmax(14px, 1fr)); gap: var(--space-1); min-width: calc(var(--insight-weeks) * 18px); }
 .insight-week { display: grid; grid-template-rows: 16px repeat(7, 14px); gap: var(--space-1); min-width: 0; }
 .insight-month { font-size: var(--text-label); color: var(--muted); white-space: nowrap; min-width: 0; }
 .insight-day, .insight-day-placeholder { display: block; height: 14px; border-radius: 3px; border: 0; padding: 0; min-width: 14px; }

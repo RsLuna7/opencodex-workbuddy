@@ -334,7 +334,7 @@ export async function validateCodebuddyAccessToken(
 ): Promise<OAuthCredentials> {
   const token = accessToken.trim();
   if (!token) throw new Error("CodeBuddy token is empty");
-  const order: WorkbuddyRealm[] = realm === "global" ? ["global", "cn"] : realm === "cn" ? ["cn", "global"] : ["cn", "global"];
+  const order: WorkbuddyRealm[] = realm ? [realm] : ["cn", "global"];
   for (const site of order) {
     const cred = await validateCodebuddyAccessTokenOnRealm(site, token, signal);
     if (cred) return cred;

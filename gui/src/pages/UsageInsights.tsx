@@ -52,19 +52,20 @@ export default function UsageInsights({ apiBase, connected = false, apiKeyId }: 
   const clearSelection = () => { setSelectedDate(null); setExportFailed(false); };
   const download = () => {
     if (!data) return;
-    let url: string | undefined;
     try {
-      url = URL.createObjectURL(new Blob([insightCsv(data, range, surface, scope)], { type: "text/csv;charset=utf-8" }));
       const link = document.createElement("a");
-      link.href = url;
-      link.download = insightCsvFilename(range, surface);
-      document.body.append(link); link.click(); link.remove();
-      // Give the browser time to consume the download before releasing its backing blob.
-      const downloadUrl = url;
-      window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+      const url = URL.createObjectURL(new Blob([insightCsv(data, range, surface, scope)], { type: "text/csv;charset=utf-8" }));
+      try {
+        link.href = url;
+        link.download = insightCsvFilename(range, surface);
+        document.body.append(link); link.click();
+      } finally {
+        link.remove();
+        // Give the browser time to consume the download before releasing its backing blob.
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
       setExportFailed(false);
     } catch {
-      if (url) URL.revokeObjectURL(url);
       setExportFailed(true);
     }
   };

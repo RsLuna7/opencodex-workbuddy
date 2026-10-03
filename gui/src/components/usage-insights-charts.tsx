@@ -6,6 +6,8 @@ import { formatProviderDisplayName } from "../provider-icons";
 import { activityWeeks, availableCost, civilDate, insightValue, rankInsights, type InsightDay, type InsightMetric, type InsightRow } from "../usage-insights-data";
 import { formatInsightDate, formatInsightValue, metricLabel } from "../usage-insights-format";
 
+const WEEKDAY_KEYS = ["usage.dayMon", "usage.dayWed", "usage.dayFri"] as const;
+
 function moveChartFocus(event: KeyboardEvent<HTMLElement>, index: number, total: number, grid = false) {
   const step = event.key === "Home" ? -index : event.key === "End" ? total - index - 1
     : event.key === "ArrowRight" ? (grid ? 7 : 1) : event.key === "ArrowLeft" ? (grid ? -7 : -1)
@@ -73,16 +75,17 @@ export function InsightCalendar({ days, selectedDate, onSelect }: { days: Insigh
   const actual = weeks.flat().filter((day): day is InsightDay => day !== null);
   const indexByDate = new Map(actual.map((day, index) => [day.date, index]));
   const maximum = Math.max(1, ...days.map(day => day.requests));
-  const weekdays = ["usage.dayMon", "usage.dayWed", "usage.dayFri"] as const;
   return (
     <>
       <div className="insight-calendar-wrap">
-        <div className="insight-weekdays" aria-hidden="true">{weekdays.map(key => <span key={key}>{t(key)}</span>)}</div>
+        <div className="insight-weekdays" aria-hidden="true">{WEEKDAY_KEYS.map(key => <span key={key}>{t(key)}</span>)}</div>
         <div className="insight-calendar-scroll" tabIndex={0} role="group" aria-label={t("usage.section.heatmap")}>
           <div className="insight-calendar" data-insight-chart style={{ "--insight-weeks": weeks.length } as CSSProperties}>
-            {weeks.map((week, weekIndex) => <div className="insight-week" key={weekIndex}>
-              <span className="insight-month" aria-hidden="true">{week.find(day => day && (weekIndex === 0 || day.date.endsWith("-01")))
-                ? new Intl.DateTimeFormat(locale, { month: "short", timeZone: "UTC" }).format(civilDate(week.find(day => day && (weekIndex === 0 || day.date.endsWith("-01")))!.date)) : ""}</span>
+            {weeks.map((week, weekIndex) => {
+              const monthDay = week.find(day => day && (weekIndex === 0 || day.date.endsWith("-01")));
+              return <div className="insight-week" key={weekIndex}>
+              <span className="insight-month" aria-hidden="true">{monthDay
+                ? new Intl.DateTimeFormat(locale, { month: "short", timeZone: "UTC" }).format(civilDate(monthDay.date)) : ""}</span>
               {week.map((day, index) => {
                 if (!day) return <span key={index} className="insight-day-placeholder" />;
                 const level = day.requests === 0 ? 0 : Math.min(4, Math.max(1, Math.ceil(day.requests / maximum * 4)));
@@ -94,7 +97,7 @@ export function InsightCalendar({ days, selectedDate, onSelect }: { days: Insigh
                   onFocus={() => setFocused(day.date)} onKeyDown={event => moveChartFocus(event, indexByDate.get(day.date)!, actual.length, true)}
                   onClick={() => onSelect(day.date)} />;
               })}
-            </div>)}
+            </div>; })}
           </div>
         </div>
       </div>

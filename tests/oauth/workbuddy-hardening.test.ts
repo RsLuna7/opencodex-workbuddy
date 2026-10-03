@@ -21,8 +21,26 @@ import {
   clearGenericFailoverHealth,
 } from "../../src/oauth/generic-account-failover";
 import { getCredential, saveCredential } from "../../src/oauth/store";
+import { validateCodebuddyAccessToken } from "../../src/oauth/codebuddy";
 import type { OcxConfig } from "../../src/types";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
+
+describe("workbuddy explicit validation realm", () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  for (const realm of ["cn", "global"] as const) {
+    test(`a rejected ${realm} token is never retried on another realm`, async () => {
+      const hosts: string[] = [];
+      globalThis.fetch = Object.assign(async (input: RequestInfo | URL) => {
+        hosts.push(new URL(String(input)).hostname);
+        return Response.json({ code: 401, message: "unauthorized" }, { status: 401 });
+      }, { preconnect: originalFetch.preconnect }) as typeof fetch;
+      await expect(validateCodebuddyAccessToken("test-credential", undefined, realm)).rejects.toThrow("validation failed");
+      expect(hosts).toEqual([realm === "cn" ? "www.codebuddy.cn" : "www.workbuddy.ai"]);
+    });
+  }
+});
 
 describe("workbuddy device token file", () => {
   const previous = process.env[WORKBUDDY_DEVICE_TOKEN_FILE_ENV];

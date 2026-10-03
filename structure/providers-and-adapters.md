@@ -1,5 +1,7 @@
 # Providers And Adapters
 
+WorkBuddy access-token validation stays on an explicitly selected realm. Realm-less legacy imports may probe the canonical CN and Global sites; account rotation remains within the resolved realm.
+
 OrcaRouter key exchange uses the shared raw-byte reader before returning a durable key. Its
 64 KiB response ceiling, single 30-second header/body deadline, and cancellation behavior follow
 the [bounded ingestion contract](transports/inventory.md#bounded-response-ingestion-and-orcarouter-login).
