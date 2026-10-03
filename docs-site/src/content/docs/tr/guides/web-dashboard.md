@@ -288,3 +288,11 @@ metin ve vizyon sınıflandırmasını kaydedilen sağlayıcı yapılandırması
 kopyalar, böylece [vizyon sidecar'ı](/tr/guides/sidecars/) manuel sınıflandırma
 olmadan doğru şekilde geçişlenir.
 :::
+
+## Kullanım içgörüleri
+
+OpenCodex proxy kayıtlarını görmek için kenar çubuğunda **Kullanım içgörüleri** veya `/#insights` sayfasını açın. Bugün, 7 gün, 30 gün veya tüm geçmiş ve All, Codex, Claude ya da Grok ile filtreleyin. Bağlı panolar bu makine ve Hub geneli kapsamlarını korur. Görünür rapor dakikada bir veya elle yenilenir.
+
+Sayfa istek ve token toplamlarını, API liste fiyatı tahminlerini, önbellek okumalarını, etkin günleri, model ve sağlayıcı sıralamalarını ve günlük takvimi gösterir. Metrik değişimi eğilimi ve sıralamayı değiştirir. Bir çubuk veya kare seçerek günü inceleyin; tekrar seçin veya günü temizleyerek döneme dönün. Ok tuşları tarihler arasında gezinir. Model ilişkilendirmeleri örtüşebiliyorsa günlük sağlayıcı istek sayısı kullanılamaz olarak gösterilir.
+
+CSV; geçerli filtreleri, proxy yerel tarihlerini, modelleri, sağlayıcıları, tokenları, kullanılabilir USD tahminlerini ve okuma tanılarını içerir. Tüm geçmiş toplamları okunabilir günlüğün tamamını kapsar; günlük grafikler, takvim ve CSV en fazla son 366 günü kapsar. Eksik ölçümler, fiyatlar ve gözlemlenen önbellek paydası olmayan oranlar kullanılamazdır; kısmi geçmiş uyarılır. Fiyatlandırılmamış veya ölçülmemiş istekleri hariç tutan tahminler fatura değildir. İstemciye ait yerel oturumlar, projeler, süreler veya beceriler içe aktarılmaz.
