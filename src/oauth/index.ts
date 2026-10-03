@@ -42,6 +42,9 @@ import { loginGithubCopilot, refreshGithubCopilotToken, validateCopilotApiBaseUr
 import { loginCommandCode, refreshCommandCodeToken } from "./command-code";
 import { loginMetaMuse, refreshMetaMuseToken } from "./meta-muse";
 import { applyCodebuddyAccountHeaders, CODEBUDDY_PROVIDER_ID, loginCodebuddy, refreshCodebuddyToken } from "./codebuddy";
+import { applyWorkbuddyLoginOriginHeaders } from "./codebuddy-headers";
+import { workbuddyModelsUrl } from "./codebuddy-hosts";
+import { routedWorkbuddyRealm } from "./codebuddy-realm";
 import { loginZaiPlan, refreshZaiPlanToken } from "./zai-plan";
 import { loginOrcaRouter, orcaRouterInferenceBaseUrl, refreshOrcaRouterKey } from "./orcarouter";
 import { ANTIGRAVITY_REQUEST_UA } from "../adapters/google-antigravity-wire";
@@ -180,6 +183,8 @@ export interface LoginOpts {
    * listener (#3366). Ignored by every other provider.
    */
   flow?: ChatGPTLoginFlow;
+  /** WorkBuddy only: `global` starts the international-site login. Default cn. */
+  realm?: "cn" | "global";
 }
 
 export interface LoginFlowLifecycle {
@@ -284,7 +289,7 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
     defaultRefreshPolicy: "disabled",
   },
   workbuddy: {
-    login: (ctrl) => loginCodebuddy(ctrl),
+    login: (ctrl, opts) => loginCodebuddy(ctrl, { realm: opts?.realm }),
     refresh: (rt, signal, credential) => refreshCodebuddyToken(rt, signal, credential),
     providerConfig: oauthConfig("workbuddy"),
     defaultModel: oauthDefaultModel("workbuddy"),
@@ -509,6 +514,9 @@ function accessSnapshot(provider: string, accountId: string, cred: OAuthCredenti
       ...(codebuddyUid ? { uid: codebuddyUid } : {}),
       ...(cred.codebuddy?.enterpriseId ? { enterpriseId: cred.codebuddy.enterpriseId } : {}),
       ...(cred.codebuddy?.domain ? { domain: cred.codebuddy.domain } : {}),
+      ...(cred.codebuddy?.realm ? { realm: cred.codebuddy.realm } : {}),
+      ...(cred.codebuddy?.platform ? { platform: cred.codebuddy.platform } : {}),
+      ...(cred.codebuddy?.deviceToken ? { deviceToken: cred.codebuddy.deviceToken } : {}),
     }
     : undefined;
   const zaiPlan: OAuthAccessSnapshot["zaiPlan"] | undefined = cred.zaiPlan
@@ -1266,7 +1274,15 @@ export function buildModelsRequest(
   }
   if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
   if (providerName === CODEBUDDY_PROVIDER_ID) {
-    applyCodebuddyAccountHeaders(headers, getCredential(CODEBUDDY_PROVIDER_ID));
+    const cred = getCredential(CODEBUDDY_PROVIDER_ID);
+    const realm = routedWorkbuddyRealm(cred);
+    applyWorkbuddyLoginOriginHeaders(headers, realm);
+    applyCodebuddyAccountHeaders(headers, cred);
+    if (realm === "global") {
+      headers["X-Domain"] = "www.workbuddy.ai";
+      headers["X-No-Enterprise-Id"] = "1";
+    }
+    return { url: discoveryUrl(workbuddyModelsUrl(realm)), headers };
   }
   return { url: discoveryUrl(providerModelsUrl(effectiveProvider.baseUrl)), headers };
 }

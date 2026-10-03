@@ -32,7 +32,7 @@ export default function CatalogAccountRow({
     onChange: (value: string) => void;
     onSubmit: (provider: string) => void;
   };
-  onLogin?: (provider: string, addAccount?: boolean) => void;
+  onLogin?: (provider: string, addAccount?: boolean, realm?: "cn" | "global") => void;
   onCancelLogin?: (provider: string) => void;
   onLogout?: (provider: string) => void;
   onManage?: (provider: string) => void;
@@ -90,6 +90,16 @@ export default function CatalogAccountRow({
                   {busy ? t("prov.waitingBrowser") : t("modal.accountAdd")}
                 </button>
               )}
+              {onLogin && row.id === "workbuddy" && (
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  disabled={busy}
+                  onClick={() => { if (!busy) onLogin(row.id, true, "global"); }}
+                >
+                  {t("pws.addGlobalAccount")}
+                </button>
+              )}
               {busy && onCancelLogin && (
                 <button type="button" className="btn btn-ghost" onClick={() => onCancelLogin(row.id)}>
                   {t("common.cancel")}
@@ -104,7 +114,12 @@ export default function CatalogAccountRow({
           ) : busy ? (
             onCancelLogin && <button type="button" className="btn btn-ghost" onClick={() => onCancelLogin(row.id)}>{t("common.cancel")}</button>
           ) : (
-            onLogin && <button type="button" className="btn btn-primary" onClick={() => onLogin(row.id)}>{t("modal.accountLogin")}</button>
+            <>
+              {onLogin && <button type="button" className="btn btn-primary" onClick={() => onLogin(row.id)}>{t("modal.accountLogin")}</button>}
+              {onLogin && row.id === "workbuddy" && (
+                <button type="button" className="btn btn-ghost" onClick={() => onLogin(row.id, true, "global")}>{t("pws.addGlobalAccount")}</button>
+              )}
+            </>
           )}
         </div>
       </div>

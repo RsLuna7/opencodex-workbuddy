@@ -22,6 +22,7 @@ import { LoginHint as LoginHintView } from "../login-url-block";
 import { OpenBrowserPrefToggle } from "../open-browser-pref-toggle";
 import ProviderAccountQuota from "./ProviderAccountQuota";
 import { GrokCouponBadge, GrokResetCouponModal } from "./GrokResetCoupons";
+import WorkbuddyAccountBadges from "./WorkbuddyAccountBadges";
 import type { CodexAccountPoolController } from "../../hooks/useCodexAccountPool";
 import { useGrokResetCoupons } from "../../hooks/useGrokResetCoupons";
 import { Switch } from "../../ui";
@@ -549,6 +550,7 @@ export default function ProviderAuthPanel({
                       {account.active && <span className="badge badge-primary">{t("prov.accountActive")}</span>}
                       {switching && <span className="badge badge-muted">{t("pws.accountSwitching")}</span>}
                     </button>
+                    <WorkbuddyAccountBadges activity={account.workbuddy} />
                     {showReauth && (
                       <button
                         type="button"

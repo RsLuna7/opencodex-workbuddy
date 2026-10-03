@@ -206,6 +206,7 @@
 
 .pws-capacity-label,
 .pws-capacity-recovery,
+.pws-capacity-credits,
 .pws-capacity-incomplete {
   font-size: 0.7rem;
 }
@@ -221,6 +222,26 @@
   margin-top: 8px;
   padding-top: 7px;
   border-top: 1px solid var(--border-soft);
+}
+
+.pws-capacity-credits {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 12px;
+  row-gap: 2px;
+  align-items: baseline;
+  color: var(--fg-muted, #888);
+}
+
+.pws-capacity-credits strong {
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.pws-capacity-credits-expires {
+  grid-column: 2;
+  justify-self: end;
+  text-align: right;
 }
 
 .pws-capacity-recovery {
@@ -253,6 +274,17 @@
   .pws-capacity-recovery strong {
     margin-left: 0;
     white-space: normal;
+  }
+
+  .pws-capacity-credits {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pws-capacity-credits strong,
+  .pws-capacity-credits-expires {
+    justify-self: start;
+    white-space: normal;
+    text-align: start;
   }
 }
 

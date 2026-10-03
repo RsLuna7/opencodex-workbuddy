@@ -263,7 +263,7 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
       "priority <provider> <id|main> [first|earlier|normal|later|last|-100..100|reset]  Selection order; omit the value to read it.",
       "remove <provider> <id> --yes  Remove a stored account or key after an existence check.",
       "add-key <provider> [--label <label>]  Add a key read only from piped stdin.",
-      "login/reauth/code/cancel  Run browser or manual-code auth from a headless shell.",
+      "login/reauth/code/cancel  Run browser or manual-code auth from a headless shell. workbuddy accepts --realm cn|global.",
       "reset-credits <id|main> [--consume --yes]  Inspect or consume Codex reset credits.",
       "grok-reset-coupons [<id>] [--consume --yes] Inspect or redeem Grok reset coupons.",
       "main <subcommand>     Manage the physical native Codex login separately from Pool routing.",

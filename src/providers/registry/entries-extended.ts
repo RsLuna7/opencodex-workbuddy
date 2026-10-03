@@ -1333,7 +1333,7 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
       "X-Requested-With": "XMLHttpRequest",
       "User-Agent": "CodeBuddyIDE",
     },
-    note: "Tencent CodeBuddy / WorkBuddy China-site account. Browser login (or paste an access token). Unofficial IDE endpoint — Tencent may change or restrict it. Do not send confidential material.",
+    note: "Tencent CodeBuddy CN and WorkBuddy Global. Browser login (ocx account login workbuddy [--realm global]). Unofficial IDE endpoint — Tencent may change or restrict it. Do not send confidential material.",
   },
   {
     id: "zai-plan",

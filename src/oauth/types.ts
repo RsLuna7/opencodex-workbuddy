@@ -92,6 +92,12 @@ export interface CodebuddyOAuthMetadata {
   uid?: string;
   enterpriseId?: string;
   domain?: string;
+  /** cn | global. Empty means infer from domain (legacy CN). */
+  realm?: "cn" | "global";
+  /** Login platform that produced this credential (`ide` / `workbuddy-ai` / `CLI`). */
+  platform?: string;
+  /** Optional desktop Turing device token. Omitted when empty — never stolen from disk. */
+  deviceToken?: string;
 }
 
 /** One logged-in account inside a provider's account set (multiauth). */

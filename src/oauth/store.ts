@@ -508,11 +508,17 @@ function normalizeCredential(cred: unknown): OAuthCredentials | null {
     const uid = cleanCodebuddy(raw.uid, 256);
     const enterpriseId = cleanCodebuddy(raw.enterpriseId, 256);
     const domain = cleanCodebuddy(raw.domain, 256);
-    if (uid || enterpriseId || domain) {
+    const realm = raw.realm === "cn" || raw.realm === "global" ? raw.realm : undefined;
+    const platform = cleanCodebuddy(raw.platform, 64);
+    const deviceToken = cleanCodebuddy(raw.deviceToken, 1024);
+    if (uid || enterpriseId || domain || realm || platform || deviceToken) {
       normalized.codebuddy = {
         ...(uid ? { uid } : {}),
         ...(enterpriseId ? { enterpriseId } : {}),
         ...(domain ? { domain } : {}),
+        ...(realm ? { realm } : {}),
+        ...(platform ? { platform } : {}),
+        ...(deviceToken ? { deviceToken } : {}),
       };
     }
   }

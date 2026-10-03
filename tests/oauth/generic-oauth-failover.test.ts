@@ -295,8 +295,9 @@ describe("sidecar on429 wiring", () => {
     expect(start).toBeGreaterThan(-1);
     const body = coreSource.slice(start, coreSource.indexOf("\n  };", start));
 
-    // Key-pool rotation stays first and unconditional: an API-key provider must behave exactly
-    // as it did before this hook existed.
+    // Key-pool rotation stays first for 429. A 402 skips it: WorkBuddy rewrites 6004/14018 to
+    // 402, and walking API keys on a billing refusal is the wrong roster.
+    expect(body).toContain("status === 402");
     const keyPool = body.indexOf("rotateProviderTransportOn429(");
     const oauth = body.indexOf("rotateGenericOAuthAccountOn429(");
     expect(keyPool).toBeGreaterThan(-1);
@@ -318,6 +319,8 @@ describe("sidecar on429 wiring", () => {
     // inside a web-search/image turn is terminal while the same 429 on the main path rotates.
     const anthropic = body.indexOf("rotateAnthropicAccountOn429(");
     expect(anthropic).toBeGreaterThan(oauth);
+    // A WorkBuddy 402 must not walk the Anthropic roster on the way to generic OAuth.
+    expect(body.slice(planStart, anthropic)).toContain("status !== 402");
 
     // REACHABILITY, not mention. The first draft of this arm sat behind an unconditional early
     // return and was dead code that a grep for "anthropic" would have happily passed. Every gate
@@ -351,8 +354,20 @@ describe("sidecar on429 wiring", () => {
     // helper, and the reasoning-replay/continuation scope through a second bind. Rebinding only
     // the outer parsed leaves the rotated bearer paired with the failed account's metadata.
     expect(body).toContain("retryParsed?: OcxParsedRequest");
+    expect(body).toContain("refusal?: Response");
+    expect(body).toContain("refusal ?? { status: 429 }");
     expect(body).toContain("applyFailoverSnapshot(snapshot, retryParsed");
     expect(body).toContain("parsed: retryParsed");
+  });
+
+  test("both sidecar loops offer 402 to the shared on429 hook", () => {
+    // WorkBuddy 6004/14018 arrives as HTTP 402. A loop that only called on429 for 429 left the
+    // cooldown unwritten and the sticky account in place, so the same model kept 402-ing.
+    for (const owner of ["web-search/loop.ts", "images/loop.ts"] as const) {
+      const src = readFileSync(repoPath("src", ...owner.split("/")), "utf8");
+      expect(src).toContain("prepared.response.status === 429 || prepared.response.status === 402");
+      expect(src).toMatch(/deps\.on429\(\s*[\s\S]*prepared\.response,/);
+    }
   });
 
   test("every rotation site applies the credential through the one shared helper", () => {

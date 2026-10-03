@@ -1,0 +1,227 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - button "前往仪表板" [ref=e6] [cursor=pointer]:
+      - img "opencodex 徽标" [ref=e7]
+      - generic [ref=e8]: opencodex
+      - generic "2.61.0" [ref=e9]: v2.61.0
+    - navigation [ref=e10]:
+      - button "仪表盘" [ref=e12] [cursor=pointer]
+      - button "Codex 设置" [ref=e19] [cursor=pointer]
+      - button "提供方" [ref=e23] [cursor=pointer]
+      - button "模型" [ref=e29] [cursor=pointer]
+      - button "子代理" [ref=e34] [cursor=pointer]
+      - button "日志与调试" [ref=e41] [cursor=pointer]
+      - button "用量" [ref=e45] [cursor=pointer]
+      - button "存储" [ref=e49] [cursor=pointer]
+      - button "远程工作区" [ref=e53] [cursor=pointer]
+      - button "集成" [ref=e58] [cursor=pointer]
+    - generic [ref=e62]:
+      - combobox "语言" [ref=e68] [cursor=pointer]:
+        - generic [ref=e69]: 中文
+      - 'button "主题: 跟随系统" [ref=e72] [cursor=pointer]':
+        - generic [ref=e76]: 跟随系统
+      - generic [ref=e77]:
+        - generic [ref=e78]: 代理
+        - generic [ref=e79]:
+          - button "停止代理" [ref=e80] [cursor=pointer]
+          - button "重新加载 Codex 模型列表" [ref=e83] [cursor=pointer]
+      - generic [ref=e86]:
+        - link "GitHub" [ref=e87] [cursor=pointer]:
+          - /url: https://github.com/lidge-jun/opencodex
+        - generic [ref=e90]:
+          - button "已在 GitHub 加星" [disabled] [pressed] [ref=e106]
+          - button "检查更新" [ref=e94] [cursor=pointer]
+  - main [ref=e97]:
+    - generic [ref=e98]:
+      - generic [ref=e99]:
+        - heading "提供方" [level=2] [ref=e100]
+        - button "添加提供方" [ref=e108] [cursor=pointer]
+      - generic [ref=e112]:
+        - complementary "提供商列表" [ref=e113]:
+          - generic [ref=e114]:
+            - searchbox "搜索提供商…" [ref=e116]
+            - button "筛选提供商" [ref=e118] [cursor=pointer]
+          - listbox "提供商" [ref=e121]:
+            - group "就绪 (7)" [ref=e122]:
+              - generic [ref=e123]:
+                - generic [ref=e124]: 就绪
+                - generic [ref=e125]: "7"
+              - generic [ref=e126]:
+                - option "选择 Cursor — 就绪" [ref=e127] [cursor=pointer]:
+                  - generic [ref=e130]:
+                    - generic "Cursor" [ref=e132]
+                    - generic "1 个模型" [ref=e133]
+                - button
+              - generic [ref=e136]:
+                - option "选择 DeepSeek — 就绪" [ref=e137] [cursor=pointer]:
+                  - generic [ref=e140]:
+                    - generic "DeepSeek" [ref=e142]
+                    - generic "4 个模型" [ref=e143]
+                - button
+              - generic [ref=e146]:
+                - option "选择 Google Antigravity — 就绪" [ref=e147] [cursor=pointer]:
+                  - generic [ref=e150]:
+                    - generic "Google Antigravity" [ref=e152]
+                    - generic "7 个模型" [ref=e153]
+                - button
+              - generic [ref=e156]:
+                - option "选择 OpenAI (Codex login) — 就绪 · 默认" [ref=e157] [cursor=pointer]:
+                  - generic [ref=e160]:
+                    - generic "OpenAI (Codex login)" [ref=e162]
+                    - generic "4 个模型" [ref=e163]
+                  - generic "默认" [ref=e165]
+                - button
+              - generic [ref=e169]:
+                - option "选择 Workbuddy — 就绪" [selected] [ref=e170] [cursor=pointer]:
+                  - generic [ref=e173]:
+                    - generic "Workbuddy" [ref=e175]
+                    - generic "10 个模型" [ref=e176]
+                - button
+              - generic [ref=e179]:
+                - option "选择 xAI Grok — 就绪" [ref=e180] [cursor=pointer]:
+                  - generic [ref=e183]:
+                    - generic "xAI Grok" [ref=e185]
+                    - generic "8 个模型" [ref=e186]
+                - button
+              - generic [ref=e189]:
+                - option "选择 Zai Plan — 就绪" [ref=e190] [cursor=pointer]:
+                  - generic [ref=e193]:
+                    - generic "Zai Plan" [ref=e195]
+                    - generic "2 个模型" [ref=e196]
+                - button
+        - main "提供商详情" [ref=e199]:
+          - generic [ref=e433]:
+            - button "提供商概览" [ref=e435] [cursor=pointer]
+            - generic [ref=e438]:
+              - heading "Workbuddy" [level=2] [ref=e442]
+              - generic [ref=e443]:
+                - button "设为默认" [ref=e444] [cursor=pointer]
+                - button "移除提供商" [ref=e445] [cursor=pointer]
+                - generic [ref=e448]:
+                  - generic [ref=e449]: 已启用
+                  - button "已启用" [pressed] [ref=e450] [cursor=pointer]
+            - tablist [ref=e452]:
+              - tab "概览" [ref=e453] [cursor=pointer]
+              - tab "模型" [ref=e454] [cursor=pointer]
+              - tab "用量" [ref=e455] [cursor=pointer]
+              - tab "账户" [active] [selected] [ref=e456] [cursor=pointer]
+              - tab "设置" [ref=e457] [cursor=pointer]
+            - tabpanel "账户" [ref=e534]:
+              - region "可用账户" [ref=e535]:
+                - generic [ref=e536]:
+                  - heading "可用账户" [level=3] [ref=e537]
+                  - button "刷新额度" [ref=e539] [cursor=pointer]
+                - generic [ref=e542]:
+                  - generic [ref=e543]:
+                    - generic [ref=e545]: 已登录
+                    - button "退出登录" [ref=e547] [cursor=pointer]
+                  - generic [ref=e548] [cursor=pointer]:
+                    - checkbox "不要在运行代理的机器上打开浏览器 适用于使用其他浏览器配置文件登录，或仪表板与代理不在同一台机器上。" [ref=e549]
+                    - generic [ref=e550]:
+                      - generic [ref=e551]: 不要在运行代理的机器上打开浏览器
+                      - generic [ref=e552]: 适用于使用其他浏览器配置文件登录，或仪表板与代理不在同一台机器上。
+                  - list [ref=e553]:
+                    - listitem [ref=e554]:
+                      - generic [ref=e555]:
+                        - button "4ever" [ref=e556] [cursor=pointer]:
+                          - generic [ref=e558]:
+                            - generic [ref=e559]: 4ever
+                            - generic [ref=e560]: "4ever · ID: account-…b7f8"
+                        - button "编辑别名" [ref=e561] [cursor=pointer]
+                        - button "移除 — 4ever" [ref=e562] [cursor=pointer]
+                      - generic [ref=e566]:
+                        - generic [ref=e567]:
+                          - generic [ref=e568]:
+                            - generic [ref=e569]:
+                              - generic [ref=e570]: 订阅总额度
+                              - generic [ref=e572]: 10月20日, 12:47 重置
+                            - generic [ref=e573]: 已用 87%
+                          - generic [ref=e577]:
+                            - generic [ref=e578]:
+                              - generic [ref=e579]: 积分
+                              - generic [ref=e581]: 10月20日, 12:47 重置
+                            - generic [ref=e582]: 已用 87%
+                        - generic [ref=e586]:
+                          - generic [ref=e587]:
+                            - generic [ref=e588]: 额度余额
+                            - strong [ref=e589]: 200 / 1,500
+                          - generic [ref=e590]: 2026年10月20日 到期
+                    - listitem [ref=e592]:
+                      - generic [ref=e593]:
+                        - button "A" [ref=e594] [cursor=pointer]:
+                          - generic [ref=e596]:
+                            - generic [ref=e597]: A
+                            - generic [ref=e598]: "13068717424 · ID: account-…7ae4"
+                        - button "编辑别名" [ref=e599] [cursor=pointer]
+                        - button "移除 — A" [ref=e600] [cursor=pointer]
+                      - generic [ref=e604]:
+                        - generic [ref=e605]:
+                          - generic [ref=e606]:
+                            - generic [ref=e607]:
+                              - generic [ref=e608]: 订阅总额度
+                              - generic [ref=e610]: 10月11日, 19:36 重置
+                            - generic [ref=e611]: 已用 28%
+                          - generic [ref=e615]:
+                            - generic [ref=e616]:
+                              - generic [ref=e617]: 积分
+                              - generic [ref=e619]: 10月11日, 19:36 重置
+                            - generic [ref=e620]: 已用 28%
+                        - generic [ref=e624]:
+                          - generic [ref=e625]:
+                            - generic [ref=e626]: 额度余额
+                            - strong [ref=e627]: 1,941 / 2,700
+                          - generic [ref=e628]: 2026年10月11日 到期
+                    - listitem [ref=e630]:
+                      - generic [ref=e631]:
+                        - button "ppopios" [ref=e632] [cursor=pointer]:
+                          - generic [ref=e634]:
+                            - generic [ref=e635]: ppopios
+                            - generic [ref=e636]: "ppopios · ID: account-…dfc7"
+                        - button "编辑别名" [ref=e637] [cursor=pointer]
+                        - button "移除 — ppopios" [ref=e638] [cursor=pointer]
+                      - generic [ref=e642]:
+                        - generic [ref=e643]:
+                          - generic [ref=e644]:
+                            - generic [ref=e645]:
+                              - generic [ref=e646]: 订阅总额度
+                              - generic [ref=e648]: 9月30日, 23:59 重置
+                            - generic [ref=e649]: 已用 0%
+                          - generic [ref=e652]:
+                            - generic [ref=e653]:
+                              - generic [ref=e654]: 积分
+                              - generic [ref=e656]: 9月30日, 23:59 重置
+                            - generic [ref=e657]: 已用 0%
+                        - generic [ref=e660]:
+                          - generic [ref=e661]:
+                            - generic [ref=e662]: 额度余额
+                            - strong [ref=e663]: 350 / 350
+                          - generic [ref=e664]: 2026年9月30日 到期
+                    - listitem [ref=e666]:
+                      - generic [ref=e667]:
+                        - button "z***1@gmail.com — 当前账户" [ref=e668] [cursor=pointer]:
+                          - generic [ref=e670]:
+                            - generic [ref=e671]: z***1@gmail.com
+                            - generic [ref=e672]: "z***1@gmail.com · ID: account-…be31"
+                          - generic [ref=e673]: 使用中
+                        - button "编辑别名" [ref=e674] [cursor=pointer]
+                        - button "移除 — z***1@gmail.com" [ref=e675] [cursor=pointer]
+                      - generic [ref=e679]:
+                        - generic [ref=e680]:
+                          - generic [ref=e681]:
+                            - generic [ref=e682]:
+                              - generic [ref=e683]: 订阅总额度
+                              - generic [ref=e685]: 9月30日, 23:59 重置
+                            - generic [ref=e686]: 已用 0%
+                          - generic [ref=e689]:
+                            - generic [ref=e690]:
+                              - generic [ref=e691]: 积分
+                              - generic [ref=e693]: 9月30日, 23:59 重置
+                            - generic [ref=e694]: 已用 0%
+                        - generic [ref=e697]:
+                          - generic [ref=e698]:
+                            - generic [ref=e699]: 额度余额
+                            - strong [ref=e700]: 350 / 350
+                          - generic [ref=e701]: 2026年9月30日 到期
+                  - generic [ref=e703]:
+                    - button "添加账户" [ref=e704] [cursor=pointer]
+                    - button "刷新额度" [ref=e705] [cursor=pointer]
