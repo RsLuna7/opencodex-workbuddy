@@ -165,12 +165,14 @@ test("requests without usable measurements show unknown tokens and cache instead
 test("CSV export uses the visible report and exposes a download failure", async () => {
   const originalCreate = URL.createObjectURL, originalRevoke = URL.revokeObjectURL;
   let blob: Blob | undefined;
+  const revoked: string[] = [];
   URL.createObjectURL = value => { blob = value as Blob; return "blob:usage-test"; };
-  URL.revokeObjectURL = () => {};
+  URL.revokeObjectURL = url => { revoked.push(url); };
   try {
     await mount();
     await click(button("Export CSV"));
     expect(await blob!.text()).toContain('"model-one","3","600","0.6"');
+    expect(revoked).toEqual(["blob:usage-test"]);
     URL.createObjectURL = () => { throw new Error("download unavailable"); };
     await click(button("Export CSV"));
     expect(host.textContent).toContain("CSV export failed");

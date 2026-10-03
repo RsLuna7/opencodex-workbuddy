@@ -61,8 +61,7 @@ export default function UsageInsights({ apiBase, connected = false, apiKeyId }: 
         document.body.append(link); link.click();
       } finally {
         link.remove();
-        // Give the browser time to consume the download before releasing its backing blob.
-        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        URL.revokeObjectURL(url);
       }
       setExportFailed(false);
     } catch {
