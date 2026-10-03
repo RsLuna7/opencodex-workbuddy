@@ -11,8 +11,6 @@ const PROVIDER_ICON_ALIASES: Record<string, string> = {
   "cline-pass": "cline-color.svg",
   "command-code": "commandcode-color.svg",
   commandcode: "commandcode-color.svg",
-  workbuddy: "codebuddy.svg",
-  codebuddy: "codebuddy.svg",
   cursor: "cursor-color.svg",
   deepseek: "deepseek-color.svg",
   /*

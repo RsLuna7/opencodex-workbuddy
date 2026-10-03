@@ -233,5 +233,10 @@ export function warnPlaintextV2AgentMessagesStartup(config: { plaintextV2AgentMe
 export function activateWorkbuddyCheckinForStartup(config: OcxConfig): void {
   if (workbuddyCheckinActivationRequired(config)) {
     activateWorkbuddyCheckinScheduler(config);
+    void import("../../oauth/workbuddy-growth").then(({ activateWorkbuddyGrowthScheduler }) => {
+      activateWorkbuddyGrowthScheduler(config);
+    }).catch(() => {
+      /* growth is optional; check-in still runs */
+    });
   }
 }

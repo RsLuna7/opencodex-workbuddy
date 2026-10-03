@@ -530,8 +530,8 @@ export const CAPABILITIES: readonly Capability[] = [
     json: "payload",
     details: [
       "Runs locally against auth.json; the proxy does not need to be up.",
-      "Already-claimed days and Global (workbuddy.ai) accounts are skipped.",
-      "When WorkBuddy is configured, the running proxy also claims at 09:10 Asia/Shanghai unless workbuddyCheckin.auto is false.",
+      "Already-claimed days are skipped. Global (workbuddy.ai) accounts claim the one-shot trial pack instead of CN check-in.",
+      "When WorkBuddy is configured, the running proxy also claims at 09:10 and 21:10 Asia/Shanghai unless workbuddyCheckin.auto is false.",
     ],
   },
   {

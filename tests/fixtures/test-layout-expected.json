@@ -750,6 +750,7 @@
   "logs-model-tier-confirmation.test.ts": "gui",
   "logs-timezone.test.ts": "server",
   "loop-reasoning-replay.test.ts": "images",
+  "loop-sidecar-402.test.ts": "images",
   "loop.test.ts": "images",
   "loopback-companion-client-targets.test.ts": "server",
   "loopback-listener-admission.test.ts": "server",
@@ -1357,6 +1358,8 @@
   "winsw-stop-hardening.test.ts": "windows",
   "winsw.test.ts": "service",
   "workbuddy-account-pool.test.ts": "oauth",
+  "workbuddy-pool.test.ts": "oauth",
+  "workbuddy-realm.test.ts": "oauth",
   "workflow-budget.test.ts": "lib",
   "ws-endpoint.test.ts": "responses",
   "ws-failure-stage.test.ts": "responses",
@@ -1413,6 +1416,7 @@
   "responses-code-mode-patch-compile.test.ts": "responses",
   "gui-codex-usage-score-parity.test.ts": "gui",
   "web-search-sidecar-429.test.ts": "web-search",
+  "web-search-sidecar-402.test.ts": "web-search",
   "codex-shim-destroyed-probe.test.ts": "codex-integration",
   "client-runtime.test.ts": "clients",
   "chat-tool-choice-allowed-tools.test.ts": "responses",
@@ -1428,5 +1432,8 @@
   "api-key-scope-live.test.ts": "server",
   "api-key-scope-alpha-search.test.ts": "server",
   "workbuddy-checkin.test.ts": "oauth",
+  "workbuddy-credits.test.ts": "oauth",
+  "workbuddy-growth.test.ts": "oauth",
+  "workbuddy-hardening.test.ts": "oauth",
   "cli-account-checkin.test.ts": "cli"
 }

@@ -60,6 +60,8 @@ function localizeCustomQuotaLabel(rawLabel: string, t: TFn): string {
       return t("quota.cursorApiUsage");
     case "Total subscription credits":
       return t("quota.totalSubscriptionCredits");
+    case "WorkBuddy credits":
+      return t("quota.workbuddyCredits");
     default:
       return rawLabel;
   }
@@ -106,6 +108,7 @@ export function buildQuotaRows(quota: AccountQuota | null, plan: string | null |
       },
     });
   }
+  const pointsExpiry = displayQuota.creditsUsd?.unit === "points" ? displayQuota.creditsUsd.expiresAt : undefined;
   for (const w of displayQuota.customWindows ?? []) {
     const customLabel = canonicalCustomWindowLabel(w.label);
     const localized = localizeCustomQuotaLabel(customLabel, t);
@@ -116,11 +119,11 @@ export function buildQuotaRows(quota: AccountQuota | null, plan: string | null |
         label: localized,
         limitLabel: localized,
         percent: w.percent,
-        resetAt: w.resetAt,
+        ...(typeof w.resetAt === "number" && w.resetAt !== pointsExpiry ? { resetAt: w.resetAt } : {}),
       },
     });
   }
-  if (displayQuota.creditsUsd && typeof displayQuota.creditsUsd.percent === "number") {
+  if (displayQuota.creditsUsd && typeof displayQuota.creditsUsd.percent === "number" && displayQuota.creditsUsd.unit !== "points") {
     const hasSubscriptionCreditsCustom = displayQuota.customWindows?.some(
       w => canonicalCustomWindowLabel(w.label) === SUBSCRIPTION_CREDITS_LABEL,
     );
@@ -152,7 +155,7 @@ export function maxQuotaUtilisation(quota: AccountQuota | null): number {
   const hasSubscriptionCreditsCustom = quota.customWindows?.some(
     w => canonicalCustomWindowLabel(w.label) === SUBSCRIPTION_CREDITS_LABEL,
   );
-  if (!hasSubscriptionCreditsCustom && typeof quota.creditsUsd?.percent === "number") {
+  if (!hasSubscriptionCreditsCustom && typeof quota.creditsUsd?.percent === "number" && quota.creditsUsd.unit !== "points") {
     vals.push(quota.creditsUsd.percent);
   }
   return vals.length ? Math.max(...vals) : -1;

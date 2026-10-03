@@ -403,7 +403,7 @@
 
 .api-auth-matrix th {
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--muted);
 }
 
 .api-auth-matrix code {
@@ -422,7 +422,7 @@
 
 .awi-rename-error,
 .awi-delete-error {
-  color: var(--danger, #c44);
+  color: var(--red);
   font-size: var(--text-label);
   margin: 0;
   flex-basis: 100%;
@@ -430,7 +430,7 @@
 
 .awi-rename-label {
   font-size: var(--text-label);
-  color: var(--text-muted);
+  color: var(--muted);
 }
 
 .awi-rename .input {

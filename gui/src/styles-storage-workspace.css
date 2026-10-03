@@ -381,7 +381,7 @@
 
 .storage-policy-help {
   margin: 0;
-  font-size: var(--text-sm);
+  font-size: var(--text-control);
   line-height: var(--leading-body);
 }
 
@@ -475,7 +475,7 @@
 
 .storage-policy-warn {
   margin: 0;
-  font-size: var(--text-sm);
+  font-size: var(--text-control);
   line-height: var(--leading-body);
 }
 
@@ -493,7 +493,7 @@
   align-items: baseline;
   gap: 8px;
   min-width: 0;
-  font-size: var(--text-sm);
+  font-size: var(--text-control);
   line-height: var(--leading-body);
 }
 
@@ -548,7 +548,7 @@
   align-items: baseline;
   gap: 6px 10px;
   margin: -12px 0 16px;
-  font-size: var(--text-sm);
+  font-size: var(--text-control);
   color: var(--muted);
   line-height: var(--leading-body);
 }
@@ -670,7 +670,7 @@
 
 .storage-manual-panel__help {
   margin: 0;
-  font-size: var(--text-sm);
+  font-size: var(--text-control);
   line-height: var(--leading-body);
 }
 
@@ -697,7 +697,7 @@
 
 .storage-manual-panel__status {
   margin: 0;
-  font-size: var(--text-sm);
+  font-size: var(--text-control);
   line-height: var(--leading-body);
 }
 

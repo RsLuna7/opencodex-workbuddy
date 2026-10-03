@@ -158,13 +158,19 @@ export async function executeResponsesSidecars(
     retryAfter: string | null,
     responseHeaders?: Headers,
     retryParsed?: OcxParsedRequest,
+    refusal?: Response,
   ): Promise<ProviderAdapter | null> => {
-    const rotated = rotateProviderTransportOn429(config, route.providerName, route.provider, {
-      retryAfter,
-      now: Date.now(),
-      attemptedKey: route.provider.apiKey,
-      promptCacheKey: parsed.options.promptCacheKey,
-    });
+    const status = refusal?.status ?? 429;
+    // A 402 is WorkBuddy's rewritten 6004/14018 on the main path. Key-pool and Anthropic
+    // rotation stay 429-only: a billing 402 must not walk API keys or Claude accounts.
+    const rotated = status === 402
+      ? null
+      : rotateProviderTransportOn429(config, route.providerName, route.provider, {
+        retryAfter,
+        now: Date.now(),
+        attemptedKey: route.provider.apiKey,
+        promptCacheKey: parsed.options.promptCacheKey,
+      });
     if (rotated) {
       route.provider = rotated;
     } else if (
@@ -174,16 +180,17 @@ export async function executeResponsesSidecars(
       // could ever be considered.
       //
       // Kept as a synchronous precondition rather than folded into planGenericOAuthRotation:
-      // this helper is reachable only from an `on429` hook that the search/image loops call
-      // on a 429, so the gate has to hold before the await, and it is exactly the predicate
-      // the planner re-derives for that status.
+      // this helper is reachable from the search/image `on429` hook after a 429 or a 402, and
+      // the planner recovers a WorkBuddy 6004/14018 hint from the Response when present.
       transportState.genericFailoverAccountId
       && transportState.genericFailovers < GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST
       && isGenericOAuthFailoverEnabled(config, route.providerName)
     ) {
-      // Shared decision, per-site reservation: see planGenericOAuthRotation. Reached only for
-      // a 429, so no quota hint applies here.
-      const genericRotation = await transportState.planGenericOAuthRotation({ status: 429 });
+      // Shared decision, per-site reservation: see planGenericOAuthRotation. Pass the refusal
+      // Response so a 402 can carry WorkBuddy's 6004/14018 hint; a 429 still needs none.
+      const genericRotation = await transportState.planGenericOAuthRotation(
+        refusal ?? { status: 429 },
+      );
       if (!genericRotation) return null;
       // Intersection with the request's shared budget. The sidecar replay is dispatched by the
       // web-search/image loop and never reaches `onSendsConsumed`, so this reservation is the
@@ -220,8 +227,9 @@ export async function executeResponsesSidecars(
     } else if (
       // Anthropic's pool is excluded from generic failover, so without this arm a 429 inside a
       // web-search or image-bridge turn was terminal even with the pool fully enabled -- while
-      // the very same 429 on the main response path rotated.
-      transportState.anthropicPoolAccountId
+      // the very same 429 on the main response path rotated. 402 is not an Anthropic signal.
+      status !== 402
+      && transportState.anthropicPoolAccountId
       && transportState.anthropicPoolFailovers < ANTHROPIC_POOL_MAX_FAILOVERS_PER_REQUEST
     ) {
       // Same intersection for the Anthropic roster: its own per-request bound still applies,

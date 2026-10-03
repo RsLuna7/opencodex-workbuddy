@@ -76,15 +76,22 @@ export function ProviderCapacityQuota({ report, pending }: { report: ProviderQuo
     }).format(date);
   };
   const localeTag = bcp47(locale);
-  const formatCredits = (value: number) => new Intl.NumberFormat(localeTag, {
-    style: "currency",
-    currency: "USD",
-  }).format(value);
-  const formatPeriodEnd = (value: number) => {
+  const formatCredits = (value: number) => credits?.unit === "points"
+    ? new Intl.NumberFormat(localeTag, { maximumFractionDigits: 0 }).format(value)
+    : new Intl.NumberFormat(localeTag, {
+      style: "currency",
+      currency: "USD",
+    }).format(value);
+  const formatPeriodEnd = (value: number, withTime = false) => {
     const date = asDate(value);
-    return date === null ? null : new Intl.DateTimeFormat(localeTag, { dateStyle: "medium" }).format(date);
+    return date === null ? null : new Intl.DateTimeFormat(localeTag, {
+      dateStyle: "medium",
+      ...(withTime ? { timeStyle: "short" as const } : {}),
+    }).format(date);
   };
-  const periodEnd = credits?.expiresAt === undefined ? null : formatPeriodEnd(credits.expiresAt);
+  const periodEnd = credits?.expiresAt === undefined
+    ? null
+    : formatPeriodEnd(credits.expiresAt, credits.unit === "points");
 
   return (
     <>
@@ -103,17 +110,32 @@ export function ProviderCapacityQuota({ report, pending }: { report: ProviderQuo
       )}
       {(credits || aggregation) && (
         <div className="pws-capacity-details">
-          {credits && (
-            <div className="pws-capacity-recovery">
+          {credits?.unit === "points" ? (
+            <div className="pws-capacity-credits">
               <span>{t("quota.creditsBalance")}</span>
-              <strong>{formatCredits(credits.remaining)}</strong>
+              <strong>
+                {t("quota.creditsPointsRemaining", {
+                  remaining: formatCredits(credits.remaining),
+                  limit: formatCredits(credits.limit),
+                })}
+              </strong>
+              {periodEnd !== null && (
+                <span className="pws-capacity-credits-expires">{t("quota.creditsExpires", { date: periodEnd })}</span>
+              )}
             </div>
-          )}
-          {periodEnd !== null && (
-            <div className="pws-capacity-recovery">
-              <span>{t("quota.creditsPeriodEnds", { date: periodEnd })}</span>
-            </div>
-          )}
+          ) : credits ? (
+            <>
+              <div className="pws-capacity-recovery">
+                <span>{t("quota.creditsBalance")}</span>
+                <strong>{formatCredits(credits.remaining)}</strong>
+              </div>
+              {periodEnd !== null && (
+                <div className="pws-capacity-recovery">
+                  <span>{t("quota.creditsPeriodEnds", { date: periodEnd })}</span>
+                </div>
+              )}
+            </>
+          ) : null}
           {recoveryRows.flatMap(({ key, label, window }) => {
             const recoveryAt = window.nextRecoveryAt === undefined ? null : formatRecoveryAt(window.nextRecoveryAt);
             return recoveryAt !== null && window.nextRecoveryPercent !== undefined

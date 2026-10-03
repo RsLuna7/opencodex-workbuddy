@@ -217,3 +217,11 @@ L'ajout d'**Ollama Cloud** ou d'un autre fournisseur doté d'un catalogue depuis
 classification texte/vision dans la configuration enregistrée du fournisseur. Le
 [service auxiliaire de vision](/fr/guides/sidecars/) est ainsi correctement conditionné sans classification manuelle.
 :::
+
+## Analyse de l’utilisation
+
+Ouvrez **Analyse de l’utilisation** dans la barre latérale ou `/#insights` pour consulter les requêtes enregistrées par le proxy OpenCodex. Filtrez par aujourd’hui, 7 jours, 30 jours ou tout l’historique, et par All, Codex, Claude ou Grok. Les tableaux connectés conservent les périmètres de cette machine et du hub. Le rapport est actualisé chaque minute lorsqu’il est visible, ou sur demande.
+
+La page réunit les totaux de requêtes et tokens, les estimations au tarif API, les lectures du cache, les jours actifs, les classements et le calendrier quotidien. Changez la métrique pour modifier la tendance et le classement. Sélectionnez une barre ou une case pour voir les modèles et fournisseurs du jour ; sélectionnez-la à nouveau ou effacez le jour pour revenir à la période. Les flèches parcourent les dates. Les nombres de requêtes par fournisseur sont indisponibles lorsque les attributions aux modèles peuvent se chevaucher.
+
+L’export CSV conserve les filtres, dates locales du proxy, modèles, fournisseurs, tokens, estimations USD disponibles et diagnostics de lecture. Les totaux couvrent tout le journal lisible ; les graphiques, le calendrier et le CSV couvrent au maximum les 366 derniers jours. Les mesures, prix et taux de cache sans télémétrie observée restent indisponibles ; un avertissement signale l’historique partiel. Les estimations excluent les requêtes sans prix ou mesure et ne sont pas des factures. Aucun historique local de sessions, projets, durées ou compétences n’est importé.

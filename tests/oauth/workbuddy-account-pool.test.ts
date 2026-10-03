@@ -21,6 +21,7 @@ import {
   rotateGenericOAuthAccountOn429,
   shouldAttemptGenericOAuthFailover,
 } from "../../src/oauth/generic-account-failover";
+import { resetWorkbuddyPoolForTests } from "../../src/oauth/workbuddy-pool";
 import { getAccountSet, getCredential, saveCredential, setActiveAccount } from "../../src/oauth/store";
 import { handleResponses } from "../../src/server/responses";
 import type { OcxConfig, OcxProviderConfig } from "../../src/types";
@@ -32,6 +33,7 @@ const PROVIDER = "workbuddy-test";
 afterEach(() => {
   clearGenericFailoverHealth(PROVIDER);
   clearGenericFailoverHealth("workbuddy");
+  resetWorkbuddyPoolForTests();
 });
 
 describe("parseCodebuddyResetAtMs", () => {
@@ -601,5 +603,32 @@ describe("WorkBuddy quota rewrite and 402 rotation", () => {
     expect(second.status, body).toBe(200);
     expect(sent.every(value => value.includes("wb-access-1"))).toBe(true);
     expect(sent.some(value => value.includes("wb-access-0"))).toBe(false);
+  });
+
+  test("6004 does not rotate a CN account onto a Global spare", async () => {
+    await saveCredential("workbuddy", {
+      access: "cn-access",
+      refresh: "cn-refresh",
+      expires: Date.now() + 3_600_000,
+      accountId: "cn-uid",
+      codebuddy: { uid: "cn-uid", realm: "cn" },
+    } as never, { addAccount: true });
+    await saveCredential("workbuddy", {
+      access: "global-access",
+      refresh: "global-refresh",
+      expires: Date.now() + 3_600_000,
+      accountId: "global-uid",
+      codebuddy: { uid: "global-uid", domain: "www.workbuddy.ai", realm: "global" },
+    } as never, { addAccount: true });
+    const set = getAccountSet("workbuddy")!;
+    const cnId = set.accounts.find(account => account.credential.accountId === "cn-uid")!.id;
+    await setActiveAccount("workbuddy", cnId);
+    const cfg = workbuddyConfig();
+    expect(rotateGenericOAuthAccountOn429(cfg, "workbuddy", cnId, null, Date.now(), {
+      scope: "model",
+      modelId: "hy3",
+      quotaExhausted: true,
+    })).toBeNull();
+    expect(preferredInitialAccount(cfg, "workbuddy", Date.now(), "hy3")).toBeNull();
   });
 });

@@ -337,11 +337,15 @@ export interface WebSearchLoopDeps {
    * `retryParsed` is the exact iteration-local request the retry will be built from. The loop
    * sends a shallow copy of the outer parsed request, so a rotation that rebinds only the outer
    * object never reaches the wire. Optional so existing callers keep compiling.
+   *
+   * The loop also offers HTTP 402 here. WorkBuddy rewrites 6004/14018 to 402, and the hook
+   * recovers that hint from `refusal`. An ordinary billing 402 makes the hook return null.
    */
   on429?: (
     retryAfterHeader: string | null,
     responseHeaders?: Headers,
     retryParsed?: OcxParsedRequest,
+    refusal?: Response,
   ) => ProviderAdapter | null | Promise<ProviderAdapter | null>;
   /** Opt-in same-target 429 policy (key-auth providers). When present, 429 replays on the SAME key before on429 rotation. */
   retryOn429Policy?: Required<RateLimitRetryPolicy> | null;
@@ -560,10 +564,16 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
         yield { type: "heartbeat" };
         prepared = await fetchOnce(adapter, "rate-limit-429");
       }
-      // 429 key-failover parity with the normal routed path: rotate pool keys until one responds
-      // or the pool is exhausted (deps.on429 returns null — cooldown map guarantees termination).
-      while (prepared.response.status === 429 && deps.on429) {
-        const rotated = await deps.on429(prepared.response.headers.get("retry-after"), prepared.response.headers, iterParsed);
+      // Credential failover parity with the normal routed path: 429 for key/OAuth pools, and
+      // 402 for WorkBuddy 6004/14018. The hook returns null when the roster is exhausted or
+      // the 402 is an ordinary billing refusal (no 6004/14018 hint).
+      while ((prepared.response.status === 429 || prepared.response.status === 402) && deps.on429) {
+        const rotated = await deps.on429(
+          prepared.response.headers.get("retry-after"),
+          prepared.response.headers,
+          iterParsed,
+          prepared.response,
+        );
         if (!rotated) break;
         // Never let a broken body's cancel promise outlive the cumulative header deadline. Observe
         // it, but proceed immediately to the rotated fetch under the SAME deadline signal.

@@ -362,3 +362,11 @@ While browser authentication is pending, the dashboard does not recommend restar
 ### Usage chart keyboard and touch controls
 
 Usage heatmap days have one Tab entry point. Use Up/Down for adjacent days and Left/Right for adjacent weeks. Weekly bars expose the same day details on keyboard focus, pointer hover, or touch. Day labels include the date, request count, and token count; tooltip overlays stay within the viewport.
+
+## Usage Insights
+
+Open **Usage insights** in the sidebar, or visit `/#insights`, for a compact report of requests recorded by the OpenCodex proxy. Filter by Today, 7d, 30d, or All and by All, Codex, Claude, or Grok. Connected dashboards retain the This machine and Hub-wide scopes. The report refreshes once a minute while visible; **Refresh** updates it on demand.
+
+The page combines request/token totals, API list-price estimates, cache reads, active days, model/provider rankings, and a daily activity calendar. Switch between tokens, requests, and list price to change the trend and ranking order. Select a chart bar or calendar cell to inspect that day's model and provider breakdown, then select it again or use **Clear day** to restore the period rankings. Arrow keys navigate chart dates. When daily model request attributions may overlap, the derived provider request count is unavailable rather than double-counted.
+
+**Export CSV** downloads the selected period and client surface, including proxy-local dates, model/provider attribution, token counts, available USD estimates, and read diagnostics. All-history totals cover the entire readable ledger; daily charts, the calendar, and CSV cover at most the latest 366 days. Missing token measurements, missing prices, and cache ratios without observed cache telemetry display as unavailable. Partial histories retain a warning. API list-price estimates exclude unpriced/unmetered requests and are not billing receipts. The page does not import client-local sessions, projects, durations, or skills.

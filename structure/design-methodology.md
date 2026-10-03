@@ -36,6 +36,7 @@ monochrome mask set. Crusoe follows this path with its four-stop gradient lozeng
 | `ocx init` CLI | Flat numbered menu, no personality | Could benefit from staged approach |
 | Add Provider modal | Functional form | Minimal styling |
 | Logs page | Dense table, monospace | Appropriate for log viewing |
+| Usage Insights | Existing dashboard tokens, compact summary strip, violet data charts and paired rankings | Independent `/#insights` route; chart/calendar selection links daily breakdowns. Narrow screens stack panels; themes and ten locale catalogs share the same semantics. Pricing and cache provenance stay beside the measurements. |
 | Codex account pool | Existing dense account cards with scoped actions | Standalone title/feedback, pause/refresh next to cards; embedded actions inline. Retired Spark controls have no placeholder. |
 
 When next touching these surfaces, apply the Stage 1 design dials (mood, lightness,
