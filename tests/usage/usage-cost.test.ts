@@ -161,9 +161,10 @@ describe("resolveMatchedPrice", () => {
         source: "expected",
         status: "verified-derived",
       });
-      // Provenance must stay honest: derived from the maintainer's confirmation,
-      // not from a published Opus 5 price page.
-      expect(price?.sourceRef).toContain("user-confirmed");
+      // Provenance must stay honest: the published Anthropic Opus 5 list price, applied to a
+      // reseller surface, so the row stays verified-derived.
+      expect(price?.sourceRef).toContain("anthropic official Claude Opus 5 ");
+      expect(price?.sourceRef).toContain("platform.claude.com/docs/en/about-claude/pricing");
     }
   });
 
@@ -417,7 +418,6 @@ describe("resolveMatchedPrice", () => {
       "kimi/kimi-k2.7-code-highspeed",
       "kimi/kimi-k2.6",
       "kimi/kimi-k2.5",
-      "kimi/kimi-for-coding",
       "moonshot/kimi-k3",
       "moonshot/kimi-k2.7-code",
       "moonshot/kimi-k2.7-code-highspeed",
@@ -429,7 +429,6 @@ describe("resolveMatchedPrice", () => {
       "kimi-code/kimi-k2.7-code-highspeed",
       "kimi-code/kimi-k2.6",
       "kimi-code/kimi-k2.5",
-      "kimi-code/kimi-for-coding",
       "alibaba-token-plan/qwen3.8-max",
       "alibaba-token-plan-intl/qwen3.8-max",
       // OpenCode Go — served ids with no jawcode bundle row; each reuses the
@@ -907,7 +906,7 @@ describe("xAI Priority Processing pricing", () => {
 
   test("xAI rules declare exact 2x premiums with official provenance", () => {
     const xaiRules = PRIORITY_PRICING_RULES.filter(rule => rule.provider === "xai");
-    expect(xaiRules.map(rule => rule.modelId)).toEqual(["grok-4.5", "grok-4.6"]);
+    expect(xaiRules.map(rule => rule.modelId)).toEqual(["grok-4.5", "grok-4.6", "grok-4.7"]);
     expect(xaiRules.every(rule => rule.multiplier === 2)).toBe(true);
     expect(xaiRules.every(rule => rule.requiresResponseConfirmation === true)).toBe(true);
     expect(xaiRules.every(rule => rule.source === "https://docs.x.ai/developers/advanced-api-usage/priority-processing")).toBe(true);

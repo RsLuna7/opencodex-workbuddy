@@ -17,7 +17,7 @@ import { MODEL_ALIAS_PATTERN } from "../providers/default-aliases";
 import { MODEL_DISCOVERY_MAX_MODELS } from "../providers/model-discovery-limits";
 import { getProviderRegistryEntry, providerMatchesRegistryTransport, registryModelServiceTierCapabilityApplies } from "../providers/registry";
 import { isCodexReasoningEffort } from "../reasoning-effort";
-import { refreshUserCostOverlays } from "../usage/user-cost-overlays";
+import { refreshConfigDerivedRegistries } from "./derived-registries";
 import { type OcxClaudeCodeConfig, type OcxConfig } from "../types";
 import {
   agentTaskRecoverySchema,
@@ -906,8 +906,8 @@ export function sanitizeModelDisplayNamesForLoad(raw: unknown): void {
   }
 }
 
-/** Refresh the user cost-overlay registry from `config` and return it unchanged. */
+/** Refresh every config-derived registry (cost overlays, configured natives) and return `config` unchanged. */
 export function withRefreshedCostOverlays(config: OcxConfig): OcxConfig {
-  refreshUserCostOverlays(config);
+  refreshConfigDerivedRegistries(config);
   return config;
 }

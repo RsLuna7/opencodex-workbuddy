@@ -1,7 +1,8 @@
 import type { OcxConfig, OcxProviderConfig } from "../types";
 import { configReasoningPinsConfigError } from "./provider-validation";
 import { adoptCustomModelCatalogMigration, projectCustomModelCatalogMigration } from "../codex/custom-model-catalog-migration";
-import { refreshPreservedProviderOwner, refreshUserCostOverlays } from "../usage/user-cost-overlays";
+import { refreshPreservedProviderOwner } from "../usage/user-cost-overlays";
+import { refreshConfigDerivedRegistries } from "./derived-registries";
 import {
   clearPendingConfigTopLevelDeletions,
   configHasRebaseProvenance,
@@ -275,8 +276,9 @@ export function reconcileLiveConfigFromDisk(config: OcxConfig, persistedBaseline
   }
   // The reconciliation may have adopted a providers.<name>.modelCosts edit made
   // by a cooperating process while the OAuth login was pending; keep the overlay
-  // registry (and the usage-cache overlay version) in sync with the live config.
-  refreshUserCostOverlays(config);
+  // registry (and the usage-cache overlay version, and the configured native
+  // set) in sync with the live config.
+  refreshConfigDerivedRegistries(config);
 }
 
 /**
