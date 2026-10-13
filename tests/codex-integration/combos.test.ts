@@ -1554,7 +1554,7 @@ describe("combo validation and normalization", () => {
       alias: null,
       nativeAlias: false,
       displayName: null,
-      targets: [{ provider: "a", model: "m1", weight: 2 }],
+      targets: [{ provider: "a", model: "m1", weight: 2, lastResort: false, reasoningEfforts: undefined, modelProfile: undefined }],
     });
     expect(normalizeComboConfig({ targets: [{ provider: "a", model: "m1" }] }).defaultEffort).toBeNull();
     // Anything that is not the literal "adaptive" normalizes to today's behavior, so a

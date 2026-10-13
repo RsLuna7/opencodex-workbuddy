@@ -9,7 +9,7 @@ import type {
   RequestExecutionBudgetPolicy,
   RequestExecutionBudget,
 } from "../../lib/request-execution-budget";
-import type { OcxConfig } from "../../types";
+import type { OcxComboTarget, OcxConfig } from "../../types";
 import type { RequestLogContext } from "../request-log";
 import type { HandleResponsesOptions, ResponsesDispatchers, ConsumedComboFailure } from "./core-options";
 import type { TranslatorBudget } from "../../lib/translator-budget";
@@ -245,7 +245,7 @@ export async function executeComboResponses(
     threadIdHeader: req.headers.get("thread-id"),
     sessionIdHeader: sessionIdHeaderFromRequest(req.headers),
   });
-  const reasoningReplayEligible = (target: (typeof combo.targets)[number]): boolean => {
+  const reasoningReplayEligible = (target: OcxComboTarget): boolean => {
     try {
       const route = routeConcreteModel(config, `${target.provider}/${target.model}`);
       const unavailable = mandatoryResponsesReasoningReplayUnavailable({
@@ -281,7 +281,7 @@ export async function executeComboResponses(
   const unreadableEncryptedAgentTask = hasUnreadableEncryptedAgentTask(
     (body as { input?: unknown } | undefined)?.input,
   );
-  const canDecryptUnreadableAgentTask = (target: (typeof combo.targets)[number]): boolean => {
+  const canDecryptUnreadableAgentTask = (target: OcxComboTarget): boolean => {
     const provider = config.providers[target.provider];
     if (!provider || provider.disabled === true) return false;
     try {
@@ -292,9 +292,9 @@ export async function executeComboResponses(
     }
   };
   let comboPayloadReadable = false;
-  const payloadEligible = (target: (typeof combo.targets)[number]): boolean =>
+  const payloadEligible = (target: OcxComboTarget): boolean =>
     comboPayloadReadable || !unreadableEncryptedAgentTask || canDecryptUnreadableAgentTask(target);
-  const targetEligible = (target: (typeof combo.targets)[number]): boolean =>
+  const targetEligible = (target: OcxComboTarget): boolean =>
     payloadEligible(target) && reasoningReplayEligible(target);
   const onlyReplayIncompatibleTargetsRemain = (excluded: Iterable<string> = []): boolean => {
     const excludedKeys = new Set(excluded);
@@ -362,7 +362,7 @@ export async function executeComboResponses(
   const initialNow = Date.now();
   const pickWithWait = (pickOptions: {
     exclude?: Iterable<string>;
-    eligible?: (target: NonNullable<typeof combo>["targets"][number]) => boolean;
+    eligible?: (target: OcxComboTarget) => boolean;
     now?: number;
   }) => pickComboTargetWithWait(config, comboId, {
     ...pickOptions,

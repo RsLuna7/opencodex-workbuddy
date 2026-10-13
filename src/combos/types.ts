@@ -38,7 +38,7 @@ export interface NormalizedComboConfig {
   nativeAlias: boolean;
   /** Display-only label for the catalog row, or null when unset. */
   displayName: string | null;
-  targets: Array<Required<OcxComboTarget>>;
+  targets: Array<OcxComboTarget & Required<Pick<OcxComboTarget, "provider" | "model" | "weight" | "lastResort">>>;
 }
 
 /**
@@ -329,6 +329,9 @@ export function normalizeComboConfig(raw: OcxComboConfig): NormalizedComboConfig
       provider: target.provider.trim(),
       model: target.model.trim(),
       weight: target.weight ?? 1,
+      reasoningEfforts: target.reasoningEfforts,
+      modelProfile: target.modelProfile,
+      lastResort: target.lastResort === true,
     })),
   };
 }
