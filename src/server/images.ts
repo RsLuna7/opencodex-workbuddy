@@ -6,9 +6,10 @@
  * ChatGPT bearer auth it uses for chat. Under Design B injection base_url IS this proxy, so
  * without a route the tool died on the /v1/* JSON-404 guard. Only an OpenAI-family upstream
  * can serve these endpoints — routed providers (Cursor, Kiro, Gemini, …) have no image
- * generation surface — so the handler relays the body verbatim to the ChatGPT forward
+ * generation surface — so the handler relays the body to the ChatGPT forward
  * provider, an OpenAI API-key provider, or an explicitly selected compatible custom provider and
- * passes the response through untouched:
+ * passes the response through untouched. `images.model` is the only body rewrite: Codex hardcodes
+ * `gpt-image-2`, and that optional field replaces the outbound `model` on OpenAI-family relays.
  * codex's images client parses `{created, data:[{b64_json}]}` strictly and Debug-prints
  * error bodies into the model-visible failure, so upstream errors must stay legible.
  */
@@ -55,6 +56,19 @@ import { codexAccountSelectionForTurn } from "./lifecycle";
 import { codexModelAvailabilityErrorResponse } from "./responses/codex-auth-error";
 
 export type ImagesEndpoint = "generations" | "edits";
+
+/**
+ * Codex's built-in `image_gen` always sends `model: "gpt-image-2"`. When the operator sets
+ * `images.model`, replace that field on the outbound OpenAI Images body. Blank values and
+ * non-object bodies are left unchanged. xAI Imagine / CCA paths ignore this field.
+ */
+export function applyImagesModelOverride(body: unknown, model: string | undefined): unknown {
+  if (typeof model !== "string") return body;
+  const trimmed = model.trim();
+  if (!trimmed) return body;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body;
+  return { ...(body as Record<string, unknown>), model: trimmed };
+}
 
 /** Image generation is slow (tens of seconds); bound a hung upstream, not a working one. */
 const IMAGES_UPSTREAM_TIMEOUT_MS = 300_000;
@@ -644,6 +658,7 @@ export async function handleImages(
   } catch (err) {
     return decodeRequestErrorResponse(err, "images");
   }
+  body = applyImagesModelOverride(body, config.images?.model);
   const model = (body as { model?: unknown } | null)?.model;
   if (typeof model === "string" && model) logCtx.model = model;
 

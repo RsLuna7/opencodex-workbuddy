@@ -588,6 +588,98 @@ test("POST /v1/images/generations relays to the ChatGPT forward provider with fo
   }
 });
 
+test("images.model rewrites Codex gpt-image-2 on ChatGPT forward generations and edits", async () => {
+  const captured: CapturedRequest[] = [];
+  const upstream = fakeImagesUpstream(captured);
+  const config = forwardConfig();
+  config.providers.openai!.baseUrl = "https://chatgpt.com/backend-api/codex///";
+  config.images = { model: "gpt-image-2.5-flare" };
+  saveConfig(config);
+
+  const server = startServer(0);
+  try {
+    const generate = await fetch(new URL("/v1/images/generations", server.url), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}`,
+        "chatgpt-account-id": "acct-123",
+      },
+      body: JSON.stringify({ prompt: "a cat", model: "gpt-image-2", size: "auto" }),
+    });
+    expect(generate.status).toBe(200);
+    expect(captured[0]?.body).toMatchObject({ prompt: "a cat", model: "gpt-image-2.5-flare", size: "auto" });
+
+    const edit = await fetch(new URL("/v1/images/edits", server.url), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}`,
+        "chatgpt-account-id": "acct-123",
+      },
+      body: JSON.stringify({
+        prompt: "make it blue",
+        model: "gpt-image-2",
+        images: [{ image_url: "data:image/png;base64,aGk=" }],
+      }),
+    });
+    expect(edit.status).toBe(200);
+    expect(captured[1]?.path).toBe("/images/edits");
+    expect(captured[1]?.body).toMatchObject({ prompt: "make it blue", model: "gpt-image-2.5-flare" });
+  } finally {
+    await server.stop(true);
+    await upstream.stop(true);
+  }
+});
+
+test("blank images.model leaves the Codex gpt-image-2 body unchanged", async () => {
+  const captured: CapturedRequest[] = [];
+  const upstream = fakeImagesUpstream(captured);
+  const config = forwardConfig();
+  config.providers.openai!.baseUrl = "https://chatgpt.com/backend-api/codex///";
+  config.images = { model: "   " };
+  saveConfig(config);
+
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/images/generations", server.url), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}`,
+        "chatgpt-account-id": "acct-123",
+      },
+      body: JSON.stringify({ prompt: "a cat", model: "gpt-image-2" }),
+    });
+    expect(response.status).toBe(200);
+    expect(captured[0]?.body).toMatchObject({ prompt: "a cat", model: "gpt-image-2" });
+  } finally {
+    await server.stop(true);
+    await upstream.stop(true);
+  }
+});
+
+test("images.model does not override the xAI Imagine relay model", async () => {
+  const captured = stubXaiImagine({ data: [{ b64_json: CCA_TINY_PNG }] });
+  const config = xaiBridgeConfig();
+  config.images = { ...config.images, model: "gpt-image-2.5-flare" };
+  saveConfig(config);
+
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/images/generations", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}` },
+      body: JSON.stringify({ prompt: "a train", model: "gpt-image-2" }),
+    });
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(captured[0]!.body)).toContain("grok-imagine-image-quality");
+    expect(JSON.stringify(captured[0]!.body)).not.toContain("gpt-image-2.5-flare");
+  } finally {
+    await server.stop(true);
+  }
+});
+
 test("POST /v1/images/edits relays to the /images/edits upstream path", async () => {
   const captured: CapturedRequest[] = [];
   const upstream = fakeImagesUpstream(captured);

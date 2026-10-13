@@ -46,6 +46,10 @@ ChatGPT bearer auth。由于注入的 `base_url` 指向 opencodex，proxy 会把
 托管的 `image_generation` 工具、且当前选中了非 OpenAI 模型时才会激活。单独的
 `/images/generations` 调用不会进入这个 bridge。
 
+- **可选 Images 2.5 模型改写：** Codex 客户端仍写死 `gpt-image-2`。设置 `images.model`（例如
+  `gpt-image-2.5-flare` 或 `gpt-image-2.5-sunburst`）会替换发往 ChatGPT forward 与带 API key 的
+  OpenAI Images 路径的出站 `model`。xAI Imagine 与 CCA 回退仍用各自模型。ChatGPT OAuth 后端可能忽略该字段；
+  生成后以 PNG 的 C2PA `softwareAgent` 为准。
 - **单一、感知模式的 forward 候选：** Pool 会选择一个符合条件的主账户/已添加账户；Direct 使用
   调用方 OAuth bearer。所配置的模式会一致地作用于图像请求。
 - **OpenAI API-key provider：** 只有在没有 forward 候选持有认证失败时才会使用它。损坏或过期的

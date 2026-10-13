@@ -143,6 +143,7 @@ Codex 会为标题、提交信息等任务使用较小的辅助模型。启用
 | 字段 | 类型 | 默认值 | 含义 |
 | --- | --- | --- | --- |
 | `provider?` | `string` | 自动选择 OpenAI | 用于 `/v1/images/generations` 和 `/v1/images/edits` 的显式自定义 API key `openai-responses` 提供方。注册表管理的 id 会被拒绝。 |
+| `model?` | `string` | 透传 Codex | 写入出站 OpenAI `/v1/images` 请求体的 Images API 模型 id。Codex 内置 `image_gen` 写死 `gpt-image-2`；设为 `gpt-image-2.5-flare` 或 `gpt-image-2.5-sunburst` 可请求 Images 2.5。仅作用于 ChatGPT forward 与带 API key 的 OpenAI Images 路径。ChatGPT OAuth 后端仍可能忽略该字段；以 PNG 的 C2PA `softwareAgent` 为准。 |
 | `timeoutMs?` | `number` | `300000` | 单次独立 Images 请求的整请求超时。 |
 
 如果提供方缺失、被禁用、不兼容，或者没有可用密钥，显式选择就会失败并关闭；它绝不会回退到另一个付费上游。该端点必须实现 Codex 期望的 OpenAI Images API 路径和响应形状。
