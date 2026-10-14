@@ -13,6 +13,21 @@ These links preserve the preset's referral parameters. Sponsor information is sh
 the configured provider name, adapter and endpoint match the preset; it never changes routing,
 account selection or defaults.
 
+## WorkBuddy and ZCode Plan in this fork
+
+`workbuddy` is the OAuth provider for WorkBuddy CN and Global. `codebuddy` remains an alias for
+this provider; the upstream CodeBuddy CLI key preset is not exposed. Add a CN account with
+`ocx account login workbuddy`, or a Global account with
+`ocx account login workbuddy --realm global`. Requests use `workbuddy/<model>` and account
+failover stays within the account's realm. A 6004 refusal cools only that account and model
+without changing the saved active account; a 14018 refusal cools the whole account. The
+dashboard shows remaining credits and, for CN accounts, check-in and daily-task status.
+`ocx account checkin workbuddy --status` reads check-in status without claiming it.
+
+`zai-plan` is the ZCode Plan OAuth provider. Use `ocx account login zai-plan` and select a
+`zai-plan/<model>` route. It is separate from the ZCode client integration, which configures
+ZCode to call the local proxy.
+
 ## OpenAI account modes
 
 | Provider id | Use | Credential/account rule |

@@ -19,7 +19,9 @@ export function upstreamProtocolForAdapter(adapter: string): string {
     case "azure-openai":
     case "kiro":
     case "mimo-free":
+    case "codebuddy":
       return "openai-chat";
+    case "zai-plan":
     case "anthropic":
       return "anthropic-messages";
     case "google":

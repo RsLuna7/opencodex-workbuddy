@@ -200,7 +200,7 @@ import { createReadinessGate, type ReadinessGate } from "./readiness";
 import { createServeOptions, type ServerIngress } from "./index/serve-options";
 import { createOptionalListenerSet, LINK_INGRESS_HOSTNAME } from "./index/optional-listeners";
 import { createPackageTreeIntegrityGuardForServer } from "./index/package-tree-guard";
-import { inspectStartupOwnership, logProxyEndpoints, resolveInboundBodyLimitWithWarning, setStartupCacheInvalidationWrite, warnAgentTaskRecoveryStartup, warnPlaintextV2AgentMessagesStartup, type StartServerDeps } from "./index/startup-warnings";
+import { activateWorkbuddyCheckinForStartup, inspectStartupOwnership, logProxyEndpoints, resolveInboundBodyLimitWithWarning, setStartupCacheInvalidationWrite, warnAgentTaskRecoveryStartup, warnPlaintextV2AgentMessagesStartup, type StartServerDeps } from "./index/startup-warnings";
 import { acquireSpendLedgerServerLifecycle, recordFailedStartRollback, type SpendLedgerServerLifecycle } from "./index/spend-ledger-lifecycle";
 export { waitForFailedStartRollback } from "./index/spend-ledger-lifecycle";
 
@@ -228,6 +228,7 @@ function startServerWithSpendLedgerOwner(port: number | undefined, deps: StartSe
   const config = migrateStartupZaiResponses(migrateStartupXaiResponses(startupConfig));
   warnPlaintextV2AgentMessagesStartup(config);
   warnAgentTaskRecoveryStartup(config);
+  activateWorkbuddyCheckinForStartup(config);
   setLiveStateStoreConfig(config);
   applyProxyEnv(config, true);
   assertServerAuthConfig(config);

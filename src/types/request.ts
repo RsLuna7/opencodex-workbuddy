@@ -1,4 +1,4 @@
-import type { KiroOAuthMetadata } from "../oauth/types";
+import type { CodebuddyOAuthMetadata, KiroOAuthMetadata } from "../oauth/types";
 import type { NativeReasoningOwner } from "../responses/reasoning-replay-cache";
 import type { OcxTool, OcxToolChoice } from "./tools";
 import type { TierDecision, TierObservationContext } from "./provider";
@@ -121,6 +121,8 @@ export interface OcxParsedRequest {
   _cursorIsolateConversation?: boolean;
   /** Account-scoped, non-secret Kiro request metadata selected with the OAuth access token. */
   _kiroAuthContext?: Pick<KiroOAuthMetadata, "profileArn" | "apiRegion" | "ssoRegion" | "authType">;
+  /** Account-scoped WorkBuddy headers selected with the OAuth access token. */
+  _codebuddyAuthContext?: CodebuddyOAuthMetadata;
   /** Account-scoped Zed user identity paired with the long-lived access token. */
   _zedAuthContext?: { userId: string };
   /** Provider-private continuation metadata resolved from the Responses previous_response_id chain. */

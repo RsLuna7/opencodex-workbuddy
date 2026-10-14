@@ -275,7 +275,7 @@ CodeBuddy discovery in `src/adapters/codebuddy/live-models.ts` reads the roster 
 configured key. Its failure result carries only a category and optional HTTP status; untrusted
 gateway messages and transport exceptions do not reach catalog warnings. The credentialed
 config fetch uses manual redirect handling; any 3xx is a failed discovery and cannot forward
-`X-API-Key` to a second origin.
+`X-API-Key` to a second origin. This fork publishes the OAuth `workbuddy` provider with `codebuddy` as its alias, not the CLI key presets; `src/adapters/registry.ts` keeps the CLI adapter internally for Qoder and Claude CLI while WorkBuddy uses account-scoped headers and same-realm recovery (6004 per model, 14018 per account).
 
 Provider request pacing in `src/providers/request-pacing.ts` combines start intervals with optional
 `maxConcurrentRequests` limits. Provider capacity is shared across models; exact-model limits

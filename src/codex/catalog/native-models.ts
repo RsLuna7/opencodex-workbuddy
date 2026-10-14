@@ -1,4 +1,4 @@
-/** Reserve wire identity, not a globally available native catalog registration. */
+﻿/** Reserve wire identity, not a globally available native catalog registration. */
 export const NATIVE_RESERVE_MODEL = "gpt-reserve";
 
 /** ChatGPT/Codex wire id observed for the account-native Daybreak Blue surface. */

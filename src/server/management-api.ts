@@ -69,6 +69,7 @@ import { handleModelRoutes } from "./management/model-routes";
 import { handleClaudeInterceptRoutes } from "./management/claude-intercept-routes";
 import { handleAgentSettingsRoutes } from "./management/agent-settings-routes";
 import { handleOauthAccountRoutes } from "./management/oauth-account-routes";
+import { handleZaiPlanRoutes } from "./management/zai-plan-routes";
 import { handleComboRoutes } from "./management/combo-routes";
 import { handleDecisionRoutes } from "./management/decision-routes";
 import { handleSystemRoutes } from "./management/system-routes";

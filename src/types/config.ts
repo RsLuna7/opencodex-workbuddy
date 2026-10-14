@@ -1293,6 +1293,10 @@ export interface OcxConfig {
   routingProfiles?: Record<string, OcxRoutingProfileConfig>;
   /** Background proactive token refresh ("Token Guardian"). Off by default; see OcxTokenGuardianConfig. */
   tokenGuardian?: OcxTokenGuardianConfig;
+  /** WorkBuddy CN daily check-in; false disables the scheduled check-in. */
+  workbuddyCheckin?: { auto?: boolean };
+  /** WorkBuddy CN and Global account selection; false locks routing to CN. */
+  workbuddyGlobal?: { enabled?: boolean };
   /** Additional exact origins allowed for CORS (e.g. HTTPS or chrome-extension://<id>). Loopback origins are always allowed. */
   corsAllowOrigins?: string[];
 }
@@ -1527,6 +1531,8 @@ export interface OcxTokenGuardianConfig {
 export interface OcxImagesConfig {
   /** Optional custom API-key provider for /v1/images relays. Built-in OpenAI tiers remain automatic. */
   provider?: string;
+  /** Optional outbound Images API model override for Codex image generation and edits. */
+  model?: string;
   /** Upstream timeout (ms) for one image generation/edit call (bridge xAI + /v1/images relay). Default 60000 for the bridge; relay may use a higher default (300000). */
   timeoutMs?: number;
   /** Master switch for the image bridge. Default false — set true to enable paid xAI Grok Imagine generation. */

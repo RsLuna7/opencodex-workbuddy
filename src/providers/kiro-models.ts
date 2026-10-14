@@ -1,4 +1,4 @@
-export const KIRO_MODELS = [
+﻿export const KIRO_MODELS = [
   "kiro-auto",
   // OpenAI GPT-5.6 (Kiro experimental, us-east-1) — added to official catalog 2026-07-13
   "gpt-5.6-sol",

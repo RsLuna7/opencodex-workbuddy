@@ -9,20 +9,6 @@ import {
   MOONSHOT_INTL_BASE_URL,
 } from "../base-url-choices";
 import { COMMAND_CODE_MODEL_REASONING_EFFORTS } from "../command-code-efforts";
-import {
-  CODEBUDDY_CN_MODELS,
-  CODEBUDDY_CN_MODEL_CONTEXT_WINDOWS,
-  CODEBUDDY_CN_MODEL_DEFAULT_REASONING_EFFORTS,
-  CODEBUDDY_CN_MODEL_MAX_OUTPUT_TOKENS,
-  CODEBUDDY_CN_MODEL_REASONING_EFFORTS,
-  CODEBUDDY_CN_NO_VISION_MODELS,
-  CODEBUDDY_GLOBAL_MODELS,
-  CODEBUDDY_GLOBAL_MODEL_CONTEXT_WINDOWS,
-  CODEBUDDY_GLOBAL_MODEL_DEFAULT_REASONING_EFFORTS,
-  CODEBUDDY_GLOBAL_MODEL_MAX_OUTPUT_TOKENS,
-  CODEBUDDY_GLOBAL_MODEL_REASONING_EFFORTS,
-  CODEBUDDY_REASONING_EFFORTS,
-} from "../codebuddy-models";
 import { QODER_CN_MODELS, QODER_GLOBAL_MODELS, QODER_REASONING_EFFORTS } from "../qoder-models";
 import type { ProviderRegistryEntry } from "./types";
 import {
@@ -1508,65 +1494,60 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     note: "Official Qoder CN CLI using QODERCN_PERSONAL_ACCESS_TOKEN. Models are discovered per account with `qodercn --list-models`; the verified roster is a degraded fallback. The CLI runs single-turn with tools, MCP, settings hooks, and session persistence disabled. Requires `npm install -g @qodercn-ai/qoderclicn`.",
   },
   {
-    // Official CodeBuddy Code CLI provider (Tencent Cloud), GLOBAL / `public` environment.
-    // Transport is the vendor-documented headless CLI automation surface
-    // (`codebuddy -p --output-format stream-json --tools ""`) authenticated with the official
-    // `CODEBUDDY_API_KEY` (https://www.codebuddy.ai/profile/keys). It does NOT read desktop
-    // session files, import desktop bearer tokens, impersonate the desktop client, or call the
-    // private console endpoint — the approach closed in #687 and left in draft in #2244.
-    // baseUrl is the canonical region identity: the adapter fails closed if it is overridden, so a
-    // global key is never sent to the CN environment (that is the separate `codebuddy-cn` entry).
-    // The CLI always runs tools-disabled; a capture-only MCP bridge advertises the request's
-    // Codex tool catalog, so approval, sandboxing, and execution stay with the client.
-    // Free/trial/promotional/subscription credits draw from the same official API-key pool.
-    // Requires the CLI: `npm i -g @tencent-ai/codebuddy-code`.
-    // GOVERNANCE: whether routing this vendor automation surface behind a proxy for a third-party
-    // agent satisfies CodeBuddy's AUP is an open question flagged for maintainer security review.
-    id: "codebuddy",
-    label: "CodeBuddy (Global)",
-    adapter: "codebuddy",
-    baseUrl: "https://www.codebuddy.ai",
-    authKind: "key",
-    apiKeyValidation: "unknown",
-    preserveCustomDestination: true,
-    dashboardUrl: "https://www.codebuddy.ai/profile/keys",
-    defaultModel: "default-model",
-    models: CODEBUDDY_GLOBAL_MODELS,
+    id: "workbuddy",
+    alias: "codebuddy",
+    label: "WorkBuddy",
+    adapter: "workbuddy",
+    baseUrl: "https://copilot.tencent.com/v2",
+    authKind: "oauth",
+    oauthId: "workbuddy",
+    featured: true,
+    dashboardUrl: "https://www.codebuddy.cn",
+    defaultModel: "auto",
+    models: [
+      "auto",
+      "hy4-preview",
+      "hy3",
+      "deepseek-v4.1-flash",
+      "glm-5.3",
+      "glm-5.3-flash",
+      "glm-5.2",
+      "glm-5v-turbo",
+      "minimax-m2.5",
+      "kimi-k2.5",
+    ],
     liveModels: true,
-    modelContextWindows: CODEBUDDY_GLOBAL_MODEL_CONTEXT_WINDOWS,
-    modelMaxOutputTokens: CODEBUDDY_GLOBAL_MODEL_MAX_OUTPUT_TOKENS,
-    defaultMaxOutputTokens: 32_000,
-    reasoningEfforts: CODEBUDDY_REASONING_EFFORTS,
-    modelReasoningEfforts: CODEBUDDY_GLOBAL_MODEL_REASONING_EFFORTS,
-    modelDefaultReasoningEfforts: CODEBUDDY_GLOBAL_MODEL_DEFAULT_REASONING_EFFORTS,
-    note: "Official CodeBuddy Code CLI (Tencent Cloud), global/public environment. Uses the documented CODEBUDDY_API_KEY + headless CLI surface; never reads desktop sessions or private console endpoints. Region-isolated from codebuddy-cn. The CLI always runs tools-disabled (--tools \"\"); a capture-only MCP bridge surfaces the request's Codex tool catalog as capturable calls, with approval and execution kept by the client. Requires `npm i -g @tencent-ai/codebuddy-code`. AUP/routing authorization flagged for maintainer security review.",
+    modelDiscovery: {
+      path: "enterprises/personal/models",
+      maxModels: 128,
+      filter: {
+        noneOf: [{ path: ["tags"], containsAny: ["text-to-image"] }],
+      },
+    },
+    defaultMaxOutputTokens: 32_768,
+    extraMetadataAliases: ["codebuddy"],
+    staticHeaders: {
+      "X-Product": "SaaS",
+      "X-IDE-Name": "CodeBuddyIDE",
+      "X-Requested-With": "XMLHttpRequest",
+      "User-Agent": "CodeBuddyIDE",
+    },
+    note: "Tencent CodeBuddy CN and WorkBuddy Global. Browser login (ocx account login workbuddy [--realm global]). Unofficial IDE endpoint — Tencent may change or restrict it. Do not send confidential material.",
   },
   {
-    // Official CodeBuddy Code CLI provider, CHINA / `internal` environment. Identical adapter and
-    // binary as `codebuddy`; the region is fixed by the profile's CODEBUDDY_INTERNET_ENVIRONMENT
-    // and this canonical baseUrl. CN key: https://copilot.tencent.com/profile/keys. The CN model
-    // roster differs from Global and is discovered live from the key-authenticated product
-    // configuration roster; the seeded list in codebuddy-models.ts is only the degraded
-    // fallback (§八).
-    id: "codebuddy-cn",
-    label: "CodeBuddy (CN)",
-    adapter: "codebuddy",
-    baseUrl: "https://www.codebuddy.cn",
-    authKind: "key",
-    apiKeyValidation: "unknown",
-    preserveCustomDestination: true,
-    dashboardUrl: "https://copilot.tencent.com/profile/keys",
-    defaultModel: "default",
-    models: CODEBUDDY_CN_MODELS,
-    liveModels: true,
-    modelContextWindows: CODEBUDDY_CN_MODEL_CONTEXT_WINDOWS,
-    modelMaxOutputTokens: CODEBUDDY_CN_MODEL_MAX_OUTPUT_TOKENS,
-    defaultMaxOutputTokens: 32_000,
-    reasoningEfforts: CODEBUDDY_REASONING_EFFORTS,
-    modelReasoningEfforts: CODEBUDDY_CN_MODEL_REASONING_EFFORTS,
-    modelDefaultReasoningEfforts: CODEBUDDY_CN_MODEL_DEFAULT_REASONING_EFFORTS,
-    noVisionModels: CODEBUDDY_CN_NO_VISION_MODELS,
-    note: "Official CodeBuddy Code CLI (Tencent Cloud), China/internal environment. Uses the documented CODEBUDDY_API_KEY + headless CLI surface; never reads desktop sessions or private console endpoints. Region-isolated from codebuddy (Global); credentials are never exchanged across regions. The CLI always runs tools-disabled (--tools \"\"); a capture-only MCP bridge surfaces the request's Codex tool catalog as capturable calls, with approval and execution kept by the client. Requires `npm i -g @tencent-ai/codebuddy-code`. AUP/routing authorization flagged for maintainer security review.",
+    id: "zai-plan",
+    label: "ZCode Plan",
+    adapter: "zai-plan",
+    baseUrl: "https://zcode.z.ai/api/v1/zcode-plan/anthropic",
+    authKind: "oauth",
+    oauthId: "zai-plan",
+    featured: true,
+    dashboardUrl: "https://zcode.z.ai",
+    defaultModel: "GLM-5.3-Flash",
+    models: ["GLM-5.3-Flash", "GLM-5.3"],
+    defaultMaxOutputTokens: 131_072,
+    extraMetadataAliases: ["zcode-plan"],
+    note: "Z.AI ZCode Start/Coding Plan via desktop login. Unofficial Plan JWT + captcha. Do not send confidential material.",
   },
   {
     id: "stepfun",

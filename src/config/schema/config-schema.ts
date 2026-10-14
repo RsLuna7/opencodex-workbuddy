@@ -319,6 +319,14 @@ export const configSchema = z.object({
     enabled: z.boolean().optional(),
     leadTimeMinutes: z.number().int().min(1).max(60).optional(),
   }).optional().catch(undefined),
+  // WorkBuddy / CodeBuddy CN daily check-in. Degrades to undefined (default on)
+  // so a hand-edited typo cannot disable the timer by accident.
+  workbuddyCheckin: z.object({
+    auto: z.boolean().optional(),
+  }).optional().catch(undefined),
+  workbuddyGlobal: z.object({
+    enabled: z.boolean().optional(),
+  }).optional().catch(undefined),
   // Same degrade-to-off rule as the flags above: a hand-edited typo in an opt-in pool
   // feature must never cost the operator their providers.
   pool: z.object({

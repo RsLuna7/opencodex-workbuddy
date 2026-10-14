@@ -101,6 +101,7 @@ export async function executeResponsesRunTurn(
     | "genericFailovers"
     | "genericFailoverLimit"
     | "applyFailoverSnapshot"
+    | "planGenericOAuthRotation"
     | "refreshResolvedOAuthSelection"
     | "isOAuth401ReplayProvider"
     | "sentOAuthSnapshot"
@@ -539,11 +540,13 @@ export async function executeResponsesRunTurn(
       if (error.code === SEND_BUDGET_EXHAUSTED_CODE) return false;
       const status = error.status ?? adapterFailureFromMessage(error.message).httpStatus;
       if (
-        status !== 429
+        (status !== 429 && status !== 402)
         || !transportState.genericFailoverAccountId
         || transportState.genericFailovers >= transportState.genericFailoverLimit
         || !isGenericOAuthFailoverEnabled(config, route.providerName)
       ) return false;
+      const genericRotation = await transportState.planGenericOAuthRotation({ status, message: error.message });
+      if (!genericRotation) return false;
       // Intersection with the request's shared budget: the roster bound above answers "may this
       // credential set rotate again", this answers "may this request send again at all". The
       // replayed turn is dispatched by runTurnAttempt and never reaches `onSendsConsumed`, so
@@ -557,17 +560,17 @@ export async function executeResponsesRunTurn(
         // The activation quorum deliberately ignores cooldowns. Attribute a withheld recovery
         // only when the non-mutating selector proves a usable alternate exists right now.
         if (hasEligibleGenericOAuthFailoverTarget(
-          route.providerName, transportState.genericFailoverAccountId, Date.now(), route.modelId,
+          route.providerName, genericRotation.failedAccountId, Date.now(), route.modelId,
         )) noteAttemptRecoveryWithheld(logCtx.activeAttempt, "rotation-send-budget");
         return false;
       }
       const nextAccountId = rotateGenericOAuthAccountOn429(
         config,
         route.providerName,
-        transportState.genericFailoverAccountId,
+        genericRotation.failedAccountId,
         null,
         Date.now(),
-        route.modelId,
+        genericRotation.target,
       );
       if (!nextAccountId) {
         hop.permit?.release();
@@ -575,12 +578,12 @@ export async function executeResponsesRunTurn(
       }
       try {
         const snapshot = await failoverAccountSnapshot(route.providerName, nextAccountId);
-        transportState.genericFailovers += 1;
-        const admittedSnapshot = await applyFailoverSnapshot(snapshot);
+        const admittedSnapshot = await applyFailoverSnapshot(snapshot, parsed, false, genericRotation.persistActive);
         if (!admittedSnapshot) {
           hop.permit?.release();
           return false;
         }
+        transportState.genericFailovers += 1;
         if (!adoptRunTurnAccount(admittedSnapshot)) {
           hop.permit?.release();
           return false;

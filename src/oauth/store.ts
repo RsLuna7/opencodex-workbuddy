@@ -573,6 +573,50 @@ function normalizeCredential(cred: unknown): OAuthCredentials | null {
       };
     }
   }
+  if (candidate.codebuddy && typeof candidate.codebuddy === "object") {
+    const raw = candidate.codebuddy;
+    const cleanCodebuddy = (value: unknown, max: number): string | undefined => {
+      if (typeof value !== "string") return undefined;
+      const trimmed = value.trim();
+      return trimmed && trimmed.length <= max && !/[\x00-\x1f\x7f]/.test(trimmed) ? trimmed : undefined;
+    };
+    const uid = cleanCodebuddy(raw.uid, 256);
+    const enterpriseId = cleanCodebuddy(raw.enterpriseId, 256);
+    const domain = cleanCodebuddy(raw.domain, 256);
+    const realm = raw.realm === "cn" || raw.realm === "global" ? raw.realm : undefined;
+    const platform = cleanCodebuddy(raw.platform, 64);
+    const deviceToken = cleanCodebuddy(raw.deviceToken, 1024);
+    if (uid || enterpriseId || domain || realm || platform || deviceToken) {
+      normalized.codebuddy = {
+        ...(uid ? { uid } : {}),
+        ...(enterpriseId ? { enterpriseId } : {}),
+        ...(domain ? { domain } : {}),
+        ...(realm ? { realm } : {}),
+        ...(platform ? { platform } : {}),
+        ...(deviceToken ? { deviceToken } : {}),
+      };
+    }
+  }
+  if (candidate.zaiPlan && typeof candidate.zaiPlan === "object") {
+    const raw = candidate.zaiPlan as { deviceMid?: unknown; userId?: unknown; sessionId?: unknown; codingKey?: unknown };
+    const cleanZaiPlan = (value: unknown, max: number): string | undefined => {
+      if (typeof value !== "string") return undefined;
+      const trimmed = value.trim();
+      return trimmed && trimmed.length <= max && !/[\x00-\x1f\x7f]/.test(trimmed) ? trimmed : undefined;
+    };
+    const deviceMid = cleanZaiPlan(raw.deviceMid, 128);
+    const userId = cleanZaiPlan(raw.userId, 256);
+    const sessionId = cleanZaiPlan(raw.sessionId, 128);
+    const codingKey = cleanZaiPlan(raw.codingKey, 256);
+    if (deviceMid || userId || sessionId || codingKey) {
+      normalized.zaiPlan = {
+        ...(deviceMid ? { deviceMid } : {}),
+        ...(userId ? { userId } : {}),
+        ...(sessionId ? { sessionId } : {}),
+        ...(codingKey ? { codingKey } : {}),
+      };
+    }
+  }
   if (candidate.muse && typeof candidate.muse === "object") {
     const muse = candidate.muse;
     const cleanMuse = (value: unknown, max: number): string | undefined => {

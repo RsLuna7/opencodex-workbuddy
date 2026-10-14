@@ -23,6 +23,7 @@ import AnthropicAccountPoolSettings from "./AnthropicAccountPoolSettings";
 import { LoginHint as LoginHintView } from "../login-url-block";
 import { OpenBrowserPrefToggle } from "../open-browser-pref-toggle";
 import ProviderAccountQuota from "./ProviderAccountQuota";
+import WorkbuddyAccountBadges from "./WorkbuddyAccountBadges";
 import { GrokCouponBadge, GrokResetCouponModal } from "./GrokResetCoupons";
 import { AnthropicGrantBadge, AnthropicResetGrantModal } from "./AnthropicResetGrants";
 import type { CodexAccountPoolController } from "../../hooks/useCodexAccountPool";
@@ -589,6 +590,7 @@ export default function ProviderAuthPanel({
                       {showReauth && !healthLabel && <span className="badge badge-amber">{t("pws.reauth")}</span>}
                       {kiroSkipReasonKey(account, item.name) && <span className="badge badge-amber">{t(kiroSkipReasonKey(account, item.name)!)}</span>}
                       {account.paused && <span className="badge badge-muted">{t("codexAuth.paused")}</span>}
+                      {item.name === "workbuddy" && <WorkbuddyAccountBadges activity={account.workbuddy} />}
                       {account.active && !account.paused && <span className="badge badge-primary">{t("prov.accountActive")}</span>}
                       {switching && <span className="badge badge-muted">{t("pws.accountSwitching")}</span>}
                     </button>

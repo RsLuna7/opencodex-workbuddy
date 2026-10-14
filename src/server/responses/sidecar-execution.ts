@@ -77,6 +77,7 @@ export async function executeResponsesSidecars(
     | "genericFailoverLimit"
     | "replayOAuthCredentialSnapshot"
     | "applyFailoverSnapshot"
+    | "planGenericOAuthRotation"
     | "anthropicInstance"
     | "currentAnthropicRouteDecision"
     | "anthropicRouteDecision"
@@ -247,7 +248,9 @@ export async function executeResponsesSidecars(
     const antigravityValidationResponse = canRunWebSearch && route.providerName === "google-antigravity"
       && route.provider.authMode === "oauth" && originalResponse?.status === 403;
     if (route.providerName !== "kiro" && !(anthropicInstance && (originalResponse?.status === 403 || originalResponse?.status === 401))
-      && !antigravityValidationResponse && originalResponse && originalResponse.status !== 429) return null;
+      && !antigravityValidationResponse && originalResponse
+      && originalResponse.status !== 429 && originalResponse.status !== 402
+      && !(route.providerName === "workbuddy" && originalResponse.status === 403)) return null;
     let antigravityVerification = false;
     if (antigravityValidationResponse) {
       if (transportState.adapter.name !== "google" || !antigravityPoolActivated
@@ -269,6 +272,9 @@ export async function executeResponsesSidecars(
     if (monthlyCooldownMs !== undefined) persistKiroAccountState();
     if (route.providerName === "kiro" && refusal === "suspended" && transportState.genericFailoverAccountId)
       quarantineKiroSuspendedAccount(transportState.genericFailoverAccountId, sent?.generation);
+    const genericRotation = route.providerName !== "kiro" && !antigravityVerification
+      ? await transportState.planGenericOAuthRotation(originalResponse ?? { status: 429 })
+      : null;
     // Which credential axis actually moved. The main routed path already reports these three
     // separately (`adapter-dispatch`: key-429 / anthropic-oauth-429 / oauth-account-429); the
     // sidecar loops used to flatten all three to `key-429`, so an account rotation read as a key
@@ -336,6 +342,7 @@ export async function executeResponsesSidecars(
       transportState.genericFailoverAccountId
       && transportState.genericFailovers < transportState.genericFailoverLimit
       && isGenericOAuthFailoverEnabled(config, route.providerName)
+      && (route.providerName === "kiro" || genericRotation !== null)
     ) {
       // Intersection with the request's shared budget. The sidecar replay is dispatched by the
       // web-search/image loop and never reaches `onSendsConsumed`, so this reservation is the
@@ -349,26 +356,25 @@ export async function executeResponsesSidecars(
       const nextAccountId = route.providerName === "kiro" ? rotateGenericOAuthAccountOnRefusal(
         config, route.providerName, transportState.genericFailoverAccountId,
         refusal, retryAfter, Date.now(), route.modelId, monthlyCooldownMs,
-      ) : rotateGenericOAuthAccountOn429(
+      ) : genericRotation ? rotateGenericOAuthAccountOn429(
         config,
         route.providerName,
-        transportState.genericFailoverAccountId,
+        genericRotation.failedAccountId,
         retryAfter,
         Date.now(),
-        route.modelId,
-      );
+        genericRotation.target,
+      ) : null;
       if (!nextAccountId) {
         hop.permit?.release();
         return null;
       }
       try {
         const snapshot = await failoverAccountSnapshot(route.providerName, nextAccountId);
-        if (route.providerName !== "kiro") transportState.genericFailovers += 1;
-        if (!await applyFailoverSnapshot(snapshot, retryParsed)) {
+        if (!await applyFailoverSnapshot(snapshot, retryParsed, false, genericRotation?.persistActive ?? true)) {
           hop.permit?.release();
           return null;
         }
-        if (route.providerName === "kiro") transportState.genericFailovers += 1;
+        transportState.genericFailovers += 1;
       } catch (error) {
         noteSidecarScopeDenial(error);
         hop.permit?.release();

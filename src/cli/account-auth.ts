@@ -206,6 +206,7 @@ async function login(argv: string[], deps: RuntimeApiDeps): Promise<number | voi
   const device = takeFlag(args, "--device");
   const method = takeOption(args, "--method");
   const id = takeOption(args, "--id");
+  const realmRaw = takeOption(args, "--realm");
   const suppliedCode = takeOptionWithSyntax(args, "--code");
   const openBrowser = loginBoolean(args, "--open-browser");
   const addAccount = loginBoolean(args, "--add-account");

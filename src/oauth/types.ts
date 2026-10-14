@@ -75,9 +75,34 @@ export type OAuthCredentials = {
   apiBaseUrl?: string;
   /** Never returned by management APIs; persisted only inside the protected auth-store boundary. */
   kiro?: KiroOAuthMetadata;
+  /** CodeBuddy CN routing headers (uid / enterprise / domain). Not a secret beyond the tokens. */
+  codebuddy?: CodebuddyOAuthMetadata;
+  /** ZCode Plan device identity. codingKey stays in the auth store only. */
+  zaiPlan?: ZaiPlanOAuthMetadata;
   /** Never returned by management APIs; persisted only inside the protected auth-store boundary. */
   muse?: MuseOAuthMetadata;
 };
+
+export interface ZaiPlanOAuthMetadata {
+  deviceMid?: string;
+  userId?: string;
+  sessionId?: string;
+  /** Two-part coding-plan key. Never returned by management APIs. */
+  codingKey?: string;
+}
+
+/** Account-scoped CodeBuddy / WorkBuddy request headers. Safe to carry on a snapshot. */
+export interface CodebuddyOAuthMetadata {
+  uid?: string;
+  enterpriseId?: string;
+  domain?: string;
+  /** cn | global. Empty means infer from domain (legacy CN). */
+  realm?: "cn" | "global";
+  /** Login platform that produced this credential (`ide` / `workbuddy-ai` / `CLI`). */
+  platform?: string;
+  /** Optional desktop Turing device token. Omitted when empty — never stolen from disk. */
+  deviceToken?: string;
+}
 
 /** One logged-in account inside a provider's account set (multiauth). */
 export interface ProviderAccount {

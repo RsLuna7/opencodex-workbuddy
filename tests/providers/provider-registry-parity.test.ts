@@ -46,19 +46,10 @@ const EXPECTED_KEY_PROVIDER_IDS = [
   "volcengine", "volcengine-coding-plan", "volcengine-agent-plan", "qianfan", "alibaba", "alibaba-token-plan", "alibaba-token-plan-intl", "parallel", "zenmux", "litellm", "ollama-cloud", "mistral",
   "minimax", "minimax-cn", "kimi-code", "opencode-zen", "vercel-ai-gateway", "opper", "opengateway", "tokenlab", "modelflare",
   "opencode-free", "xiaomi", "xiaomi-mimo", "kilo", "mimo-free", "mimo", "cloudflare-ai-gateway", "cloudflare-workers-ai", "gitlab-duo",
-  "qoder", "qoder-cn", "codebuddy", "codebuddy-cn", "stepfun", "claude-cli",
+  "qoder", "qoder-cn", "stepfun", "claude-cli",
 ];
 
 describe("provider registry parity", () => {
-  test("CodeBuddy static catalogs cover every official CLI-agent model in the bundled 2.143.0 manifest", () => {
-    const global = providerConfigSeed(PROVIDER_REGISTRY.find(entry => entry.id === "codebuddy")!);
-    const cn = providerConfigSeed(PROVIDER_REGISTRY.find(entry => entry.id === "codebuddy-cn")!);
-    expect(global.models).toContain("gemini-3.5-flash");
-    expect(cn.models).toEqual(expect.arrayContaining([
-      "glm-5.0", "glm-5.0-turbo", "glm-5v-turbo", "glm-4.7", "kimi-k2.5", "deepseek-v3-2-volc",
-    ]));
-  });
-
   test("registry ids are unique", () => {
     const ids = PROVIDER_REGISTRY.map(entry => entry.id);
     expect(new Set(ids).size).toBe(ids.length);
@@ -1405,7 +1396,7 @@ describe("provider registry parity", () => {
     expect(featured).toEqual([
       "openai", "xai", "command-code", "orcarouter-oauth", "anthropic", "anthropic2", "anthropic-apikey", "kimi", "nous", "openai-apikey", "umans", "opencode-go", "openrouter",
       "groq", "google", "azure-openai", "ollama", "vllm", "lm-studio", "opencode-free",
-      "mimo-free",
+      "mimo-free", "workbuddy", "zai-plan",
     ]);
 
     const presets = deriveProviderPresets();

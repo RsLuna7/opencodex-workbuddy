@@ -859,6 +859,7 @@ interception.
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `provider?` | `string` | automatic OpenAI selection | Explicit custom API-key `openai-responses` provider for `/v1/images/generations` and `/v1/images/edits`. Registry-managed ids are rejected. |
+| `model?` | `string` | pass through Codex | Images API model id written onto the outbound OpenAI `/v1/images` body. Codex's built-in `image_gen` hardcodes `gpt-image-2`; set `gpt-image-2.5-flare` or `gpt-image-2.5-sunburst` to request Images 2.5. Applies to ChatGPT forward and keyed OpenAI Images paths only. The ChatGPT OAuth backend may still ignore this field; inspect the PNG C2PA `softwareAgent` to confirm. |
 | `timeoutMs?` | `number` | `300000` | Whole-request timeout for one standalone Images request. |
 
 Explicit selection fails closed when the provider is missing, disabled, incompatible, or lacks a

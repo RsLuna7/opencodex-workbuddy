@@ -150,7 +150,9 @@ describe("final translated-adapter boundary", () => {
 
 describe("runtime registry and native passthrough exceptions", () => {
   test("registry construction cannot bypass the guard for translated adapters", async () => {
-    for (const adapter of ["openai-chat", "anthropic", "google", "kiro", "cursor", "devin", "codebuddy", "qoder"]) {
+    // `codebuddy` is deliberately absent: the WorkBuddy adapter fails closed at construction
+    // unless the base URL is the canonical Tencent endpoint, so it never reaches the guard here.
+    for (const adapter of ["openai-chat", "anthropic", "google", "kiro", "cursor", "devin", "qoder"]) {
       const provider: OcxProviderConfig = {
         adapter, baseUrl: "https://example.invalid/v1", authMode: "key", apiKey: "test-placeholder",
       };

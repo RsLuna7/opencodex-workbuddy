@@ -43,6 +43,14 @@ export interface ProviderQuotaCreditsUsd {
   percent: number;
   expiresAt?: number;
   unlimited?: boolean;
+  /** Absent means USD (existing readers). WorkBuddy remaining credits are integer points. */
+  unit?: "usd" | "points";
+}
+
+/** WorkBuddy daily flags; omitted keys mean unknown (probe failed or not CN). */
+export interface WorkbuddyAccountActivity {
+  checkedIn?: boolean;
+  dailyTask?: boolean;
 }
 
 export interface ProviderQuota {
@@ -68,6 +76,7 @@ export interface AccountQuotaFields {
   quota?: ProviderQuota | null;
   quotaUnavailable?: boolean;
   quotaFailure?: QuotaFailureCode;
+  workbuddy?: WorkbuddyAccountActivity;
 }
 
 

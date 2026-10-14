@@ -12,6 +12,8 @@ import { createDevinAdapter } from "./devin";
 import { createGoogleAdapter } from "./google";
 import { createKiroAdapter } from "./kiro";
 import { createMimoFreeAdapter } from "./mimo-free";
+import { createCodebuddyAdapter as createWorkbuddyAdapter } from "./codebuddy";
+import { createZaiPlanAdapter } from "./zai-plan";
 import { createOpenAIChatAdapter } from "./openai-chat";
 import { createOllamaNativeAdapter } from "./ollama-native";
 import { createResponsesPassthroughAdapter } from "./openai-responses";
@@ -73,11 +75,6 @@ type InheritedAdapterDefinition = {
 type AdapterDefinition = DirectAdapterDefinition | InheritedAdapterDefinition;
 
 export const ADAPTER_REGISTRY = {
-  codebuddy: {
-    wire: "codebuddy",
-    mutation: "codex-owned",
-    create: (provider: OcxProviderConfig, _context: AdapterFactoryContext) => createCodeBuddyAdapter(provider),
-  },
   "command-code": {
     wire: "command-code",
     mutation: "codex-owned",
@@ -143,8 +140,23 @@ export const ADAPTER_REGISTRY = {
     contractParent: "openai-chat",
     create: (provider: OcxProviderConfig, _context: AdapterFactoryContext) => createMimoFreeAdapter(provider),
   },
+  codebuddy: {
+    wire: "codebuddy",
+    mutation: "codex-owned",
+    create: (provider: OcxProviderConfig, _context: AdapterFactoryContext) => createCodeBuddyAdapter(provider),
+  },
+  workbuddy: {
+    contractParent: "openai-chat",
+    create: (provider: OcxProviderConfig, _context: AdapterFactoryContext) => createWorkbuddyAdapter(provider),
+  },
+  "zai-plan": {
+    contractParent: "anthropic",
+    create: (provider: OcxProviderConfig, context: AdapterFactoryContext) =>
+      createZaiPlanAdapter(provider, context.cacheRetention),
+  },
   qoder: {
-    contractParent: "codebuddy",
+    wire: "codebuddy",
+    mutation: "codex-owned",
     create: (provider: OcxProviderConfig, _context: AdapterFactoryContext) => createQoderAdapter(provider),
   },
   "claude-cli": {

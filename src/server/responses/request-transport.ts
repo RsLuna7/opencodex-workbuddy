@@ -43,12 +43,17 @@ import {
   GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST,
   eligibleFailoverAccounts,
   forgetGenericFailoverRoster,
+  isGenericOAuthFailoverEnabled,
   isGenericFailoverProvider,
   isProactivePreferenceEnabled,
   preferredInitialAccount,
   refusalAwareInitialKiroAccount,
   noteGenericPoolSelection,
+  shouldAttemptGenericOAuthFailover,
+  type GenericRotateTarget,
 } from "../../oauth/generic-account-failover";
+import { CODEBUDDY_PROVIDER_ID, codebuddyFailoverHintFromErrorPayload, recoverCodebuddyFailoverHint } from "../../oauth/codebuddy";
+import { isWorkbuddyPoolCooled } from "../../oauth/workbuddy-pool";
 import { tryKiroAlternateAfterTerminalRefresh } from "../../oauth/kiro-terminal-failover";
 import { classifyModelFamilyForQuota } from "../../oauth/account-quota-rank";
 import { expandInferenceOAuthSendBudget } from "../inference/context";
@@ -188,6 +193,7 @@ export async function prepareResponsesTransport(
   // the request actually used, so a concurrent rotation cannot cool an innocent replacement.
   let genericFailoverAccountId: string | null = null;
   let genericFailovers = 0;
+  let genericFailoverUnpersisted = false;
   let oauthSelection = route.provider.authMode === "oauth"
     ? captureOAuthAccountSelection(route.providerName) : null;
   let servingOAuthSnapshot: OAuthAccessSnapshot | undefined;
@@ -409,10 +415,38 @@ export async function prepareResponsesTransport(
    *   tolerates project discovery failing, so a stored account can legitimately have no project;
    *   sending that account's bearer with the FAILED account's project is worse than not rotating.
    */
+  const planGenericOAuthRotation = async (
+    refusal: Response | { status: number; message?: string },
+  ): Promise<{ failedAccountId: string; target: GenericRotateTarget; persistActive: boolean } | null> => {
+    const failedAccountId = genericFailoverAccountId;
+    if (!failedAccountId || genericFailovers >= genericFailoverLimit) return null;
+    const hint = route.providerName === CODEBUDDY_PROVIDER_ID
+      ? refusal instanceof Response
+        ? await recoverCodebuddyFailoverHint(refusal, options.abortSignal)
+        : refusal.message ? codebuddyFailoverHintFromErrorPayload(refusal.message) : undefined
+      : undefined;
+    if (!shouldAttemptGenericOAuthFailover(
+      config, route.providerName, refusal.status, failedAccountId, genericFailovers, hint, genericFailoverLimit,
+    )) return null;
+    return hint
+      ? {
+        failedAccountId,
+        target: {
+          scope: hint.scope,
+          modelId: route.modelId,
+          quotaExhausted: true,
+          resetAt: hint.resetAtMs,
+        },
+        persistActive: hint.scope !== "model",
+      }
+      : { failedAccountId, target: route.modelId, persistActive: true };
+  };
+
   const applyFailoverSnapshot = async (
     snapshot: OAuthAccessSnapshot,
     retryParsed: OcxParsedRequest = parsed,
     insideDispatch = false,
+    persistActive = true,
   ): Promise<OAuthAccessSnapshot | null> => {
     requireAnthropicAdmission();
     if (snapshot.provider !== route.providerName) return null;
@@ -422,9 +456,21 @@ export async function prepareResponsesTransport(
       ? await acquireAccountLease("kiro", snapshot.accountId, { maxConcurrentPerAccount: kiroCap, signal }) : null;
     if (speculative && (options.accountLoad?.cancelled || signal.aborted)) { speculative.release(); return null; }
     if (kiroLoadEnabled && options.accountLoad?.lease?.accountId !== snapshot.accountId && !speculative) return null;
-    let committed: OAuthAccessSnapshot | null;
-    try { committed = await commitResolvedOAuthSelection(snapshot); }
-    catch (error) { speculative?.release(); throw error; }
+    let committed: OAuthAccessSnapshot | null = snapshot;
+    if (persistActive) {
+      try { committed = await commitResolvedOAuthSelection(snapshot); }
+      catch (error) { speculative?.release(); throw error; }
+      genericFailoverUnpersisted = false;
+    } else {
+      const row = getAccountCredentialWithStatus(route.providerName, snapshot.accountId);
+      const selected = captureOAuthAccountSelection(route.providerName);
+      if (!row || row.paused || row.needsReauth || !selected
+        || !oauthSelection || selected.revision !== oauthSelection.revision
+        || credentialGeneration(row.credential) !== snapshot.generation) return null;
+      oauthSelection = { accountId: snapshot.accountId, revision: selected.revision };
+      servingOAuthSnapshot = snapshot;
+      genericFailoverUnpersisted = true;
+    }
     if (!committed) { speculative?.release(); return null; }
     if (speculative && (options.accountLoad?.cancelled || signal.aborted)) { speculative.release(); return null; }
     if (kiroLoadEnabled && committed.accountId !== (speculative?.accountId ?? options.accountLoad?.lease?.accountId)) {
@@ -459,6 +505,11 @@ export async function prepareResponsesTransport(
       // the retry. Keep both owners synchronized; for ordinary paths they are identical.
       parsed._kiroAuthContext = kiroContext;
       if (retryParsed !== parsed) retryParsed._kiroAuthContext = { ...kiroContext };
+    }
+    if (route.providerName === CODEBUDDY_PROVIDER_ID) {
+      const context = { ...(snapshot.codebuddy ?? {}) };
+      parsed._codebuddyAuthContext = context;
+      if (retryParsed !== parsed) retryParsed._codebuddyAuthContext = { ...context };
     }
     if (route.providerName === "zed") {
       // Zed signs with its own user id; `snapshot.accountId` is the local slot hash.
@@ -516,7 +567,9 @@ export async function prepareResponsesTransport(
     }
     const selected = captureOAuthAccountSelection(route.providerName);
     const row = getAccountCredentialWithStatus(route.providerName, binding.snapshot.accountId);
-    return selected?.accountId === binding.selection.accountId && selected?.revision === binding.selection.revision
+    return (genericFailoverUnpersisted && route.providerName === CODEBUDDY_PROVIDER_ID
+      ? selected?.revision === binding.selection.revision
+      : selected?.accountId === binding.selection.accountId && selected?.revision === binding.selection.revision)
       && !!row && !row.paused && !row.needsReauth && row.credential.expires > Date.now()
       && (anthropicInstance === undefined || !anthropicRouting!.getAnthropicAccountHealthSnapshot(binding.snapshot.accountId) && !anthropicRatePolicy!.anthropicRatePauseUntil(binding.snapshot.accountId) && !anthropicQuota!.anthropicFamilyRejected(binding.snapshot.accountId, route.modelId))
       && credentialGeneration(row.credential) === binding.snapshot.generation;
@@ -883,7 +936,22 @@ export async function prepareResponsesTransport(
           resolved = await getValidAccessTokenSnapshot(route.providerName);
           usedPreferredAccount = false;
         }
-        const admitted = await commitResolvedOAuthSelection(resolved, safetyAlternateId === null);
+        const transientWorkbuddyAlternate = route.providerName === CODEBUDDY_PROVIDER_ID
+          && !!oauthSelection?.accountId && resolved.accountId === preferredAccountId
+          && isWorkbuddyPoolCooled(oauthSelection.accountId, route.modelId);
+        let admitted: OAuthAccessSnapshot | null;
+        if (transientWorkbuddyAlternate) {
+          const selected = captureOAuthAccountSelection(route.providerName);
+          if (!selected || selected.revision !== oauthSelection?.revision) {
+            return formatErrorResponse(409, "conflict_error", "OAuth account selection changed; retry the request");
+          }
+          oauthSelection = { accountId: resolved.accountId, revision: selected.revision };
+          servingOAuthSnapshot = resolved;
+          genericFailoverUnpersisted = true;
+          admitted = resolved;
+        } else {
+          admitted = await commitResolvedOAuthSelection(resolved, safetyAlternateId === null);
+        }
         if (!admitted) return formatErrorResponse(409, "conflict_error", "OAuth account selection changed; retry the request");
         if (safetyAlternateId && admitted.accountId !== safetyAlternateId)
           return formatErrorResponse(409, "conflict_error", "OAuth account selection changed; retry the request");
@@ -906,6 +974,9 @@ export async function prepareResponsesTransport(
         if (route.providerName === "kiro") {
           const account = getAccountSet("kiro")?.accounts.find(row => row.id === admitted.accountId);
           if (account) refreshKiroAccountModelsDetached(account, route.provider);
+        }
+        if (route.providerName === CODEBUDDY_PROVIDER_ID) {
+          parsed._codebuddyAuthContext = { ...(resolved.codebuddy ?? {}) };
         }
         if (admitted.accountId !== resolved.accountId) usedPreferredAccount = true;
         resolved = admitted;
@@ -1191,6 +1262,7 @@ export async function prepareResponsesTransport(
     invalidateSameTargetRequest,
     requestBindings,
     adapterBindings,
+    planGenericOAuthRotation,
     commitResolvedOAuthSelection,
     refreshResolvedOAuthSelection,
     get passiveQuotaWriterGeneration(): number { return passiveQuotaWriterGeneration; },

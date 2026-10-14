@@ -1,4 +1,4 @@
-import type { KiroOAuthMetadata, OAuthController, OAuthCredentials } from "./types";
+import type { CodebuddyOAuthMetadata, KiroOAuthMetadata, OAuthController, OAuthCredentials, ZaiPlanOAuthMetadata } from "./types";
 import { initializeProviderModelSelection } from "../providers/initial-model-selection";
 import type { OcxConfig, OcxProviderConfig, RefreshPolicy } from "../types";
 import { getDefaultConfig, initializePersistedConfigIfMissing, loadConfig, mutatePersistedConfig, observeInitialConfigState, saveConfig } from "../config";
@@ -48,6 +48,11 @@ import { validateDevinApiBaseUrl } from "./devin/api-base";
 import { loginGithubCopilot, refreshGithubCopilotToken, validateCopilotApiBaseUrl } from "./github-copilot";
 import { loginCommandCode, refreshCommandCodeToken } from "./command-code";
 import { loginMetaMuse, refreshMetaMuseToken } from "./meta-muse";
+import { applyCodebuddyAccountHeaders, CODEBUDDY_PROVIDER_ID, loginCodebuddy, refreshCodebuddyToken } from "./codebuddy";
+import { applyWorkbuddyLoginOriginHeaders } from "./codebuddy-headers";
+import { workbuddyModelsUrl } from "./codebuddy-hosts";
+import { routedWorkbuddyRealm } from "./codebuddy-realm";
+import { loginZaiPlan, refreshZaiPlanToken } from "./zai-plan";
 import { loginOrcaRouter, orcaRouterInferenceBaseUrl, refreshOrcaRouterKey } from "./orcarouter";
 import { ANTIGRAVITY_DISCOVERY_UA } from "../adapters/google-antigravity-wire";
 import { deriveOAuthDefaultModel, deriveOAuthProviderConfig } from "../providers/derive";
@@ -113,6 +118,8 @@ export interface OAuthAccessSnapshot {
    * `accountId` is the local store slot key, a hash, and must never stand in for it.
    */
   providerUserId?: string;
+  /** WorkBuddy account-specific routing headers, carried with the serving bearer. */
+  codebuddy?: CodebuddyOAuthMetadata;
 }
 
 export interface ObservedOAuthAccessSnapshot extends OAuthAccessSnapshot {
@@ -192,6 +199,8 @@ export interface LoginOpts {
    * listener (#3366). Ignored by every other provider.
    */
   flow?: ChatGPTLoginFlow;
+  /** WorkBuddy only: `global` starts the international-site login. Default cn. */
+  realm?: "cn" | "global";
 }
 
 export interface LoginFlowLifecycle {
@@ -290,6 +299,20 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
     // on it — same posture as anthropic, for the same reason: the vendor restricts use
     // outside its own client, so every exchange stays attributable to a user action.
     defaultRefreshPolicy: "disabled",
+  },
+  workbuddy: {
+    login: (ctrl, opts) => loginCodebuddy(ctrl, { realm: opts?.realm }),
+    refresh: (rt, signal, credential) => refreshCodebuddyToken(rt, signal, credential),
+    providerConfig: oauthConfig("workbuddy"),
+    defaultModel: oauthDefaultModel("workbuddy"),
+    defaultRefreshPolicy: "lazy-only",
+  },
+  "zai-plan": {
+    login: (ctrl) => loginZaiPlan(ctrl, { importLocal: "fallback" }),
+    refresh: (rt, signal, credential) => refreshZaiPlanToken(rt, signal, credential),
+    providerConfig: oauthConfig("zai-plan"),
+    defaultModel: oauthDefaultModel("zai-plan"),
+    defaultRefreshPolicy: "lazy-only",
   },
   nous: {
     // Nous Portal device-grant login (RFC 8628) against portal.nousresearch.com.
@@ -533,6 +556,12 @@ function accessSnapshot(provider: string, accountId: string, cred: OAuthCredenti
     ...(cred.projectId ? { projectId: cred.projectId } : {}),
     ...(accountApiBaseUrl ? { apiBaseUrl: accountApiBaseUrl } : {}),
     ...(oauthProvider === "zed" && cred.accountId ? { providerUserId: cred.accountId } : {}),
+    ...(provider === CODEBUDDY_PROVIDER_ID ? {
+      codebuddy: {
+        ...(cred.codebuddy ?? {}),
+        ...(cred.codebuddy?.uid || cred.accountId ? { uid: cred.codebuddy?.uid ?? cred.accountId } : {}),
+      },
+    } : {}),
     // Stored account metadata remains authoritative. Metadata-less legacy/environment credentials
     // may use explicit environment routing, but never borrow the currently signed-in local CLI account.
     ...(provider === "kiro"

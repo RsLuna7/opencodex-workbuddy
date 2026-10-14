@@ -160,6 +160,7 @@ export async function prepareAdapterExchange(
     | "genericFailovers"
     | "genericFailoverLimit"
     | "applyFailoverSnapshot"
+    | "planGenericOAuthRotation"
     | "noteRoutedAttemptSend"
   >,
   responseEffects: Pick<ResponsesEffects, "cancelResponseCompletion" | "notifyResponseComplete" | "refreshRequestToolAliases">,
@@ -1464,11 +1465,10 @@ export async function prepareAdapterExchange(
         }
       }
       } else {
-      while (
-        upstreamResponse.status === 429
-        && transportState.genericFailoverAccountId
-        && transportState.genericFailovers < transportState.genericFailoverLimit
-        && isGenericOAuthFailoverEnabled(config, route.providerName)
+      for (
+        let genericRotation = await transportState.planGenericOAuthRotation(upstreamResponse);
+        genericRotation;
+        genericRotation = await transportState.planGenericOAuthRotation(upstreamResponse)
       ) {
         // Intersection with the shared request budget. This arm re-sends through
         // rebuildAndRefetch, so the roster cap alone would let one request walk the roster on
@@ -1495,10 +1495,10 @@ export async function prepareAdapterExchange(
         const nextAccountId = rotateGenericOAuthAccountOn429(
           config,
           route.providerName,
-          transportState.genericFailoverAccountId,
+          genericRotation.failedAccountId,
           upstreamResponse.headers.get("retry-after"),
           Date.now(),
-          route.modelId,
+          genericRotation.target,
         );
         if (!nextAccountId) {
           hop.permit?.release();
@@ -1510,11 +1510,11 @@ export async function prepareAdapterExchange(
           // projectId with its token and Kiro carries routing metadata, so a token-only swap
           // would mix one account's credential with another's routing data.
           const snapshot = await failoverAccountSnapshot(route.providerName, nextAccountId);
-            transportState.genericFailovers += 1;
-          if (!await applyFailoverSnapshot(snapshot)) {
+          if (!await applyFailoverSnapshot(snapshot, parsed, false, genericRotation.persistActive)) {
             hop.permit?.release();
             break;
           }
+          transportState.genericFailovers += 1;
           invalidateSameTargetRequest();
           transportState.activeAdapter = resolveSelectionAdapter(
             resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire, route.staticPolicy),

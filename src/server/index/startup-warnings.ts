@@ -6,6 +6,8 @@ import {
   type OwnershipInspection,
 } from "../../integrations/native/ownership-preflight";
 import { registerCodexQuotaAutoRefreshWorker } from "../../codex/quota-auto-refresh";
+import type { OcxConfig } from "../../types";
+import { activateWorkbuddyCheckinScheduler, workbuddyCheckinActivationRequired } from "../../oauth/codebuddy-checkin";
 import type {
   ObservePackageTree,
   PackageTreeIntegrityOptions,
@@ -276,6 +278,14 @@ export function warnPlaintextV2AgentMessagesStartup(config: { plaintextV2AgentMe
   console.warn("⚠️  Experimental plaintext V2 agent messages are enabled.");
   console.warn("   Eligible ChatGPT collaboration calls may carry plaintext message arguments. HTTPS remains encrypted, but task text may be retained in Codex history, selected providers, and local response/debug state.");
   console.warn("   This depends on undocumented ChatGPT and Codex behavior; it does not decrypt existing tasks.");
+}
+
+export function activateWorkbuddyCheckinForStartup(config: OcxConfig): void {
+  if (!workbuddyCheckinActivationRequired(config)) return;
+  activateWorkbuddyCheckinScheduler(config);
+  void import("../../oauth/workbuddy-growth").then(({ activateWorkbuddyGrowthScheduler }) => {
+    activateWorkbuddyGrowthScheduler(config);
+  }).catch(() => { /* The optional growth scheduler must not stop startup. */ });
 }
 
 export function logProxyEndpoints(actualPort: number): void {

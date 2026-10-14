@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>ZCode Plan</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; color: #111; }
+    code { background: #f4f4f4; padding: 0.1em 0.3em; }
+    button { margin-right: 8px; padding: 6px 12px; }
+    pre { background: #f7f7f7; padding: 12px; overflow: auto; }
+    .muted { color: #666; }
+  </style>
+</head>
+<body>
+  <h1>ZCode Plan</h1>
+  <p class="muted">领取 / 日活 / 指纹。自动领取和每日日活默认关。对话走 Codex 选 <code>zai-plan/GLM-5.3-Flash</code>。</p>
+  <p>
+    <button id="refresh">刷新</button>
+    <button id="import">从桌面导入</button>
+    <button id="preview">预览套餐</button>
+    <button id="telemetry">上报日活</button>
+    <button id="rotate">换设备指纹</button>
+  </p>
+  <pre id="out">loading…</pre>
+  <script>
+    const out = document.getElementById("out");
+    async function call(path, opts) {
+      const res = await fetch(path, opts);
+      const text = await res.text();
+      try { return JSON.stringify(JSON.parse(text), null, 2); }
+      catch { return text; }
+    }
+    document.getElementById("refresh").onclick = async () => {
+      out.textContent = await call("/api/zai-plan/accounts");
+    };
+    document.getElementById("import").onclick = async () => {
+      out.textContent = await call("/api/zai-plan/import", { method: "POST" });
+    };
+    document.getElementById("preview").onclick = async () => {
+      out.textContent = await call("/api/zai-plan/accounts/me/preview");
+    };
+    document.getElementById("telemetry").onclick = async () => {
+      out.textContent = await call("/api/zai-plan/accounts/me/telemetry", { method: "POST" });
+    };
+    document.getElementById("rotate").onclick = async () => {
+      out.textContent = await call("/api/zai-plan/accounts/me/fingerprint/rotate", { method: "POST" });
+    };
+    document.getElementById("refresh").click();
+  </script>
+</body>
+</html>

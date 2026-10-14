@@ -7,6 +7,7 @@ import Advisor from "./pages/Advisor";
 import Subagents from "./pages/Subagents";
 import Logs from "./pages/Logs";
 import Usage from "./pages/Usage";
+import UsageInsights from "./pages/UsageInsights";
 import Storage from "./pages/Storage";
 import CodexSet from "./pages/CodexSet";
 import Integrations from "./pages/Integrations";
@@ -52,6 +53,7 @@ const PAGE_TKEY: Record<Page, TKey> = {
   advisor: "nav.advisor",
   logs: "nav.logs",
   usage: "nav.usage",
+  insights: "insights.title",
   storage: "nav.storage",
   remote: "nav.remote",
   "remote-workspace": "nav.remoteWorkspace",
@@ -618,6 +620,7 @@ export default function App() {
                 {page === "advisor" && <Advisor key={sharedBase} apiBase={sharedBase} />}
                 {page === "logs" && <Logs apiBase={sharedBase} />}
                 {page === "usage" && <Usage apiBase={sharedBase} connected={targets.connected} apiKeyId={targets.apiKeyId} />}
+                {page === "insights" && <UsageInsights apiBase={sharedBase} connected={targets.connected} apiKeyId={targets.apiKeyId} />}
                 {page === "storage" && <Storage apiBase={sharedBase} />}
                 {page === "remote" && !remotePairingFormOpen && <RemoteLink key={`${sharedBase}:${sharedSessionEpoch}`} apiBase={sharedBase} sessionReady={sharedSessionReady} pairingRecoveryAvailable={hubPairingAvailable} onRequestPairing={() => setHubPairingOpen(true)} workspaceAvailable={remoteWorkspaceAvailable} onOpenWorkspace={() => navigateToPage("remote-workspace")} />}
                 {page === "remote-workspace" && <RemoteWorkspaceRoute available={remoteWorkspaceAvailable} apiBase={sharedBase} hubOrigin={targets.shared.serverOrigin} onOpenRemoteLink={() => navigateToPage("remote")} />}

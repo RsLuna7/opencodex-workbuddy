@@ -97,6 +97,7 @@ export function createAdapterContinuations(
     | "genericFailovers"
     | "genericFailoverLimit"
     | "applyFailoverSnapshot"
+    | "planGenericOAuthRotation"
     | "replayOAuthCredentialSnapshot"
     | "noteRoutedAttemptSend"
   >,
@@ -558,12 +559,14 @@ export function createAdapterContinuations(
       }
       } else {
      if (
-       response.status === 429
+       (response.status === 429 || response.status === 402)
        && transportState.genericFailoverAccountId
         && !isNonReplayableResponse(response)
        && transportState.genericFailovers < transportState.genericFailoverLimit
         && isGenericOAuthFailoverEnabled(config, route.providerName)
       ) {
+         const genericRotation = await transportState.planGenericOAuthRotation(response);
+         if (!genericRotation) break;
         // Intersection with the shared request budget. The continuation loop re-sends the
         // turn, so without this the per-request bound could be re-armed simply by reaching a
         // different loop -- which is the divergence the comment above already warns about.
@@ -581,10 +584,10 @@ export function createAdapterContinuations(
           ? rotateGenericOAuthAccountOn429(
             config,
             route.providerName,
-            transportState.genericFailoverAccountId,
+            genericRotation.failedAccountId,
             response.headers.get("retry-after"),
             Date.now(),
-            route.modelId,
+            genericRotation.target,
           )
           : null;
         // A roster quorum ignores cooldowns, so only attribute a budget refusal when the
@@ -601,10 +604,10 @@ export function createAdapterContinuations(
             // metadata, so a token-only swap would mix one account's credential with another's
             // routing data.
             const snapshot = await failoverAccountSnapshot(route.providerName, nextAccountId);
-                transportState.genericFailovers += 1;
-            const applied = await applyFailoverSnapshot(snapshot, nextParsed);
+            const applied = await applyFailoverSnapshot(snapshot, nextParsed, false, genericRotation.persistActive);
             if (!applied) hop.permit?.release();
             if (applied) {
+              transportState.genericFailovers += 1;
               invalidateSameTargetRequest();
               transportState.activeAdapter = resolveSelectionAdapter(
                 resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire, route.staticPolicy),

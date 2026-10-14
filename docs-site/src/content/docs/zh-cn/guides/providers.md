@@ -5,6 +5,18 @@ description: opencodex 进行身份验证并与 LLM 提供商通信的所有方�
 
 **提供商（provider）** 是一个上游 LLM 端点，加上访问它的方式：一个 adapter、一个基础 URL、一种认证模式，以及一个可选的模型列表。提供商配置位于 `~/.opencodex/config.json` 的 `providers` 下。
 
+## 本分支的 WorkBuddy 与 ZCode Plan
+
+`workbuddy` 是 WorkBuddy 中国站和国际站的 OAuth 提供商。`codebuddy` 仍是它的别名；
+本分支不对外提供上游的 CodeBuddy CLI API 密钥预设。运行 `ocx account login workbuddy`
+添加中国站账户，或运行 `ocx account login workbuddy --realm global` 添加国际站账户。
+模型使用 `workbuddy/<model>`，故障换号只在同一站点内进行。6004 只冷却当前账户的当前模型，
+不会改动手动选中的账户；14018 冷却整个账户。仪表盘显示剩余额度，中国站账户还显示签到和每日任务状态。
+`ocx account checkin workbuddy --status` 只查询签到状态，不领取奖励。
+
+`zai-plan` 是 ZCode Plan 的 OAuth 提供商。运行 `ocx account login zai-plan` 登录，
+再选择 `zai-plan/<model>`。它与把 ZCode 客户端接入本地代理的 ZCode 集成功能不同。
+
 ## OpenAI 账户模式
 
 | Provider id | 用途 | 凭证/账户规则 |

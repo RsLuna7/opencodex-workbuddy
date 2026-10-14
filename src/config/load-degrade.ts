@@ -1045,7 +1045,7 @@ export function sanitizeModelDisplayNamesForLoad(raw: unknown): void {
   }
 }
 
-/** Refresh the user cost-overlay registry from `config` and return it unchanged. */
+/** Refresh every config-derived registry (cost overlays, configured natives) and return `config` unchanged. */
 export function withRefreshedCostOverlays(config: OcxConfig): OcxConfig {
   refreshConfigDerivedRegistries(config);
   return config;

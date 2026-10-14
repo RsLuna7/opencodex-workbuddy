@@ -363,8 +363,9 @@ describe("sidecar on429 wiring", () => {
     expect(start).toBeGreaterThan(-1);
     const body = coreSource.slice(start, coreSource.indexOf("\n  };", start));
 
-    // Key-pool rotation stays first and unconditional: an API-key provider must behave exactly
-    // as it did before this hook existed.
+    // Key-pool rotation stays first for 429. A 402 skips it: WorkBuddy rewrites 6004/14018 to
+    // 402, and walking API keys on a billing refusal is the wrong roster.
+    expect(body).toContain("originalResponse.status !== 402");
     const keyPool = body.indexOf("rotateProviderTransportOn429(");
     const oauth = body.indexOf("rotateGenericOAuthAccountOn429(");
     expect(keyPool).toBeGreaterThan(-1);
@@ -373,6 +374,9 @@ describe("sidecar on429 wiring", () => {
     // The OAuth branch is gated on all three of: an account this request actually used, the
     // per-request bound, and the activation predicate. Dropping the bound lets a short
     // Retry-After spin; dropping the account binding lets a rotation cool an innocent account.
+    // Those three now live in the shared planGenericOAuthRotation decision rather than inline
+    // here, so the gate is asserted at its definition (see the test below); what this arm must
+    // still do is CONSULT that decision before minting anything.
     // The gate is a POSITIVE else-if, not an early return: an early bare return here made the
     // Anthropic arm below unreachable, because Anthropic never has a genericFailoverAccountId.
     expect(body).toContain("genericFailoverAccountId");
@@ -383,6 +387,8 @@ describe("sidecar on429 wiring", () => {
     // inside a web-search/image turn is terminal while the same 429 on the main path rotates.
     const anthropic = body.indexOf("rotateAnthropicAccountOnResponseForInstance(anthropicInstance,");
     expect(anthropic).toBeGreaterThan(oauth);
+    // A WorkBuddy 402 must not walk the Anthropic roster on the way to generic OAuth.
+    expect(body.indexOf("const genericRotation")).toBeLessThan(anthropic);
 
     // REACHABILITY, not mention. The first draft of this arm sat behind an unconditional early
     // return and was dead code that a grep for "anthropic" would have happily passed. Every gate
@@ -402,7 +408,7 @@ describe("sidecar on429 wiring", () => {
     expect(body).toContain("failoverAccountSnapshot(");
     // The helper must also receive the iteration-local request the loop retries with — a bare
     // `snapshot` call rebinds only the outer parsed, and the rotated Kiro context dies there.
-    expect(body).toContain("applyFailoverSnapshot(snapshot, retryParsed)");
+    expect(body).toContain("applyFailoverSnapshot(snapshot, retryParsed");
     expect(body).not.toContain("apiKey: snapshot.accessToken");
   });
 
@@ -416,8 +422,20 @@ describe("sidecar on429 wiring", () => {
     // helper, and the reasoning-replay/continuation scope through a second bind. Rebinding only
     // the outer parsed leaves the rotated bearer paired with the failed account's metadata.
     expect(body).toContain("retryParsed?: OcxParsedRequest");
-    expect(body).toContain("applyFailoverSnapshot(snapshot, retryParsed)");
+    expect(body).toContain("originalResponse?: Response");
+    expect(body).toContain("originalResponse ?? { status: 429 }");
+    expect(body).toContain("applyFailoverSnapshot(snapshot, retryParsed");
     expect(body).toContain("parsed: retryParsed");
+  });
+
+  test("both sidecar loops offer 402 to the shared on429 hook", () => {
+    // WorkBuddy 6004/14018 arrives as HTTP 402. A loop that only called on429 for 429 left the
+    // cooldown unwritten and the sticky account in place, so the same model kept 402-ing.
+    for (const owner of ["web-search/loop.ts", "images/loop.ts"] as const) {
+      const src = readFileSync(repoPath("src", ...owner.split("/")), "utf8");
+      expect(src).toMatch(/prepared\.response\.status === 429\s*\|\|\s*prepared\.response\.status === 402/);
+      expect(src).toMatch(/deps\.on429\(\s*[\s\S]*prepared\.response,/);
+    }
   });
 
   test("every rotation site applies the credential through the one shared helper", () => {
@@ -425,7 +443,7 @@ describe("sidecar on429 wiring", () => {
     // Kiro's routing metadata) live in exactly one place. A fourth rotation site that swaps the
     // bearer by hand would reintroduce the mixed-identity bug this helper exists to prevent.
     const snapshotUses = coreSource.match(/failoverAccountSnapshot\(/g) ?? [];
-    const helperUses = coreSource.match(/applyFailoverSnapshot\(snapshot(?:, (?:next|retry)Parsed)?\)/g) ?? [];
+    const helperUses = coreSource.match(/applyFailoverSnapshot\(snapshot(?:,\s*[^)]*)?\)/g) ?? [];
     // Ten includes Antigravity auth rotation, Kiro branches, native passthrough, the
     // Antigravity 403 verify-account arm, which replays through the same snapshot helper
     // so the rotated bearer keeps its account-matched project, and the web-search sidecar's
@@ -485,7 +503,7 @@ describe("sidecar on429 wiring", () => {
     const armStart = coreSource.indexOf("} else {", kiroArm);
     const armEnd = coreSource.indexOf('rebuildAndRefetch("oauth-account-429"', armStart);
     const arm = coreSource.slice(armStart, armEnd);
-    const applied = arm.indexOf("applyFailoverSnapshot(snapshot)");
+    const applied = arm.indexOf("applyFailoverSnapshot(snapshot, parsed");
     const rebound = arm.indexOf("bindRouteReasoningReplayScope({", applied);
 
     expect(armStart).toBeGreaterThan(kiroArm);
@@ -582,6 +600,10 @@ describe("sidecar on429 wiring", () => {
     // Adding a recovery site means deciding, deliberately, which rotators it needs and
     // updating the matching number. That decision is the thing this test exists to force.
     expect(counts.generic).toBe(5);
+    // Every generic refusal site asks the ONE shared planner -- that is what keeps them from
+    // drifting apart the way the continuation loop once did (#3495). Five mint-and-apply sites
+    // plus the planner's own definition.
+    expect((coreSource.match(/planGenericOAuthRotation\(/g) ?? []).length).toBe(6);
     expect(counts.anthropic).toBe(3);
     expect(counts.key).toBe(7);
   });
@@ -632,10 +654,18 @@ describe("sidecar on429 wiring", () => {
 
     // Kiro routing metadata still travels with its own token.
     expect(body).toContain("_kiroAuthContext");
-    // ...and reaches the object actually retried. The terminal-guard continuation dispatches a
-    // shallow clone, so writing only the outer request pairs the rotated bearer with the failed
-    // account's region/profile.
-    expect(coreSource).toContain("applyFailoverSnapshot(snapshot, nextParsed)");
+    expect(body).toContain("_codebuddyAuthContext");
+   // ...and reaches the object actually retried. The terminal-guard continuation dispatches a
+   // shallow clone, so writing only the outer request pairs the rotated bearer with the failed
+   expect(coreSource).toContain("applyFailoverSnapshot(snapshot, retryParsed");
+    // account's region/profile. WorkBuddy 6004 reaches that call through the continuation's own
+    // arm, which passes the terminal-guard clone as the retry request.
+    expect(coreSource).toContain("applyFailoverSnapshot(snapshot, nextParsed");
+    // 402 rotation must recover the quota hint from the body. WeakMap-only lookup
+    // silently no-ops after any Response clone, which is how a two-account WorkBuddy
+    // install returned the 402 to Codex instead of retrying the spare account.
+    expect(coreSource).toContain("recoverCodebuddyFailoverHint(");
+    expect(coreSource).not.toMatch(/getCodebuddyFailoverHint\(response\)/);
   });
 
   test("pre-dispatch selection replaces the CCA project instead of inheriting one", () => {
@@ -656,10 +686,13 @@ describe("sidecar on429 wiring", () => {
     // an ordinary stored state.
     expect(region).toContain("usedPreferredAccount = false");
     expect(region).not.toContain("has no Cloud Code Assist project");
-    // Both fallbacks — a project-less account and an unresolvable one — must reach the SAME
-    // active-account resolution, so neither can dispatch on a half-applied identity.
+    // A project-less or unresolvable preference returns to active-account resolution. A
+    // WorkBuddy cooldown preference uses a request-local credential only after the saved
+    // selection revision is checked; a concurrent switch returns 409 instead of sending with
+    // a half-applied identity.
     const fallbacks = region.match(/usedPreferredAccount = false;/g) ?? [];
     expect(fallbacks.length).toBe(2);
+    expect(region).toContain("transientWorkbuddyAlternate");
     expect(region).toContain("forgetGenericFailoverRoster(route.providerName)");
   });
 });

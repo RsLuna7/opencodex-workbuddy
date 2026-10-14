@@ -25,7 +25,7 @@
 }
 
 .provider-catalog-tab.active {
-  color: var(--fg);
+  color: var(--text);
   border-bottom-color: var(--accent);
 }
 
@@ -102,7 +102,7 @@
    the rule so the eye reads "FREE 1 ————" as one unit. */
 .provider-catalog-group-count {
   font-variant-numeric: tabular-nums;
-  font-weight: var(--weight-normal, 400);
+  font-weight: var(--weight-regular);
   letter-spacing: 0;
   text-transform: none;
   opacity: 0.75;

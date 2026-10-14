@@ -73,7 +73,7 @@
 }
 
 .pws-dashboard-card--ok .pws-dashboard-card-count { color: var(--green, #22c55e); }
-.pws-dashboard-card--warn .pws-dashboard-card-count { color: var(--yellow, #eab308); }
+.pws-dashboard-card--warn .pws-dashboard-card-count { color: var(--amber); }
 .pws-dashboard-card--muted .pws-dashboard-card-count { color: var(--fg-muted, #888); }
 
 .pws-dashboard-card-label {
@@ -112,15 +112,15 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  color: var(--yellow, #eab308);
+  color: var(--amber);
   text-transform: none;
   font-size: 0.82rem;
   letter-spacing: 0;
 }
 
 .pws-dashboard-row--attention {
-  border-color: color-mix(in srgb, var(--yellow, #eab308) 40%, var(--border));
-  background: color-mix(in srgb, var(--yellow, #eab308) 8%, var(--bg-secondary, var(--bg)));
+  border-color: color-mix(in srgb, var(--amber) 40%, var(--border));
+  background: color-mix(in srgb, var(--amber) 8%, var(--bg-secondary, var(--bg)));
 }
 
 /* Clickable provider rows */
@@ -148,7 +148,7 @@
 }
 
 .pws-dashboard-row:hover {
-  background: var(--bg-hover, rgba(128, 128, 128, 0.08));
+  background: var(--hover);
 }
 
 .pws-dashboard-row-icon {
@@ -206,6 +206,7 @@
 
 .pws-capacity-label,
 .pws-capacity-recovery,
+.pws-capacity-credits,
 .pws-capacity-incomplete {
   font-size: 0.7rem;
 }
@@ -221,6 +222,26 @@
   margin-top: 8px;
   padding-top: 7px;
   border-top: 1px solid var(--border-soft);
+}
+
+.pws-capacity-credits {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 12px;
+  row-gap: 2px;
+  align-items: baseline;
+  color: var(--fg-muted, #888);
+}
+
+.pws-capacity-credits strong {
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.pws-capacity-credits-expires {
+  grid-column: 2;
+  justify-self: end;
+  text-align: right;
 }
 
 .pws-capacity-recovery {
@@ -253,6 +274,17 @@
   .pws-capacity-recovery strong {
     margin-left: 0;
     white-space: normal;
+  }
+
+  .pws-capacity-credits {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pws-capacity-credits strong,
+  .pws-capacity-credits-expires {
+    justify-self: start;
+    white-space: normal;
+    text-align: start;
   }
 }
 

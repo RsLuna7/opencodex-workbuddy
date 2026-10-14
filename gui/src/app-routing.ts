@@ -11,6 +11,7 @@ export type Page =
   | "advisor"
   | "logs"
   | "usage"
+  | "insights"
   | "storage"
   | "remote"
   | "remote-workspace"
@@ -27,6 +28,7 @@ export const VALID_PAGES = new Set<Page>([
   "advisor",
   "logs",
   "usage",
+  "insights",
   "storage",
   "remote",
   "remote-workspace",

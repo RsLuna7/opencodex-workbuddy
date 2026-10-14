@@ -359,6 +359,18 @@ describe("modular Responses model-family forwarding", () => {
     expect(source).toContain("preferredInitialAccount(config, route.providerName, Date.now(), route.modelId)");
   });
 
+  // The routed model must reach the cooldown store, or an Antigravity 429 cools the whole
+  // account instead of the gem/cla family that actually refused. It now travels through the
+  // shared plan, which all five sites consult, so the property is asserted where it is decided
+  // plus once per site for the wiring itself.
+  test("the shared rotation plan forwards the routed model", () => {
+    const source = readFileSync(repoPath("src/server/responses", "request-transport.ts"), "utf8");
+    expect(source).toContain("preferredInitialAccount(config, route.providerName, Date.now(), route.modelId)");
+    // A bare 429 keeps upstream's own target shape -- the routed model id, which the store
+    // reads as a quota family where the provider has one.
+    expect(source.replace(/\s+/g, " ")).toContain(": route.modelId,");
+  });
+
   for (const [owner, retryAfter] of [
     ["passthrough-dispatch.ts", 'upstreamResponse.headers.get("retry-after")'],
     ["adapter-dispatch.ts", 'upstreamResponse.headers.get("retry-after")'],
@@ -366,15 +378,15 @@ describe("modular Responses model-family forwarding", () => {
     ["sidecar-execution.ts", "retryAfter"],
     ["run-turn-execution.ts", "null"],
   ] as const) {
-    test(owner + " forwards the routed model on account rotation", () => {
+    test(owner + " rotates through the shared plan that carries the routed model", () => {
       const source = readFileSync(repoPath("src/server/responses", owner), "utf8");
       expect(source.match(/\brotateGenericOAuthAccountOn429\s*\(/g)).toHaveLength(1);
-      expect(source.replace(/\s+/g, " ")).toContain(
-        "rotateGenericOAuthAccountOn429( config, route.providerName, "
-          + "transportState.genericFailoverAccountId, " + retryAfter
-          + ", Date.now(), route.modelId, )",
-      );
+      const flat = source.replace(/\s+/g, " ");
+      // Both the account to cool and the target (model scope / family) come from the ONE
+      // plan, so a site cannot rotate on a stale account or drop the routed model.
+      expect(flat).toContain("rotateGenericOAuthAccountOn429( config, route.providerName, "
+        + "genericRotation.failedAccountId, " + retryAfter
+        + ", Date.now(), genericRotation.target, )");
     });
   }
 });
-

@@ -723,12 +723,13 @@ export function catalogHintsFromModelsApiItem(providerName: string, item: Provid
       // already resolving through any recognized field retain their existing window.
       item.context_window,
     );
-  const maxInputTokens = positiveSafeInteger(limits?.max_input_tokens, item.max_input_tokens);
+  const maxInputTokens = positiveSafeInteger(limits?.max_input_tokens, item.max_input_tokens, item.maxInputTokens);
   const maxOutputTokens = positiveSafeInteger(
     capabilityRecord?.max_output_tokens,
     limits?.max_output_tokens,
     metadata?.max_output_tokens,
     item.max_output_tokens,
+    item.maxOutputTokens,
   );
   // Some OpenAI-compatible catalogs expose the selectable ladder under
   // `reasoning_parameters.efforts` instead of the older `reasoning_efforts` key.
@@ -753,7 +754,15 @@ export function catalogHintsFromModelsApiItem(providerName: string, item: Provid
         : [])
       : undefined;
   const capabilities = modelCapabilities(item);
-  const inputModalities = modelInputModalities(item, capabilities);
+  const inputModalities = modelInputModalities(item, capabilities)
+    ?? (item.supportsImages === true ? ["text", "image"]
+      : item.supportsImages === false ? ["text"]
+        : undefined);
+  // A display name is only useful when it actually differs from the id; echoing the id
+  // would just pin the picker label to a slug the provider may rename.
+  const displayName = typeof item.name === "string" && item.name.trim() && item.name.trim() !== item.id
+    ? item.name.trim()
+    : undefined;
   const pricingStatus = discoveredPricingStatus(item);
   return {
     ...(contextWindow && contextWindow > 0 ? { contextWindow } : {}),
@@ -762,6 +771,7 @@ export function catalogHintsFromModelsApiItem(providerName: string, item: Provid
     ...(reasoningEfforts !== undefined ? { reasoningEfforts } : {}),
     ...(inputModalities ? { inputModalities } : {}),
     ...(capabilities ? { capabilities } : {}),
+    ...(displayName ? { displayName } : {}),
     // Omitted when the classification is "unknown", following this function's existing
     // contract that an unknown property is absent rather than present-and-empty. Callers
     // that need to tell "provider published no prices" from "this build does not classify"

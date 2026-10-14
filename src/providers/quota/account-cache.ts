@@ -14,7 +14,8 @@ import { replaceCachedProviderQuotas } from "../quota-routing-cache";
 import { getProviderRegistryEntry } from "../registry";
 import { getProviderQuotaReportCache, hasQuotaRows, routingEvidence, setProviderQuotaReportCache } from "./report-cache";
 import { isCanonicalCommandCodeBaseUrl, isCanonicalKimiCodeBaseUrl } from "./vendor-probes-key";
-import type { AccountQuotaMode, ProviderQuota, ProviderQuotaWindow, QuotaFailureCode } from "../quota-types";
+import { isCanonicalWorkbuddyChatBase } from "../../oauth/codebuddy-hosts";
+import type { AccountQuotaMode, ProviderQuota, ProviderQuotaWindow, QuotaFailureCode, WorkbuddyAccountActivity } from "../quota-types";
 import type { OcxConfig, OcxProviderConfig } from "../../types";
 
 /** Match oauth/index REFRESH_SKEW_MS — use stored access without refresh when still fresh. */
@@ -40,6 +41,7 @@ export type AccountQuotaCacheEntry = {
   /** Private passive Anthropic ownership fence; not serialized with quota bars. */
   anthropicCredentialGeneration?: string;
   isCurrent?: () => boolean;
+  workbuddy?: WorkbuddyAccountActivity;
 };
 /** Expired measurements become unknown; missing reset evidence never implies a fresh allowance. */
 export function normalizeAnthropicQuota(quota: ProviderQuota | null | undefined, now: number): ProviderQuota | null {
@@ -190,6 +192,7 @@ export interface ProviderAccountQuota {
   quotaFailure?: QuotaFailureCode;
   quotaFailureIsCurrent?: () => boolean;
   isCurrent?: () => boolean;
+  workbuddy?: WorkbuddyAccountActivity;
 }
 
 /** Providers whose per-account quota can be probed. Extend as other OAuth APIs are covered. */
@@ -200,7 +203,7 @@ export function supportsPerAccountQuota(provider: string): boolean {
 
 export function explicitAccountReader(provider: string): boolean {
   return provider === "xai" || provider === "cursor" || provider === "kimi" || provider === "command-code"
-    || provider === "devin";
+    || provider === "devin" || provider === "workbuddy";
 }
 
 export function providerOAuthAccountQuotaMode(provider: string): AccountQuotaMode {
@@ -550,6 +553,7 @@ export function explicitQuotaDestination(provider: string, config: OcxProviderCo
   if (config.disabled === true || config.authMode !== "oauth") return false;
   if (provider === "kimi") return isCanonicalKimiCodeBaseUrl(config.baseUrl);
   if (provider === "command-code") return isCanonicalCommandCodeBaseUrl(config.baseUrl);
+  if (provider === "workbuddy") return isCanonicalWorkbuddyChatBase(config.baseUrl);
   // These readers use fixed canonical billing origins, never config.baseUrl. Devin reads
   // the credential's own allowlisted api-server host instead (fetchDevinQuota revalidates it).
   return provider === "xai" || provider === "cursor" || provider === "devin";

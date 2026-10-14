@@ -45,6 +45,9 @@ import { antigravityAccountSupportsModel } from "../providers/antigravity-accoun
 import { ACCOUNT_QUOTA_TTL_MS } from "../providers/quota-wire";
 import { sweepExpiredOnWrite } from "../lib/state-store-sweeper";
 import { subscribeOAuthAccountPauseChanges } from "../lib/account-selection-events";
+import { CODEBUDDY_PROVIDER_ID } from "./codebuddy";
+import { isWorkbuddyPoolCooled, noteWorkbuddyPoolCooldown, pickWorkbuddyAccount } from "./workbuddy-pool";
+import { isWorkbuddyWafIpBlocked } from "./workbuddy-waf";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 
 /** Cap same-request rotations so a short Retry-After cannot spin. Mirrors the Anthropic bound. */
@@ -57,6 +60,33 @@ export const GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST = 3;
  * into a pool-wide 429 storm.
  */
 export const GENERIC_OAUTH_MAX_ACCOUNTS_PER_REQUEST = 6;
+
+export type GenericRotateTarget = string | null | {
+  scope: "account" | "model";
+  modelId?: string;
+  quotaExhausted?: boolean;
+  resetAt?: number;
+};
+
+export function normalizeGenericFailoverModelId(providerName: string, modelId?: string): string | undefined {
+  const trimmed = modelId?.trim();
+  if (!trimmed) return undefined;
+  const prefix = `${providerName}/`;
+  return trimmed.toLowerCase().startsWith(prefix.toLowerCase()) ? trimmed.slice(prefix.length) : trimmed;
+}
+
+export function shouldAttemptGenericOAuthFailover(
+  config: OcxConfig, providerName: string, status: number, accountId: string | null | undefined,
+  failovers: number, quotaHint?: { scope: "account" | "model" } | null,
+  maxFailovers = GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST,
+): boolean {
+  if (!accountId || failovers >= maxFailovers
+    || !isGenericOAuthFailoverEnabled(config, providerName)) return false;
+  if (status === 429) return true;
+  if (providerName !== CODEBUDDY_PROVIDER_ID) return false;
+  if (status === 403) return !isWorkbuddyWafIpBlocked();
+  return status === 402 && !!quotaHint;
+}
 
 const DEFAULT_COOLDOWN_MS = 60_000;
 
@@ -138,6 +168,36 @@ function isCooled(provider: string, accountId: string, now: number, family?: Quo
     return false;
   }
   return true;
+}
+
+/** Record an explicit account or model cooldown without rotating a credential. */
+export function applyGenericFailoverCooldown(opts: {
+  providerName: string;
+  accountId: string;
+  cooldownMs: number;
+  now?: number;
+  modelId?: string;
+  source?: AccountHealth["cooldownSource"];
+}): void {
+  const now = opts.now ?? Date.now();
+  const until = now + Math.max(opts.cooldownMs, 1);
+  if (opts.providerName === CODEBUDDY_PROVIDER_ID) {
+    noteWorkbuddyPoolCooldown({ accountId: opts.accountId, modelId: opts.modelId, untilMs: until, now });
+    return;
+  }
+  const family = opts.modelId ? classifyModelFamilyForQuota(opts.modelId) : undefined;
+  health.set(healthKey(opts.providerName, opts.accountId, family), {
+    cooldownUntil: until,
+    cooldownSource: opts.source ?? "default",
+  });
+}
+
+export function isGenericFailoverCooled(
+  providerName: string, accountId: string, now = Date.now(), modelId?: string,
+): boolean {
+  if (providerName === CODEBUDDY_PROVIDER_ID) return isWorkbuddyPoolCooled(accountId, modelId, now);
+  return isCooled(providerName, accountId, now, modelId ? classifyModelFamilyForQuota(modelId) : undefined)
+    || isCooled(providerName, accountId, now);
 }
 
 export type KiroSkipReason = "paused" | "needs_reauth" | "suspended" | "cooldown" | "quota_exhausted";
@@ -481,10 +541,28 @@ export function rotateGenericOAuthAccountOn429(
   failedAccountId: string,
   retryAfterHeader: string | null | undefined,
   now = Date.now(),
-  requestedModelId?: string | null,
+  requestedModelId?: GenericRotateTarget,
 ): string | null {
+  if (providerName === CODEBUDDY_PROVIDER_ID) {
+    if (!isGenericOAuthFailoverEnabled(config, providerName)) return null;
+    const set = getAccountSet(providerName);
+    if (!set || set.accounts.length < 2) return null;
+    const target = typeof requestedModelId === "object" && requestedModelId !== null ? requestedModelId : null;
+    const modelId = target?.modelId ?? (typeof requestedModelId === "string" ? requestedModelId : undefined);
+    const parsed = parseRetryAfterMs(retryAfterHeader, now, { preserveImmediate: true, preserveServerDelay: true });
+    const untilMs = target?.resetAt ?? now + (parsed ?? (target?.quotaExhausted ? 24 * 60 * 60_000 : DEFAULT_COOLDOWN_MS));
+    noteWorkbuddyPoolCooldown({
+      accountId: failedAccountId,
+      modelId: target?.scope === "account" ? undefined : modelId,
+      untilMs,
+      now,
+      reason: target?.quotaExhausted ? "quota" : "rate-limit",
+    });
+    presence.delete(providerName);
+    return pickWorkbuddyAccount({ modelId, exclude: [failedAccountId], realmPeerAccountId: failedAccountId, now });
+  }
   return rotateGenericOAuthAccountOnRefusal(config, providerName, failedAccountId, "rate",
-    retryAfterHeader, now, requestedModelId);
+    retryAfterHeader, now, typeof requestedModelId === "string" ? requestedModelId : undefined);
 }
 
 /** Kiro adds account-scoped refusal classes; all other providers retain their 429 policy. */
@@ -635,6 +713,17 @@ export function preferredInitialAccount(
   now = Date.now(),
   requestedModelId?: string | null,
 ): string | null {
+  if (providerName === CODEBUDDY_PROVIDER_ID) {
+    const active = getAccountSet(providerName)?.activeAccountId;
+    if (active && isWorkbuddyPoolCooled(active, requestedModelId, now)) {
+      return pickWorkbuddyAccount({
+        modelId: requestedModelId,
+        exclude: [active],
+        realmPeerAccountId: active,
+        now,
+      });
+    }
+  }
   // The PROACTIVE predicate, not the reactive one: this steers a request upstream has not
   // refused, so `oauthAccountFailover.enabled: false` must still be able to refuse it.
   if (!isProactivePreferenceEnabled(config, providerName, now)) return null;

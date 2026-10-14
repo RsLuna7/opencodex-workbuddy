@@ -1,4 +1,5 @@
 import type { OcxComboTarget, OcxConfig } from "../types";
+import type { OcxComboTarget as ComboTarget } from "../types";
 import { getCachedProviderRoutingQuota } from "../providers/quota-routing-cache";
 import type { ProviderQuota, ProviderQuotaWindow } from "../providers/quota-types";
 import { sleepWithAbort } from "../lib/upstream-retry";
@@ -187,9 +188,9 @@ function smoothWeightedIndex(
     const target = targets[i]!;
     if (!eligible(target)) continue;
     const key = targetKey(target);
-    const score = (state.currentWeights.get(key) ?? 0) + target.weight;
+    const score = (state.currentWeights.get(key) ?? 0) + (target.weight ?? 1);
     state.currentWeights.set(key, score);
-    total += target.weight;
+    total += target.weight ?? 1;
     if (score > bestScore) {
       best = i;
       bestScore = score;

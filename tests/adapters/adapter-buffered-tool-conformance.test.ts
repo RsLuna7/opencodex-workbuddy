@@ -42,13 +42,17 @@ function providerFixture(adapterId: string, wire: AdapterWire): OcxProviderConfi
   };
   const baseUrl = adapterId === "mimo-free"
     ? "https://api.xiaomimimo.com/api/free-ai/openai/chat"
+    : adapterId === "workbuddy"
+      ? "https://copilot.tencent.com/v2"
+      : adapterId === "zai-plan"
+        ? "https://zcode.z.ai/api/v1/zcode-plan/anthropic"
     : adapterId === "azure" || adapterId === "azure-openai"
       ? "https://example.openai.azure.com/openai/v1"
       : baseUrls[wire];
   return {
     adapter: adapterId,
     baseUrl,
-    authMode: wire === "anthropic" || wire === "command-code" || wire === "zed" ? "oauth" : "key",
+    authMode: adapterId === "workbuddy" || wire === "anthropic" || wire === "command-code" || wire === "zed" ? "oauth" : "key",
     apiKey: wire === "kiro" ? "ksk_test" : "test-key",
     defaultMaxOutputTokens: 64_000,
     googleMode: "ai-studio",

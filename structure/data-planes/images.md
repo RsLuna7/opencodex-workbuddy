@@ -81,7 +81,9 @@ The shared Responses path follows the [bounded multipart recovery contract](../s
 selects a custom API-key `openai-responses` provider. Explicit selection fails closed when the
 provider is missing, disabled, registry-managed, incompatible, or lacks a usable key; it never
 falls through to another paid upstream. The relay accepts bounded JSON generation and edit requests,
-then forwards the decoded JSON without rewriting Codex's edit schema. Each paid Images POST receives
+then forwards the decoded JSON without rewriting Codex's edit schema. When `images.model` is a
+nonblank string, the OpenAI-family relay replaces only the outbound `model` field; xAI Imagine and
+Google fallback requests retain their own model choice. Each paid Images POST receives
 one upstream attempt; client cancellation aborts the upstream and pool-only failures update the
 existing account-health state. Unknown Images subpaths still reach the JSON `/v1/*` 404 guard.
 

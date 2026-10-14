@@ -49,6 +49,8 @@ export interface OAuthAccount {
 }
 
 const OAUTH_LABELS: Record<string, string> = {
+  workbuddy: "WorkBuddy",
+  codebuddy: "WorkBuddy",
   xai: "xAI (Grok)",
   anthropic: "Anthropic (Claude)",
   anthropic2: "Anthropic · Pool 2",

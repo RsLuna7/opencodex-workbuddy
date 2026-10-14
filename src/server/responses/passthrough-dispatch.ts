@@ -213,6 +213,7 @@ export async function preparePassthroughExchange(
     | "genericFailovers"
     | "genericFailoverLimit"
     | "applyFailoverSnapshot"
+    | "planGenericOAuthRotation"
     | "noteRoutedAttemptSend"
     | "selectionIsCurrent"
     | "requestBindings"
@@ -1455,16 +1456,14 @@ export async function preparePassthroughExchange(
 
     // Native Responses returns before the generic adapter's OAuth rotation loop. Keep
     // the same quorum, cooldown and request budget here, before any client bytes flow.
-   if (
-     upstreamResponse.status === 429
+   const genericRotation = (
+      (upstreamResponse.status === 429 || upstreamResponse.status === 402)
       // Not a provider rate limit when this proxy synthesized it for a refused reset
       // replay; rotating accounts on it would re-send an inference that may already
       // have run and would cool down an account that refused nothing.
       && !isNonReplayableResponse(upstreamResponse)
-     && transportState.genericFailoverAccountId
-      && transportState.genericFailovers < transportState.genericFailoverLimit
-      && isGenericOAuthFailoverEnabled(config, route.providerName)
-    ) {
+     ) ? await transportState.planGenericOAuthRotation(upstreamResponse) : null;
+   if (genericRotation) {
       // The roster cap above is one half of the bound; the request's shared budget is the
       // other. A refused hop leaves the real 429 -- body, Retry-After and any quota evidence
       // -- exactly as upstream sent it.
@@ -1477,17 +1476,17 @@ export async function preparePassthroughExchange(
         let transferred = false;
         try {
           const nextAccountId = rotateGenericOAuthAccountOn429(
-            config, route.providerName, transportState.genericFailoverAccountId,
+             config, route.providerName, genericRotation.failedAccountId,
             upstreamResponse.headers.get("retry-after"),
             Date.now(),
-            route.modelId,
+             genericRotation.target,
           );
           let snapshot: OAuthAccessSnapshot | undefined;
           if (nextAccountId) {
             try { snapshot = await failoverAccountSnapshot(route.providerName, nextAccountId); }
             catch { /* Keep the original 429 body readable when the next credential is unavailable. */ }
           }
-          if (snapshot && await applyFailoverSnapshot(snapshot)) {
+           if (snapshot && await applyFailoverSnapshot(snapshot, parsed, false, genericRotation.persistActive)) {
             transportState.genericFailovers += 1;
             route.provider = resolveProviderTransport(
               route.providerName, route.provider, parsed.options.promptCacheKey, transportState.sentOAuthSnapshot?.apiBaseUrl,
@@ -1522,7 +1521,7 @@ export async function preparePassthroughExchange(
         // The activation quorum ignores cooldowns; prove that the selector has a live alternate
         // before describing this as a recovery that only the shared request budget withheld.
         if (hasEligibleGenericOAuthFailoverTarget(
-          route.providerName, transportState.genericFailoverAccountId, Date.now(), route.modelId,
+          route.providerName, genericRotation.failedAccountId, Date.now(), route.modelId,
         )) noteAttemptRecoveryWithheld(logCtx.activeAttempt, "rotation-send-budget");
       }
     }

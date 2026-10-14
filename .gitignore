@@ -29,6 +29,7 @@ devlog/**/security-advisory-draft*
 # `mktemp -d` path, and nowhere else. Not devlog/, not a private repo. See the
 # "Security working notes" section of AGENTS.md.
 .tmp/
+.playwright-cli/
 .opencode/
 
 # Capability probes from the trusted-artifact directory check

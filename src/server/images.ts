@@ -6,9 +6,10 @@
  * ChatGPT bearer auth it uses for chat. Under Design B injection base_url IS this proxy, so
  * without a route the tool died on the /v1/* JSON-404 guard. Only an OpenAI-family upstream
  * can serve these endpoints — routed providers (Cursor, Kiro, Gemini, …) have no image
- * generation surface — so the handler relays the body verbatim to the ChatGPT forward
+ * generation surface — so the handler relays the body to the ChatGPT forward
  * provider, an OpenAI API-key provider, or an explicitly selected compatible custom provider and
- * passes the response through untouched:
+ * passes the response through untouched. `images.model` is the only body rewrite: Codex hardcodes
+ * `gpt-image-2`, and that optional field replaces the outbound `model` on OpenAI-family relays.
  * codex's images client parses `{created, data:[{b64_json}]}` strictly and Debug-prints
  * error bodies into the model-visible failure, so upstream errors must stay legible.
  */
@@ -55,6 +56,13 @@ import { codexAccountSelectionForTurn } from "./lifecycle";
 import { codexModelAvailabilityErrorResponse } from "./responses/codex-auth-error";
 
 export type ImagesEndpoint = "generations" | "edits";
+
+/** Replace the outbound Images API model only when explicitly configured. */
+export function applyImagesModelOverride(body: unknown, model: string | undefined): unknown {
+  const selected = model?.trim();
+  if (!selected || !body || typeof body !== "object" || Array.isArray(body)) return body;
+  return { ...(body as Record<string, unknown>), model: selected };
+}
 
 function assertImagesUpstreamAuthorization(headers: Headers, config: OcxConfig): void {
   const authorization = headers.get("authorization")?.trim() ?? "";
@@ -655,6 +663,7 @@ export async function handleImages(
   } catch (err) {
     return decodeRequestErrorResponse(err, "images");
   }
+  body = applyImagesModelOverride(body, config.images?.model);
   const model = (body as { model?: unknown } | null)?.model;
   if (typeof model === "string" && model) logCtx.model = model;
 

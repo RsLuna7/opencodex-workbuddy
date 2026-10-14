@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Accepted values for the per-provider upstream HTTP-version pin (#1668). Shared by the
  * zod load schema, the management write boundary (POST/PATCH), and the fetch runtime, so
  * a value that one boundary accepts can never be rejected by another.

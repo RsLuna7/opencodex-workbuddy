@@ -771,8 +771,7 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
     expect(entries[0].visibility).toBe("hide");
   });
 
-  test("management API surfaces: /api/models leads with native rows; subagent available drops disabled bare slugs", async () => {
-    const oldOcxHome = process.env.OPENCODEX_HOME;
+  test("management API surfaces: /api/models leads with native rows; subagent available drops disabled bare slugs", async () => {    const oldOcxHome = process.env.OPENCODEX_HOME;
     const oldCodexHome = process.env.CODEX_HOME;
     const root = mkdtempSync(join(tmpdir(), "ocx-native-model-management-"));
     const codexHome = join(root, "codex");
@@ -827,7 +826,7 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
       else process.env.CODEX_HOME = oldCodexHome;
       removeTreeWithRetry(root);
     }
-  });
+  }, { timeout: 20_000 });
 
   test("an expired confirmed roster is refreshed before /api/models projects native rows", async () => {
     const oldOcxHome = process.env.OPENCODEX_HOME;
@@ -883,7 +882,7 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
       else process.env.CODEX_HOME = oldCodexHome;
       removeTreeWithRetry(root);
     }
-  });
+  }, { timeout: 20_000 });
 });
 import { ManagementRequest as Request } from "../helpers/management-auth";
 

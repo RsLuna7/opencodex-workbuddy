@@ -63,6 +63,27 @@ describe("buildQuotaRows (WP070)", () => {
     expect(rows.map(r => r.label)).toEqual(["codexAuth.monthly", "Gem"]);
   });
 
+  test("points package end is not shown as a window reset", () => {
+    const expiresAt = 1_700_000_000_000;
+    const rows = buildQuotaRows(quota({
+      customWindows: [{ label: "WorkBuddy credits", percent: 87, resetAt: expiresAt }],
+      creditsUsd: {
+        used: 1300,
+        limit: 1500,
+        remaining: 200,
+        percent: 87,
+        unit: "points",
+        expiresAt,
+      },
+    }), null, t);
+    expect(rows).toEqual([{
+      customLabel: "WorkBuddy credits",
+      label: "quota.workbuddyCredits",
+      limitLabel: "quota.workbuddyCredits",
+      percent: 87,
+    }]);
+  });
+
   test("Kimi total subscription credits use the localized quota label", () => {
     const rows = buildQuotaRows(quota({
       customWindows: [{ label: "Total subscription credits", percent: 1 }],

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-02T18:30:00Z",
+  "title": "Design System: OpenCodex dashboard",
+  "extensions": {
+    "motion": [
+      {
+        "name": "insights-hover",
+        "value": "120ms",
+        "purpose": "Existing motion-fast token for visible control and chart hover states; transitions are removed for reduced motion."
+      }
+    ],
+    "breakpoints": [
+      { "name": "insights-summary-three-columns", "value": "900px" },
+      { "name": "insights-stacked-panels", "value": "650px" },
+      { "name": "insights-summary-two-columns", "value": "400px" }
+    ],
+    "shadows": [],
+    "rules": [
+      "Usage Insights breakpoints are container queries; the application shell keeps its existing viewport behavior.",
+      "Chart colors are scoped to .usage-insights and do not replace monochrome action colors.",
+      "Usage Insights panels use shared one-pixel borders and opaque surfaces without added shadows."
+    ]
+  },
+  "components": []
+}
