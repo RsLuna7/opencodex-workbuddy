@@ -71,7 +71,7 @@ host and port over a LAN IP or an alias.
 
 ## Dashboard layout
 
-The sidebar has eight rows, in order: **Dashboard**, **Connect**, **Codex**, **Providers**, **Models**, **Subagents**, **Usage & Logs**, and **Remote Link**. **Connect** opens the page headed **Connect**, with its tab strip ordered **Codex**, **Claude**, **Claude Desktop**, **Grok Build**, then the remaining integrations. Claude has no sub-tabs; it shows the Claude Code settings directly. Claude Desktop is a separate Connect tab at `#claude/desktop`. Connect has no section switcher. **Usage & Logs** opens Usage and groups Usage, Logs & Debug, and Storage with a pill-shaped section switcher. The last row, **Remote Link**, groups Remote Link (`#remote`) and Remote Workspace (`#remote-workspace`, when available) with the same switcher. **Codex** is the renamed **Codex Set** row; the preserved URLs include `#codex-set`, `#claude`, `#claude/code`, and `#claude/desktop`; the former `#claude/settings` bookmark opens Code. The former `#claude/account` bookmark redirects to `#providers?provider=anthropic&tab=accounts`. Startup (`#startup`) stays outside the sidebar.
+The sidebar has nine rows, in order: **Dashboard**, **Connect**, **Codex**, **Providers**, **Models**, **Subagents**, **Advisor**, **Usage & Logs**, and **Remote Link**. **Connect** opens the page headed **Connect**, with its tab strip ordered **Codex**, **Claude**, **Claude Desktop**, **Grok Build**, then the remaining integrations. Claude has no sub-tabs; it shows the Claude Code settings directly. Claude Desktop is a separate Connect tab at `#claude/desktop`. Connect has no section switcher. **Usage & Logs** opens Usage and groups Usage, Usage insights, Logs & Debug, and Storage with a pill-shaped section switcher. The last row, **Remote Link**, groups Remote Link (`#remote`) and Remote Workspace (`#remote-workspace`, when available) with the same switcher. **Codex** is the renamed **Codex Set** row; the preserved URLs include `#codex-set`, `#claude`, `#claude/code`, and `#claude/desktop`; the former `#claude/settings` bookmark opens Code. The former `#claude/account` bookmark redirects to `#providers?provider=anthropic&tab=accounts`. Startup (`#startup`) stays outside the sidebar.
 
 Responses first-output timing includes streamed function arguments and custom-tool input, as well
 as text and reasoning. A tool-only turn can therefore have a first-output time even without prose.
@@ -456,6 +456,12 @@ While browser authentication is pending, the dashboard does not recommend restar
 ### Usage chart keyboard and touch controls
 
 Usage heatmap days have one Tab entry point. Use Up/Down for adjacent days and Left/Right for adjacent weeks. Weekly bars expose the same day details on keyboard focus, pointer hover, or touch. Day labels include the date, request count, and token count; tooltip overlays stay within the viewport.
+
+### Usage insights
+
+Open **Usage & Logs → Usage insights** in the sidebar switcher, or visit `/#insights`, to explore requests recorded by the proxy. Filter by today, 7 days, 30 days, or all history, and by all traffic, Codex, Claude, or Grok. Connected mode can show this machine or the whole hub. The page refreshes while visible and offers a manual refresh and CSV export.
+
+The page separates measured token use and available API list-price estimates from unknown values. Selecting a trend bar or calendar day shows that day's model and provider breakdown; selecting it again returns to the whole period. All-history totals cover the readable ledger, while daily charts and CSV cover at most the latest 366 days. These estimates are not a billing receipt.
 
 ### Claude
 

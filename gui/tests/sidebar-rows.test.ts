@@ -37,7 +37,7 @@ test("the sidebar is nine group rows, in order, owning every sidebar page once",
     subagents: ["subagents"],
     advisor: ["advisor"],
     // Usage leads, so the row opens Usage first.
-    "usage-logs": ["usage", "logs", "storage"],
+    "usage-logs": ["usage", "insights", "logs", "storage"],
     // Last row, by request.
     remote: ["remote", "remote-workspace"],
   });

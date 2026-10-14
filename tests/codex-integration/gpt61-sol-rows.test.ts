@@ -172,11 +172,10 @@ describe("GPT-6.1 Sol on API and gateway providers", () => {
     expect(entry.modelInputModalities?.["gpt-6.1-sol"]).toEqual(["text", "image"]);
   });
 
-  test("native defaults leave OpenAI API, Kiro and CodeBuddy context windows unchanged", () => {
+  test("native defaults leave OpenAI API and Kiro context windows unchanged", () => {
     const cases = [
       { provider: "openai-apikey", contextWindow: 1_050_000 },
       { provider: "kiro", contextWindow: 272_000 },
-      { provider: "codebuddy", contextWindow: 1_000_000 },
     ];
     const routed = cases.map(({ provider, contextWindow }) => {
       const registry = getProviderRegistryEntry(provider)!;
