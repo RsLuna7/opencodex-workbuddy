@@ -1,6 +1,6 @@
 # Providers And Adapters
 
-WorkBuddy access-token validation stays on an explicitly selected realm. Realm-less legacy imports may probe the canonical CN and Global sites; account rotation remains within the resolved realm.
+WorkBuddy access-token validation stays on an explicitly selected realm. Realm-less legacy imports may probe the canonical CN and Global sites; account rotation remains within the resolved realm. `src/oauth/codebuddy-payload.ts` normalizes fixed Claude Code, Codex, and DeepSeek Harness prompt markers in outbound chat bodies before the WorkBuddy adapter sends them.
 
 OrcaRouter key exchange uses the shared raw-byte reader before returning a durable key. Its
 64 KiB response ceiling, single 30-second header/body deadline, and cancellation behavior follow

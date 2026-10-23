@@ -49,6 +49,9 @@ Managed DSH support has a compatibility floor of **DSH 0.1.0-rc.6**. OpenCodex o
 fragment, and Restore puts back a recorded snapshot. DSH hot reloads provider changes. These
 operations do not change the user's default model or the native `deepseek-official` provider.
 The managed DSH integration is currently loopback-only and never writes a real credential.
+For WorkBuddy models, opencodex normalizes DSH's fixed client identity, runtime context, and Web UI lines before relay. If
+WorkBuddy still returns `11128` / `unapproved channel`, the request reached the provider and
+failed its channel validation; changing DSH's DeepSeek API address will not resolve it.
 
 MiniMax Code follows `MINIMAX_DATA_DIR`, then `MAVIS_DATA_DIR`, before falling
 back to `~/.minimax`. Its managed block owns only `custom_provider.opencodex`.
