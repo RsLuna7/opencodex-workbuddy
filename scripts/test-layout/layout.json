@@ -1867,6 +1867,7 @@
     "workbuddy-account-pool.test.ts": "oauth",
     "workbuddy-alias.test.ts": "providers",
     "workbuddy-checkin.test.ts": "oauth",
+    "workbuddy-chat-headers.test.ts": "oauth",
     "workbuddy-credits.test.ts": "oauth",
     "workbuddy-growth.test.ts": "oauth",
     "workbuddy-hardening.test.ts": "oauth",

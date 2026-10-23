@@ -141,6 +141,15 @@ export interface AdapterRequest {
     convertedMuseToolNameAliases?: ReadonlyMap<string, string>;
     /** Releases observation of a serialized request body after its final fetch attempt settles. */
     releaseBodyObservation?: () => void;
+    /**
+     * Client conversation this request belongs to, when the inbound request named one.
+     *
+     * Distinct from the wire `X-Conversation-ID`: the WorkBuddy/CodeBuddy adapter always sends
+     * that header (the global site refuses a request without it), and mints a fresh one when the
+     * caller named no conversation. Binding account stickiness on a per-request minted id would
+     * create one session entry per request, so the adapter reports the real seed here instead.
+     */
+    workbuddySessionKey?: string;
     /** Exact reasoning parameter emitted by the adapter, for request-log diagnostics only. */
     reasoningLog?:
       | {

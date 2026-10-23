@@ -70,8 +70,18 @@ function forceStreamBody(raw: string): string {
   return JSON.stringify(body);
 }
 
+/**
+ * Conversation identity for the WorkBuddy wire.
+ *
+ * `X-Conversation-ID` is mandatory on the global site (2026-10-23 probe: without it the
+ * upstream answers 400/11-128 "request illegal"; with it, 200). The header helper hashes
+ * a caller-supplied `conversationId` into a desktop-shaped UUID, so this only has to pick
+ * the seed: an explicit prompt cache key first, then the client thread, then the persisted
+ * continuation cursor. Without a seed the helper mints one per request.
+ */
 function conversationMeta(parsed: OcxParsedRequest): { conversationId?: string; conversationRequestId?: string } {
   const conversationId = parsed.options.promptCacheKey?.trim()
+    || parsed._clientThreadId?.trim()
     || parsed._providerContinuation?.cursor?.conversationId?.trim();
   return conversationId ? { conversationId, conversationRequestId: conversationId } : {};
 }
@@ -223,7 +233,7 @@ export function createCodebuddyAdapter(provider: OcxProviderConfig): ProviderAda
       const executor = ctx?.executor ?? workbuddyFetch;
       const uid = request.headers["X-User-Id"] ?? request.headers["x-user-id"];
       const accountId = workbuddyAccountIdForUid(uid);
-      const sessionKey = request.headers["X-Conversation-ID"] ?? request.headers["x-conversation-id"];
+      const sessionKey = request.workbuddySessionKey;
       if (accountId) acquireWorkbuddyLease(accountId);
       try {
         const response = await executor(request.url, {
@@ -276,11 +286,13 @@ export function createCodebuddyAdapter(provider: OcxProviderConfig): ProviderAda
         ensureSystem: realm === "global",
         sanitize: true,
       });
+      const meta = conversationMeta(parsed);
       return {
         ...baseReq,
         url: workbuddyChatCompletionsUrl(realm),
         headers,
         body,
+        ...(meta.conversationId ? { workbuddySessionKey: meta.conversationId } : {}),
       };
     },
 
