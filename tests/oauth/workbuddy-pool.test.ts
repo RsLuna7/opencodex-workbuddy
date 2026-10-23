@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -14,6 +14,7 @@ import {
   acquireWorkbuddyLease,
   bindWorkbuddySession,
   flushWorkbuddyPool,
+  flushWorkbuddyPoolQuietly,
   isWorkbuddyPoolCooled,
   noteWorkbuddyPoolCooldown,
   noteWorkbuddyPoolFailure,
@@ -177,5 +178,17 @@ describe("workbuddy pool pick", () => {
     const ids = await seed();
     expect(preferredInitialAccount(config(), "workbuddy", Date.now(), "hy3")).toBeNull();
     expect(ids[0]).toBeDefined();
+  });
+  test("a failed timer-side flush is swallowed and the state is retried", async () => {
+    const ids = await seed();
+    const now = Date.now();
+    // A directory at the pool path makes the atomic write fail like an icacls stall does.
+    mkdirSync(workbuddyPoolPath(), { recursive: true });
+    noteWorkbuddyPoolCooldown({ accountId: ids[0]!, modelId: "hy3", untilMs: now + 60_000, now });
+    expect(() => flushWorkbuddyPool()).toThrow();
+    expect(flushWorkbuddyPoolQuietly()).toBe(false);
+    rmSync(workbuddyPoolPath(), { recursive: true, force: true });
+    expect(flushWorkbuddyPoolQuietly()).toBe(true);
+    expect(loadWorkbuddyPoolFile(now).accounts[ids[0]!]?.modelCooldowns?.hy3?.until).toBe(now + 60_000);
   });
 });

@@ -176,7 +176,25 @@ export function flushWorkbuddyPool(): void {
   }
   if (!dirty) return;
   dirty = false;
-  saveWorkbuddyPoolFile(snapshotFile());
+  try {
+    saveWorkbuddyPoolFile(snapshotFile());
+  } catch (error) {
+    // Keep the state flushable: the next markDirty() or shutdown flush retries.
+    dirty = true;
+    throw error;
+  }
+}
+
+/** Timer-side flush: a failed save (e.g. a Windows icacls stall) must not become an uncaughtException. */
+export function flushWorkbuddyPoolQuietly(): boolean {
+  try {
+    flushWorkbuddyPool();
+    return true;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(`[workbuddy-pool] persist failed, will retry on next change: ${reason}`);
+    return false;
+  }
 }
 
 function markDirty(): void {
@@ -184,7 +202,7 @@ function markDirty(): void {
   if (flushTimer) return;
   flushTimer = setTimeout(() => {
     flushTimer = null;
-    flushWorkbuddyPool();
+    flushWorkbuddyPoolQuietly();
   }, FLUSH_DEBOUNCE_MS);
 }
 
