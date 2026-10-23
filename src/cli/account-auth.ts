@@ -223,6 +223,12 @@ async function login(argv: string[], deps: RuntimeApiDeps): Promise<number | voi
   // A malformed leftover may contain pasted authorization input, even inside an
   // unknown flag. New login parsing reports only a fixed usage diagnostic.
   if (args.length) throw new CliUsageError("Unexpected arguments or repeated options", USAGE);
+  if (realmRaw !== undefined) {
+    if (provider !== "workbuddy" || (realmRaw !== "cn" && realmRaw !== "global")) {
+      throw new CliUsageError("--realm requires workbuddy and cn or global", USAGE);
+    }
+    if (reauth) throw new CliUsageError("--realm is only valid for a fresh WorkBuddy login", USAGE);
+  }
   // kimi, nous, and github-copilot are already device flows, so --device is a
   // true statement about them and is accepted as a no-op rather than an error.
   // Anything else has no device grant at all and must fail loudly.
@@ -328,7 +334,7 @@ async function login(argv: string[], deps: RuntimeApiDeps): Promise<number | voi
 
   const start = publicLoginStart(await runtimeRequest<unknown>("/api/oauth/login", {
     method: "POST", redirect: "error",
-    body: JSON.stringify({ provider, addAccount: addAccount ?? !reauth, ...(openBrowser === undefined ? {} : { openBrowser }), ...(reauth && id ? { accountId: id, reauth: true } : {}) }),
+    body: JSON.stringify({ provider, addAccount: addAccount ?? !reauth, ...(realmRaw ? { realm: realmRaw } : {}), ...(openBrowser === undefined ? {} : { openBrowser }), ...(reauth && id ? { accountId: id, reauth: true } : {}) }),
   }, pinned));
   if (!wantsJson) {
     writeLoginInstructions([

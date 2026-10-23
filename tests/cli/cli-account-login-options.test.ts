@@ -115,6 +115,23 @@ describe("login flow-specific options", () => {
       expect(f.calls[0]?.body).toEqual({ ...(provider === "anthropic" ? { provider, addAccount: true } : {}), ...(browser ? { openBrowser: browser === "on" } : {}) });
     });
   }
+  for (const realm of ["cn", "global"]) test(`workbuddy --realm ${realm} reaches the login request`, async () => {
+    const f = fixture();
+    expect(await handleAccountAuthCommand("login", ["workbuddy", "--realm", realm, "--no-wait", "--json"], f.deps)).toBe(0);
+    expect(f.calls[0]?.body).toEqual({ provider: "workbuddy", addAccount: true, realm });
+  });
+  test("workbuddy without --realm keeps its original payload", async () => {
+    const f = fixture();
+    expect(await handleAccountAuthCommand("login", ["workbuddy", "--no-wait", "--json"], f.deps)).toBe(0);
+    expect(f.calls[0]?.body).toEqual({ provider: "workbuddy", addAccount: true });
+  });
+  for (const args of [["workbuddy", "--realm", "eu"], ["anthropic", "--realm", "global"], ["workbuddy", "--realm", "global", "--reauth", "--id", "a1"]]) {
+    test(`rejects ${args.join(" ")} before any request`, async () => {
+      const f = fixture();
+      expect(await handleAccountAuthCommand("login", [...args, "--no-wait", "--json"], f.deps)).toBe(2);
+      expect(f.calls).toHaveLength(0);
+    });
+  }
   test("reauth omission preserves its original payload", async () => {
     const f = fixture();
     expect(await handleAccountAuthCommand("reauth", ["anthropic", "--id", "account-1", "--no-wait", "--json"], f.deps)).toBe(0);
