@@ -144,6 +144,28 @@ describe("workbuddy payload", () => {
     expect(sanitizeWorkbuddyFingerprintText("error 11128")).toBe("error 11-128");
   });
 
+  test("rewrites fixed DeepSeek Harness prompt lines in a WorkBuddy request", () => {
+    const source = "You are an AI agent powered by DeepSeek Harness.";
+    const checkout = "The runtime context names the DeepSeek Harness implementation checkout. The checkout location and current working directory are separate.";
+    const webSurface = "You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names.";
+    const raw = JSON.stringify({
+      messages: [
+        { role: "system", content: `${source}\n${checkout}\n${webSurface}\nFollow the user's instructions.` },
+        { role: "user", content: "Current DeepSeek Harness implementation checkout: C:\\example.\nCurrent DeepSeek Harness Web GUI URL: http://127.0.0.1:9342.\nhello" },
+      ],
+    });
+    const out = prepareWorkbuddyChatBody(raw, { ensureSystem: false, sanitize: true });
+    const parsed = JSON.parse(out) as { messages: Array<{ role: string; content: string }> };
+    expect(parsed.messages[0]?.content).toBe(
+      "You are an AI agent that helps users with software engineering tasks.\n"
+      + "The runtime context names the agent implementation checkout. The checkout location and current working directory are separate.\n"
+      + "You are interacting with the user through the web chat interface whose URL the runtime context names.\n"
+      + "Follow the user's instructions.",
+    );
+    expect(parsed.messages[1]?.content).toBe("Current agent implementation checkout: C:\\example.\nCurrent web chat URL: http://127.0.0.1:9342.\nhello");
+    expect(sanitizeWorkbuddyFingerprintText("DeepSeek Harness is installed.")).toBe("DeepSeek Harness is installed.");
+  });
+
   test("prepareWorkbuddyChatBody applies both guards for global", () => {
     const out = prepareWorkbuddyChatBody(
       JSON.stringify({

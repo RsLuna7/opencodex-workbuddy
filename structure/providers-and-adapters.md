@@ -97,7 +97,7 @@ Kimi Coding's Chat, API-key, and optional Responses presets consume the same mod
 `src/providers/registry/model-seeds.ts`, including the native `k3-256k` ID. The Responses preset
 shares the `kimi` OAuth account and Coding endpoint, keeps Chat as the featured default, and
 enables adjacent tool-result repair on its Responses wire. Its metadata alias is generated from
-the registry; sharing authentication does not implicitly share a usage-price namespace.
+the registry; sharing authentication does not implicitly share a usage-price namespace. WorkBuddy access-token validation stays on an explicitly selected realm. Realm-less legacy imports may probe the canonical CN and Global sites; account rotation remains within the resolved realm. `src/oauth/codebuddy-payload.ts` normalizes fixed Claude Code, Codex, and DeepSeek Harness prompt markers in outbound chat bodies before the WorkBuddy adapter sends them.
 
 OrcaRouter key exchange uses the shared raw-byte reader before returning a durable key. Its
 64 KiB response ceiling, single 30-second header/body deadline, and cancellation behavior follow
