@@ -12,6 +12,13 @@ import { COMMAND_CODE_MODEL_REASONING_EFFORTS } from "../command-code-efforts";
 import { QODER_CN_MODELS, QODER_GLOBAL_MODELS, QODER_REASONING_EFFORTS } from "../qoder-models";
 import type { ProviderRegistryEntry } from "./types";
 import {
+  WORKBUDDY_MODELS,
+  WORKBUDDY_MODEL_CONTEXT_WINDOWS,
+  WORKBUDDY_MODEL_INPUT_MODALITIES,
+  WORKBUDDY_MODEL_MAX_OUTPUT_TOKENS,
+  WORKBUDDY_NO_VISION_MODELS,
+} from "./workbuddy-seeds";
+import {
   ZAI_GLM_53_MODELS,
   ZAI_GLM_5X_MODELS,
   ZAI_GLM_5X_SIDECAR_VISION_MODELS,
@@ -1504,18 +1511,11 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     featured: true,
     dashboardUrl: "https://www.codebuddy.cn",
     defaultModel: "auto",
-    models: [
-      "auto",
-      "hy4-preview",
-      "hy3",
-      "deepseek-v4.1-flash",
-      "glm-5.3",
-      "glm-5.3-flash",
-      "glm-5.2",
-      "glm-5v-turbo",
-      "minimax-m2.5",
-      "kimi-k2.5",
-    ],
+    models: [...WORKBUDDY_MODELS],
+    modelContextWindows: { ...WORKBUDDY_MODEL_CONTEXT_WINDOWS },
+    modelMaxOutputTokens: { ...WORKBUDDY_MODEL_MAX_OUTPUT_TOKENS },
+    modelInputModalities: { ...WORKBUDDY_MODEL_INPUT_MODALITIES },
+    noVisionModels: [...WORKBUDDY_NO_VISION_MODELS],
     liveModels: true,
     modelDiscovery: {
       path: "enterprises/personal/models",
