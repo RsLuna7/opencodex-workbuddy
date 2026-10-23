@@ -2,8 +2,8 @@
  * WorkBuddy outbound body guards: leading system (11128) and fingerprint rewrite.
  *
  * Leading-system rule from CangShui/workbuddy-gateway (international site is strict).
- * Fingerprint rewrites from Sliverkiss/workbuddy2api sanitize.go (MIT): exact-match
- * blacklist, one-word edits, no semantic rewrite.
+ * Fingerprint rewrites use exact client identity lines rather than broad prompt edits.
+ * The Claude Code / Codex entries follow Sliverkiss/workbuddy2api sanitize.go (MIT).
  */
 
 const DEFAULT_SYSTEM = "You are a helpful assistant.";
@@ -14,6 +14,11 @@ const FINGERPRINT_NEEDLES = [
   "You are Claude Code",
   "Main branch (",
   "You are a coding agent running in the Codex CLI",
+  "You are an AI agent powered by DeepSeek Harness.",
+  "The runtime context names the DeepSeek Harness implementation checkout.",
+  "You are interacting with the user through the DeepSeek Harness Web GUI",
+  "Current DeepSeek Harness implementation checkout:",
+  "Current DeepSeek Harness Web GUI URL:",
   "github.com/anthropics/",
   "11128",
 ];
@@ -30,6 +35,26 @@ const FINGERPRINT_REWRITES: Array<[string, string]> = [
   [
     "You are a coding agent running in the Codex CLI, a terminal-based coding assistant.",
     "You are a coding agent running in the Codex CLI tool, a terminal-based coding assistant.",
+  ],
+  [
+    "You are an AI agent powered by DeepSeek Harness.",
+    "You are an AI agent that helps users with software engineering tasks.",
+  ],
+  [
+    "The runtime context names the DeepSeek Harness implementation checkout.",
+    "The runtime context names the agent implementation checkout.",
+  ],
+  [
+    "You are interacting with the user through the DeepSeek Harness Web GUI",
+    "You are interacting with the user through the web chat interface",
+  ],
+  [
+    "Current DeepSeek Harness implementation checkout:",
+    "Current agent implementation checkout:",
+  ],
+  [
+    "Current DeepSeek Harness Web GUI URL:",
+    "Current web chat URL:",
   ],
   [
     "To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues",
