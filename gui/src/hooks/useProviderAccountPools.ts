@@ -1,4 +1,4 @@
-import { parseQuotaFailureCode, type WorkbuddyAccountActivity } from "../../../src/providers/quota-types";
+import { parseQuotaFailureCode, type WorkbuddyAccountActivity, type WorkbuddyAccountPoolView } from "../../../src/providers/quota-types";
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { AccountLoadState, AccountQuotaReading } from "../components/provider-workspace/types";
 import { createBoundedFetch } from "../bounded-fetch";
@@ -32,6 +32,7 @@ export interface OAuthAccount extends AccountQuotaReading {
   healthSummary?: string;
   healthAction?: string;
   workbuddy?: WorkbuddyAccountActivity;
+  workbuddyPool?: WorkbuddyAccountPoolView;
 }
 export interface ApiKeyEntry extends AccountQuotaReading { id: string; label?: string; masked: string; active: boolean }
 export interface AccountSelectionTarget { provider: string; kind: "oauth" | "api-key" }
@@ -66,6 +67,7 @@ function mergeLateQuotaRows<T extends QuotaRow>(rows: T[], enriched: T[]): T[] {
       quotaUnavailable: quota.quotaUnavailable,
       quotaFailure: quota.quotaFailure,
       workbuddy: quota.workbuddy,
+      workbuddyPool: quota.workbuddyPool,
     };
   });
 }
@@ -91,6 +93,8 @@ function mergeQuotaRows<T extends QuotaRow>(rows: T[], previous: T[], enriched: 
       quotaFailure: enriched && row.quotaMode === "probe" && row.quotaUnavailable === true
         ? parseQuotaFailureCode(row.quotaFailure) : undefined,
       workbuddy: "workbuddy" in row ? row.workbuddy : retain ? prior.get(row.id)?.workbuddy : undefined,
+      // The pool projection is a server-side local read, so it survives a failed upstream probe.
+      workbuddyPool: "workbuddyPool" in row ? row.workbuddyPool : prior.get(row.id)?.workbuddyPool,
     };
   });
 }

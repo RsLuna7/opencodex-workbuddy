@@ -239,11 +239,11 @@ because they may share one upstream balance.
 Provider details use one account-quota reading renderer for Overview, Usage and Accounts/API
 keys. Current-account usage sits below usage statistics; a known-mode active row is authoritative
 even when empty, so a newly selected passive account cannot inherit a previous account's cached
-report. Pool reports project only `aggregation.currentAccount.quota` with its own timestamp;
-missing or malformed aggregation stays unknown rather than using total capacity. Shared states
-include credits-only and measured-zero readings, unsupported, unobserved, explicit pending and
-unavailable-with-last-good. Forced account/key enrichment settles before its control reports a
-completed check, and provider-report waiters are bound to the exact refresh epoch.
+report. Pool reports project only `aggregation.currentAccount.quota` with its own timestamp; missing or malformed aggregation stays unknown rather than using total capacity. Shared states
+include credits-only and measured-zero readings, unsupported, unobserved, explicit pending and unavailable-with-last-good. Forced enrichment settles before its control reports a completed
+check, and provider-report waiters bind to the exact refresh epoch. A WorkBuddy cooldown/credits panel
+(`WorkbuddyCooldownPanel.tsx`) ticks locally over the additive `workbuddyPool` row from
+`projectWorkbuddyAccountPoolView`, omitting expired cooldowns and cost data and listing ready accounts.
 
 Main-account WHAM refresh diagnostics are an ephemeral `quotaRefresh` outcome carried
 from `fetchMainAccountInfoWhileOwned` to the generation-checked account DTO and the

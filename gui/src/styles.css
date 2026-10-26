@@ -9,6 +9,7 @@
 
 @import "./styles/provider-catalog.css";
 @import "./styles/provider-quota.css";
+@import "./styles/workbuddy-pool.css";
 @import "./styles/provider-workspace-shell.css";
 @import "./styles/provider-workspace-settings.css";
 @import "./styles/login-url-block.css";

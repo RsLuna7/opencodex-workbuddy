@@ -432,6 +432,9 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
       projectOAuthAccountHealth,
       projectStoredOAuthAccountHealth,
     } = await import("../../oauth/health");
+    const { projectWorkbuddyAccountPoolView } = provider === "workbuddy"
+      ? await import("../../oauth/workbuddy-pool")
+      : { projectWorkbuddyAccountPoolView: null };
     const projectAccounts = () => {
       const set = getAccountSet(provider);
       const current = getLoginStatus(provider, emailMaskingEnabled(config));
@@ -450,7 +453,8 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
             ...(isAnthropicOAuthInstance(provider) && supportsPause ? { autoSwitchThresholdOverride: full?.autoSwitchThresholdOverride ?? null,
               effectiveAutoSwitchThreshold: effectiveAnthropicAccountThresholdForInstance(provider as AnthropicInstanceId, config, full),
               autoSwitchThreshold: effectiveAnthropicAccountThresholdForInstance(provider as AnthropicInstanceId, config) } : {}),
-            ...(provider === "kiro" && full ? kiroAutoSelection(full) : {}) };
+            ...(provider === "kiro" && full ? kiroAutoSelection(full) : {}),
+            ...(provider === "workbuddy" && projectWorkbuddyAccountPoolView ? { workbuddyPool: projectWorkbuddyAccountPoolView(summary.id, full?.credential) } : {}) };
         }),
       };
     };

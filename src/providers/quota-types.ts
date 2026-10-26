@@ -53,6 +53,29 @@ export interface WorkbuddyAccountActivity {
   dailyTask?: boolean;
 }
 
+export interface WorkbuddyModelCooldownView {
+  until: number;
+  resetAt?: number;
+  reason?: string;
+}
+
+export interface WorkbuddyAccountPoolView {
+  realm?: "cn" | "global";
+  credits?: number;
+  creditsExpiring?: number;
+  until?: number;
+  reason?: string;
+  breakerUntil?: number;
+  retryCount?: number;
+  consecutiveFails?: number;
+  successCount?: number;
+  errTotal?: number;
+  lastUsed?: number;
+  lastSuccess?: number;
+  lastErr?: number;
+  modelCooldowns?: Record<string, WorkbuddyModelCooldownView>;
+}
+
 export interface ProviderQuota {
   fiveHourPercent?: number;
   fiveHourResetAt?: number;
@@ -77,6 +100,7 @@ export interface AccountQuotaFields {
   quotaUnavailable?: boolean;
   quotaFailure?: QuotaFailureCode;
   workbuddy?: WorkbuddyAccountActivity;
+  workbuddyPool?: WorkbuddyAccountPoolView;
 }
 
 
@@ -89,3 +113,4 @@ export type QuotaFailureCode = typeof QUOTA_FAILURE_CODES[number];
 export function parseQuotaFailureCode(value: unknown): QuotaFailureCode | undefined {
   return QUOTA_FAILURE_CODES.find(code => code === value);
 }
+

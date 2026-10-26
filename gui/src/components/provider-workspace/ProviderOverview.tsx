@@ -13,6 +13,8 @@ import type { AccountQuotaReading, ProviderUsageTotals } from "./types";
 import { authModeLabel } from "./ProviderRail";
 import type { ProviderUpdatePatch, ProviderUpdateResult } from "./types";
 import ProviderCurrentQuota from "./ProviderCurrentQuota";
+import WorkbuddyCooldownPanel from "./WorkbuddyCooldownPanel";
+import type { WorkbuddyCooldownAccount } from "./workbuddy-cooldown-model";
 import type { CatalogPreset } from "../provider-catalog/provider-presets";
 import ProviderSponsor from "./ProviderSponsor";
 
@@ -37,6 +39,7 @@ export default function ProviderOverview({
   onEditSettings, onViewUsage, onUpdateProvider,
   onCreateJevAuto,
   onReauthenticate, onCancelLogin, reauthBusy = false,
+  workbuddyAccounts,
 }: {
   item: WorkspaceItem;
   preset?: CatalogPreset;
@@ -57,6 +60,8 @@ export default function ProviderOverview({
   onReauthenticate?: () => void;
   onCancelLogin?: () => void;
   reauthBusy?: boolean;
+  /** WorkBuddy only: the pool roster that feeds the cooldown/credits panel. */
+  workbuddyAccounts?: readonly WorkbuddyCooldownAccount[];
 }) {
   const t = useT();
   const { locale } = useI18n();
@@ -261,6 +266,9 @@ export default function ProviderOverview({
           </div>
         )}
       </section>
+      {item.name === "workbuddy" && workbuddyAccounts && (
+        <WorkbuddyCooldownPanel accounts={workbuddyAccounts} locale={locale} />
+      )}
       <NotesSection item={item} onUpdateProvider={onUpdateProvider} />
       </div>
 

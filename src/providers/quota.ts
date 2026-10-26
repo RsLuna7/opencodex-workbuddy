@@ -535,6 +535,7 @@ export async function fetchProviderAccountQuotas(
       quota: isAnthropicInstanceId(provider) ? normalizeAnthropicQuota(entry.quota, Date.now()) : entry.quota,
       ...(entry.unavailable ? { unavailable: true as const } : {}),
       ...(entry.unavailable && entry.quotaFailure && entry.quotaFailureIsCurrent?.() === true ? { quotaFailure: entry.quotaFailure } : {}),
+      ...(entry.workbuddy ? { workbuddy: entry.workbuddy } : {}),
     };
     if (entry.quotaFailureIsCurrent) Object.defineProperty(result, "quotaFailureIsCurrent", { value: entry.quotaFailureIsCurrent });
     if (isAnthropicInstanceId(provider) && entry.isCurrent) Object.defineProperty(result, "isCurrent", { value: entry.isCurrent });

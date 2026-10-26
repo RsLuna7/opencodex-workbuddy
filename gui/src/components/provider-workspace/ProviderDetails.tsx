@@ -299,6 +299,7 @@ export default function ProviderDetails({
             onCreateJevAuto={onCreateJevAuto}
             onUpdateProvider={onUpdateProvider}
             reauthBusy={busyProvider === item.name}
+            {...(item.name === "workbuddy" ? { workbuddyAccounts: accounts ?? [] } : {})}
             onCancelLogin={authHandlers?.onCancelLogin ? () => void authHandlers.onCancelLogin?.(item.name) : undefined}
             onReauthenticate={
               item.activeNeedsReauth
