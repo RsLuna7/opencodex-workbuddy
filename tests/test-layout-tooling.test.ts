@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -7,6 +7,7 @@ import { repoPath, repoRoot } from "./helpers/repo-root";
 import { listTestFiles, planMoves } from "../scripts/test-layout/plan";
 import { runMove } from "../scripts/test-layout/move";
 import { runVerify } from "../scripts/test-layout/verify";
+import { testRunnerBun } from "../package.json";
 import {
   anchors,
   currentPath,
@@ -241,6 +242,41 @@ describe("resolver", () => {
   });
 });
 
+describe("explicit layout shards", () => {
+  function fixture(explicitShards: unknown, shards: Record<string, unknown>, explicit = { "inline.test.ts": "server" }) {
+    const root = mkdtempSync(join(tmpdir(), "ocx-layout-shards-"));
+    const path = join(root, "layout.json");
+    writeFileSync(path, JSON.stringify({ version: 1, root: "tests", explicit, explicitShards }));
+    writeFileSync(join(root, "seeds.json"), JSON.stringify({ keepAtRoot: [], migrated: [], domains: {} }));
+    for (const [name, value] of Object.entries(shards)) writeFileSync(join(root, name), JSON.stringify(value));
+    return { path, cleanup: () => removeTreeWithRetry(root) };
+  }
+
+  test("inline and sharded entries resolve together without changing legacy maps", () => {
+    const legacy = fixture(undefined, {});
+    const sharded = fixture(["layout-clients.json"], { "layout-clients.json": { "desktop.test.ts": "clients" } });
+    try {
+      expect(loadLayout(legacy.path).explicit).toEqual({ "inline.test.ts": "server" });
+      const layout = loadLayout(sharded.path);
+      expect(layout.explicit).toEqual({ "inline.test.ts": "server", "desktop.test.ts": "clients" });
+      expect(resolveTarget(layout, "desktop.test.ts")).toBe("clients");
+    } finally { legacy.cleanup(); sharded.cleanup(); }
+  });
+
+  test.each([
+    ["inline collision", ["layout-clients.json"], { "layout-clients.json": { "inline.test.ts": "clients" } }, /duplicate explicit test/],
+    ["shard collision", ["layout-clients.json", "layout-other.json"], { "layout-clients.json": { "same.test.ts": "clients" }, "layout-other.json": { "same.test.ts": "clients" } }, /duplicate explicit test/],
+    ["invalid list", "layout-clients.json", {}, /must be an array/],
+    ["path escape", ["../outside.json"], {}, /sibling JSON filename/],
+    ["invalid shard", ["layout-clients.json"], { "layout-clients.json": [] }, /must be an object/],
+    ["invalid target", ["layout-clients.json"], { "layout-clients.json": { "desktop.test.ts": 1 } }, /must be a string/],
+    ["missing shard", ["layout-clients.json"], {}, /ENOENT/],
+  ])("rejects %s before resolving membership", (_name, names, shards, error) => {
+    const { path, cleanup } = fixture(names, shards as Record<string, unknown>);
+    try { expect(() => loadLayout(path)).toThrow(error as RegExp); } finally { cleanup(); }
+  });
+});
+
 describe("membership oracle", () => {
   const layout = loadLayout();
 
@@ -273,6 +309,8 @@ describe("membership oracle", () => {
       "ci-structure-gate.test.ts": "ci-workflows",
       "responses-code-mode-patch-compile.test.ts": "responses",
       "gui-codex-usage-score-parity.test.ts": "gui",
+      "server-combo-cooldown-fallback.test.ts": "server",
+      "claude-estimate-projection.test.ts": "claude-integration",
     } as const;
     const classified = Object.fromEntries(
       Object.keys(owners).map(name => [name, layout.explicit[name] ?? null]),
@@ -312,6 +350,9 @@ describe("membership oracle", () => {
       // Placed under routing/ by its author (#3523, restored by #3530): it exercises the oauth
       // routing quorum, not the Anthropic adapter, so the anthropic- seed is wrong for it.
       "anthropic-quorum-cache.test.ts",
+      // Lives under server/ with the other management-route tests; the advisor- seed names the
+      // advisor SUBSYSTEM, not the domain this file's siblings live in.
+      "advisor-routes.test.ts",
     ]);
     const mismatches: string[] = [];
     let resolved = 0;
@@ -357,7 +398,8 @@ describe("move end to end", () => {
       explicit: {},
       migrated: [],
     };
-    writeFileSync(join(root, "scripts", "test-layout", "layout.json"), JSON.stringify(layout, null, 2));
+    writeFileSync(join(root, "scripts", "test-layout", "layout.json"), JSON.stringify({ version: layout.version, root: layout.root, explicit: layout.explicit }, null, 2));
+    writeFileSync(join(root, "scripts", "test-layout", "seeds.json"), JSON.stringify({ keepAtRoot: layout.keepAtRoot, domains: layout.domains, migrated: layout.migrated }, null, 2));
     git("add", "-A");
     git("commit", "-q", "-m", "seed");
     return { root, cleanup: () => removeTreeWithRetry(root) };
@@ -367,6 +409,7 @@ describe("move end to end", () => {
     const { root, cleanup } = scratchRepo();
     try {
       const layoutPath = join(root, "scripts", "test-layout", "layout.json");
+      const layoutBefore = readFileSync(layoutPath, "utf8");
       const logs: string[] = [];
       const plan = planMoves(loadLayout(layoutPath), root, ["server", "providers"]);
       expect(plan.moves.map(m => m.to).sort()).toEqual([
@@ -414,11 +457,37 @@ describe("move end to end", () => {
       const serial = readFileSync(join(root, "scripts", "test.ts"), "utf8");
       expect(serial).toContain('"providers/cursor/cursor-b.test.ts"');
       expect(loadLayout(layoutPath).migrated).toEqual(["providers", "server"]);
+      expect(readFileSync(layoutPath, "utf8")).toBe(layoutBefore);
+      expect(JSON.parse(readFileSync(join(root, "scripts", "test-layout", "seeds.json"), "utf8")).migrated).toEqual(["providers", "server"]);
       expect(readFileSync(join(root, "src", "thing.ts"), "utf8")).toBe("export const thing = 2;\n");
       const status = Bun.spawnSync(["git", "status", "--porcelain"], { cwd: root }).stdout.toString();
       // Renamed in the index, then rewritten in the worktree: git reports "RM".
       expect(status).toContain("RM tests/server-a.test.ts -> tests/server/server-a.test.ts");
       expect(status).toContain("RM tests/cursor-b.test.ts -> tests/providers/cursor/cursor-b.test.ts");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("domain verification launches isolate tests through the pinned runner", () => {
+    const { root, cleanup } = scratchRepo();
+    const layoutPath = join(root, "scripts", "test-layout", "layout.json");
+    try {
+      runMove({ root, domains: ["server", "providers"], dryRun: false, layoutPath, skipVerify: true, log: () => {} });
+      const spawn = spyOn(Bun, "spawnSync").mockReturnValue({
+        exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from(""),
+      } as ReturnType<typeof Bun.spawnSync>);
+      try {
+        const report = runVerify({ root, domains: ["server", "providers"], layoutPath, log: () => {} });
+        expect(report.testExit).toBe(0);
+        // The test itself runs on the required pin, so its executable is the resolver's first choice.
+        expect(Bun.version).toBe(testRunnerBun);
+        expect(spawn.mock.calls.at(-1)?.[0]).toEqual([
+          process.execPath, "test", "--isolate", "tests/server", "tests/providers",
+        ]);
+      } finally {
+        spawn.mockRestore();
+      }
     } finally {
       cleanup();
     }

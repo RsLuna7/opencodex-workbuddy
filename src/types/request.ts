@@ -1,4 +1,5 @@
 import type { CodebuddyOAuthMetadata, KiroOAuthMetadata } from "../oauth/types";
+import type { NativeReasoningOwner } from "../responses/reasoning-replay-cache";
 import type { OcxTool, OcxToolChoice } from "./tools";
 import type { TierDecision, TierObservationContext } from "./provider";
 
@@ -31,6 +32,11 @@ export interface OcxReasoningReplayIdentity {
  */
 export interface OcxReasoningReplayScopeRef {
   /**
+   * Process-local caller principal from resolveContextPrincipal. Absent when the caller presented
+   * no identity (keyless loopback); replay state keyed by it then fails closed.
+   */
+  readonly clientPrincipalId?: string;
+  /**
    * Conversation namespace for replay state. Historically this was always the Codex parent-thread
    * id; headerless Responses callers use a raw sanitized thread/Cursor/session fallback, never the
    * hashed request-log conversation id.
@@ -45,11 +51,17 @@ export interface OcxParsedRequest {
   _responseModelId?: string;
   /** Selected OpenAI API virtual-model id retained after it rewrites the upstream wire model. */
   _openAiVirtualSelectedModelId?: string;
+  /** Serialized-only model id (xAI OAuth Fast lane); policy keeps reading `modelId`. */
+  _wireModelOverride?: string;
   previousResponseId?: string;
   context: OcxContext;
   stream: boolean;
   options: OcxRequestOptions;
   _rawBody?: unknown;
+  /** Claude replay tags, retained only until each route binding verifies them. */
+  _nativeReasoningReplay?: ReadonlyMap<string, string>;
+  _nativeReasoningBoundOwner?: NativeReasoningOwner;
+  _nativeReasoningMint?: { owner?: NativeReasoningOwner };
   /**
    * Boundary between replayed history and this turn's newly appended input. Usually the
    * items the proxy restored from local previous_response_id state; also set when the
@@ -85,6 +97,16 @@ export interface OcxParsedRequest {
    * prepareOpaqueBlobRecovery after an authoritative rejection; consumers strip replayed blobs.
    */
   _stripReasoningEncryptedContent?: boolean;
+  /**
+   * Set when replayed reasoning item ids name items in a store this destination cannot read: by
+   * prepareOpaqueBlobRecovery before the one recovery rebuild, and by bindRouteReasoningReplayScope
+   * while the rejection memo is live or after a proven switch to a different destination or
+   * credential. The Responses passthrough then removes the `id` of every replayed reasoning item,
+   * whether or not it carries a blob. A stateful destination resolves a replayed id against its own
+   * store, so keeping it turns the send into `Item with id 'rs_…' not found` (#5583). A model
+   * change on the same destination and credential does not set this.
+   */
+  _dropForeignReasoningItemIds?: boolean;
   /** Final-route opt-in: emit v2 collaboration message arguments as plaintext on ChatGPT. */
   _plaintextV2AgentMessages?: boolean;
   /**
@@ -99,8 +121,10 @@ export interface OcxParsedRequest {
   _cursorIsolateConversation?: boolean;
   /** Account-scoped, non-secret Kiro request metadata selected with the OAuth access token. */
   _kiroAuthContext?: Pick<KiroOAuthMetadata, "profileArn" | "apiRegion" | "ssoRegion" | "authType">;
-  /** Account-scoped WorkBuddy / CodeBuddy headers selected with the OAuth access token. */
+  /** Account-scoped WorkBuddy headers selected with the OAuth access token. */
   _codebuddyAuthContext?: CodebuddyOAuthMetadata;
+  /** Account-scoped Zed user identity paired with the long-lived access token. */
+  _zedAuthContext?: { userId: string };
   /** Provider-private continuation metadata resolved from the Responses previous_response_id chain. */
   _providerContinuation?: OcxProviderContinuationState;
   /** Persisted continuation considered only after the final physical route is known. */
@@ -131,11 +155,30 @@ export interface OcxParsedRequest {
   /** Manual compaction moved to another provider: summarize portably even on a canonical ChatGPT target. */
   _portableCompaction?: boolean;
   /**
+   * Codex memory pipeline phase this turn belongs to, when `memoryModels` routes it
+   * (src/server/responses/memory-models.ts). Read at the effort choke point, which runs after the
+   * route is known.
+   */
+  _memoryModelPhase?: "extract" | "consolidation";
+  /**
    * True when the current request newly introduced a stored compaction summary/marker. Historical
    * markers restored by previous_response_id expansion were already acknowledged and do not reset
    * provider-private continuation caches again on every later turn.
    */
   _contextCompactionBoundary?: boolean;
+  /**
+   * Core-owned registration slot for the optional advisor subsystem (src/advisor). Set per request
+   * by the sidecar planner, never at module load: the core Responses path only sees this
+   * structural shape, so an advisor-disabled install imports no advisor module. When present, the
+   * adapter delivery wraps the worker's event stream with it — the guard holds synthetic
+   * `advisor` tool calls, consults the configured expert model, and re-dispatches the worker.
+   */
+  _advisorGuard?: (options: {
+    parsed: OcxParsedRequest;
+    firstEvents: AsyncIterable<AdapterEvent>;
+    /** One bounded worker continuation re-dispatch (same machinery as the terminal guard). */
+    continuation: (parsed: OcxParsedRequest) => AsyncIterable<AdapterEvent> | Promise<AsyncIterable<AdapterEvent>>;
+  }) => AsyncGenerator<AdapterEvent>;
 }
 
 export interface OcxContext {
@@ -208,8 +251,17 @@ export interface OcxImageContent {
 
 export interface OcxVideoContent {
   type: "video";
-  /** A base64 `data:` URL from an OpenAI-compatible `video_url` part. */
+  /**
+   * A base64 `data:` URL from an OpenAI-compatible `video_url` part, or a URI
+   * the upstream can fetch itself (a YouTube watch URL, a Files API uri).
+   */
   videoUrl: string;
+  /**
+   * Gemini's agentic video mode, carried verbatim from the caller's
+   * `video_url.processing` (#3271). Absent for every request that does not ask
+   * for it, so no existing traffic gains a field.
+   */
+  processing?: string;
 }
 
 /**
@@ -288,6 +340,8 @@ export interface OcxRequestOptions {
   parallelToolCalls?: boolean;
   reasoning?: string;
   hideThinkingSummary?: boolean;
+  /** Provider policy: suppress raw content-channel reasoning while summaries stay visible. */
+  hideRawReasoning?: boolean;
   serviceTier?: string;
   /** Final outbound tier action, resolved after the provider/model wire is settled. */
   tierDecision?: TierDecision;
@@ -348,7 +402,7 @@ export interface OcxProviderContinuationState {
 }
 
 export type AdapterEvent =
-  | { type: "heartbeat"; replayUnsafe?: true }
+  | { type: "heartbeat"; replayUnsafe?: true; preflightReady?: true }
   | { type: "text_delta"; text: string; phase?: OcxMessagePhase }
   | { type: "thinking_delta"; thinking: string }
   // Anthropic extended-thinking round-trip: signature_delta for the current thinking block, and
@@ -402,7 +456,14 @@ export type AdapterEvent =
       /** Responses error type and code when the adapter has a structured provider failure. */
       errorType?: string;
       code?: string;
+      /** Proxy-internal permission to consider API-key recovery; never serialized. */
+      apiKeyRecovery?: true;
       retryable?: boolean;
+      /**
+       * Proxy-internal, never serialized: the upstream failed the turn before producing text or a
+       * tool call, so the opt-in empty-completion guard may replay the identical request once.
+       */
+      replaySafeBeforeOutput?: boolean;
     };
 
 /**
@@ -425,6 +486,8 @@ export interface OcxUrlCitation {
  * - `totalTokens` = inputTokens + outputTokens. Never re-add cache detail on top.
  */
 export interface OcxUsage {
+  /** Provider-reported credit spend, independent of token estimates and USD pricing. */
+  providerCredits?: number;
   inputTokens: number;
   outputTokens: number;
   /**

@@ -1,5 +1,7 @@
 import type { CodexAccountMode, OcxProviderConfig } from "../types";
+import { COST_VENDOR_PRIORITY, getModelMetadata, getModelMetadataCaseInsensitive } from "../generated/model-metadata";
 import { cloneFastWire } from "./fastwire";
+import { isAzureModelMetadataDestination, publishedAzureModelMetadata, type AzureModelMetadata } from "./azure-model-metadata";
 import { resolveModelPolicy } from "./resolved-model-policy";
 import {
   PROVIDER_REGISTRY,
@@ -41,12 +43,14 @@ export interface DerivedKeyLoginProvider {
   noReasoningModels?: string[];
   noTemperatureModels?: string[];
   noTopPModels?: string[];
+  noStopModels?: string[];
   noPenaltyModels?: string[];
   autoToolChoiceOnlyModels?: string[];
   preserveReasoningContentModels?: string[];
   requiresReasoningPlaceholderModels?: string[];
   showThinkingSummary?: boolean;
   reasoningSplitModels?: string[];
+  inlineThinkTagModels?: string[];
   reasoningDetailsModels?: string[];
   thinkingToggleModels?: string[];
   thinkingBudgetModels?: string[];
@@ -113,13 +117,17 @@ function cloneRecordOfArrays(input: Record<string, string[]>): Record<string, st
  * is how a partially customized `modelInputModalities` could leave a
  * vision-capable model advertising no image support, which in turn collapses any
  * combo containing it to text-only. Routing already merges these maps per key
- * (`mergeRecordFill` in src/router.ts); catalog enrichment now matches.
+ * (`mapFill` in src/providers/resolved-model-policy-merge.ts); catalog enrichment now matches.
  */
 function fillRecordOfArrays(
   seed: Record<string, string[]>,
   user: Record<string, string[]> | undefined,
 ): Record<string, string[]> {
-  return { ...cloneRecordOfArrays(seed), ...(user ? cloneRecordOfArrays(user) : {}) };
+  const userKeys = new Set(Object.keys(user ?? {}).map(key => key.toLowerCase()));
+  const defaults = Object.fromEntries(
+    Object.entries(seed).filter(([key]) => !userKeys.has(key.toLowerCase())),
+  );
+  return { ...cloneRecordOfArrays(defaults), ...(user ? cloneRecordOfArrays(user) : {}) };
 }
 
 function cloneNestedRecord(input: Record<string, Record<string, string>>): Record<string, Record<string, string>> {
@@ -239,6 +247,8 @@ export function providerConfigSeed(entry: ProviderRegistryEntry): OcxProviderCon
     // Preserve the registry auth kind verbatim (including "local") so fail-closed gates that
     // distinguish local runtimes from API-key providers keep working after the seed round-trip.
     authMode: entry.authKind,
+    ...(entry.id === "anthropic2" && entry.authKind === "oauth" && entry.oauthFamily === "anthropic"
+      ? { anthropicOAuthInstance: "anthropic2" as const } : {}),
     ...(entry.codexAccountMode ? { codexAccountMode: entry.codexAccountMode } : {}),
     ...(entry.keyOptional !== undefined ? { keyOptional: entry.keyOptional } : {}),
     ...(entry.freeTier !== undefined ? { freeTier: entry.freeTier } : {}),
@@ -264,6 +274,7 @@ export function providerConfigSeed(entry: ProviderRegistryEntry): OcxProviderCon
     ...(entry.noReasoningModels ? { noReasoningModels: [...entry.noReasoningModels] } : {}),
     ...(entry.noTemperatureModels ? { noTemperatureModels: [...entry.noTemperatureModels] } : {}),
     ...(entry.noTopPModels ? { noTopPModels: [...entry.noTopPModels] } : {}),
+    ...(entry.noStopModels ? { noStopModels: [...entry.noStopModels] } : {}),
     ...(entry.noPenaltyModels ? { noPenaltyModels: [...entry.noPenaltyModels] } : {}),
     ...(entry.parallelToolCalls !== undefined ? { parallelToolCalls: entry.parallelToolCalls } : {}),
     ...(entry.promptCacheKey !== undefined ? { promptCacheKey: entry.promptCacheKey } : {}),
@@ -286,6 +297,7 @@ export function providerConfigSeed(entry: ProviderRegistryEntry): OcxProviderCon
     ...(entry.requiresReasoningPlaceholderModels ? { requiresReasoningPlaceholderModels: [...entry.requiresReasoningPlaceholderModels] } : {}),
     ...(entry.showThinkingSummary !== undefined ? { showThinkingSummary: entry.showThinkingSummary } : {}),
     ...(entry.reasoningSplitModels ? { reasoningSplitModels: [...entry.reasoningSplitModels] } : {}),
+    ...(entry.inlineThinkTagModels ? { inlineThinkTagModels: [...entry.inlineThinkTagModels] } : {}),
     ...(entry.reasoningDetailsModels ? { reasoningDetailsModels: [...entry.reasoningDetailsModels] } : {}),
     ...(entry.thinkingToggleModels ? { thinkingToggleModels: [...entry.thinkingToggleModels] } : {}),
     ...(entry.thinkingBudgetModels ? { thinkingBudgetModels: [...entry.thinkingBudgetModels] } : {}),
@@ -330,12 +342,14 @@ export function deriveKeyLoginMap(): Record<string, DerivedKeyLoginProvider> {
       ...(entry.noReasoningModels ? { noReasoningModels: [...entry.noReasoningModels] } : {}),
       ...(entry.noTemperatureModels ? { noTemperatureModels: [...entry.noTemperatureModels] } : {}),
       ...(entry.noTopPModels ? { noTopPModels: [...entry.noTopPModels] } : {}),
+      ...(entry.noStopModels ? { noStopModels: [...entry.noStopModels] } : {}),
       ...(entry.noPenaltyModels ? { noPenaltyModels: [...entry.noPenaltyModels] } : {}),
       ...(entry.autoToolChoiceOnlyModels ? { autoToolChoiceOnlyModels: [...entry.autoToolChoiceOnlyModels] } : {}),
       ...(entry.preserveReasoningContentModels ? { preserveReasoningContentModels: [...entry.preserveReasoningContentModels] } : {}),
       ...(entry.requiresReasoningPlaceholderModels ? { requiresReasoningPlaceholderModels: [...entry.requiresReasoningPlaceholderModels] } : {}),
       ...(entry.showThinkingSummary !== undefined ? { showThinkingSummary: entry.showThinkingSummary } : {}),
       ...(entry.reasoningSplitModels ? { reasoningSplitModels: [...entry.reasoningSplitModels] } : {}),
+      ...(entry.inlineThinkTagModels ? { inlineThinkTagModels: [...entry.inlineThinkTagModels] } : {}),
       ...(entry.reasoningDetailsModels ? { reasoningDetailsModels: [...entry.reasoningDetailsModels] } : {}),
       ...(entry.thinkingToggleModels ? { thinkingToggleModels: [...entry.thinkingToggleModels] } : {}),
       ...(entry.thinkingBudgetModels ? { thinkingBudgetModels: [...entry.thinkingBudgetModels] } : {}),
@@ -534,7 +548,7 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
   // Per-model fill for the same reason as modelInputModalities above: an all-or-nothing
   // copy let ONE customized model hide the registry's ladder for every other model on the
   // provider. That split the two planes apart — routing merges these maps per key
-  // (mergeRecordFill in src/router.ts), so the wire honored the effort while /v1/models and
+  // (mapFill in src/providers/resolved-model-policy-merge.ts), so the wire honored the effort while /v1/models and
   // every client export showed no effort control at all.
   if (resolvedStatic.modelReasoningEfforts) prov.modelReasoningEfforts = cloneRecordOfArrays(resolvedStatic.modelReasoningEfforts);
   if (!prov.modelDefaultReasoningEfforts && seed.modelDefaultReasoningEfforts) prov.modelDefaultReasoningEfforts = { ...seed.modelDefaultReasoningEfforts };
@@ -545,6 +559,7 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
   if (!prov.noReasoningModels && seed.noReasoningModels) prov.noReasoningModels = [...seed.noReasoningModels];
   if (!prov.noTemperatureModels && seed.noTemperatureModels) prov.noTemperatureModels = [...seed.noTemperatureModels];
   if (!prov.noTopPModels && seed.noTopPModels) prov.noTopPModels = [...seed.noTopPModels];
+  if (!prov.noStopModels && seed.noStopModels) prov.noStopModels = [...seed.noStopModels];
   if (!prov.noPenaltyModels && seed.noPenaltyModels) prov.noPenaltyModels = [...seed.noPenaltyModels];
   if (prov.parallelToolCalls === undefined && seed.parallelToolCalls !== undefined) prov.parallelToolCalls = seed.parallelToolCalls;
   if (prov.promptCacheKey === undefined && seed.promptCacheKey !== undefined) prov.promptCacheKey = seed.promptCacheKey;
@@ -579,6 +594,8 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
     prov.supportsResponsesCustomTools = entry.supportsResponsesCustomTools;
   }
   if (prov.preserveResponsesReasoningContent === undefined && entry.preserveResponsesReasoningContent !== undefined) prov.preserveResponsesReasoningContent = entry.preserveResponsesReasoningContent;
+  if (prov.preserveResponsesInputItemIds === undefined && entry.preserveResponsesInputItemIds !== undefined) prov.preserveResponsesInputItemIds = entry.preserveResponsesInputItemIds;
+  if (prov.preserveResponsesMessageMetadata === undefined && entry.preserveResponsesMessageMetadata !== undefined) prov.preserveResponsesMessageMetadata = entry.preserveResponsesMessageMetadata;
   if (prov.dropResponsesReasoningItems === undefined && entry.dropResponsesReasoningItems !== undefined) prov.dropResponsesReasoningItems = entry.dropResponsesReasoningItems;
   applyReasoningSummaryDefaults(prov, entry.modelSupportsReasoningSummaries);
   applyServiceTierModelDefaults(prov, serviceTierModelDefaultsFor(entry, prov));
@@ -602,6 +619,7 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
   if (!prov.preserveReasoningContentModels && seed.preserveReasoningContentModels) prov.preserveReasoningContentModels = [...seed.preserveReasoningContentModels];
   if (!prov.requiresReasoningPlaceholderModels && seed.requiresReasoningPlaceholderModels) prov.requiresReasoningPlaceholderModels = [...seed.requiresReasoningPlaceholderModels];
   if (!prov.reasoningSplitModels && seed.reasoningSplitModels) prov.reasoningSplitModels = [...seed.reasoningSplitModels];
+  if (!prov.inlineThinkTagModels && seed.inlineThinkTagModels) prov.inlineThinkTagModels = [...seed.inlineThinkTagModels];
   if (!prov.reasoningDetailsModels && seed.reasoningDetailsModels) prov.reasoningDetailsModels = [...seed.reasoningDetailsModels];
   if (!prov.thinkingToggleModels && seed.thinkingToggleModels) prov.thinkingToggleModels = [...seed.thinkingToggleModels];
   if (!prov.thinkingBudgetModels && seed.thinkingBudgetModels) prov.thinkingBudgetModels = [...seed.thinkingBudgetModels];
@@ -633,6 +651,25 @@ export function deriveJawcodeAliases(): Record<string, string> {
 export function shouldCaseFoldMetadataModelId(providerId: string): boolean {
   const entry = PROVIDER_REGISTRY.find(row => row.id === providerId);
   return entry?.metadataModelIdNormalize === "case-insensitive";
+}
+
+const AZURE_VENDOR_METADATA_PRIORITY = [
+  "azure-openai",
+  ...COST_VENDOR_PRIORITY.filter(provider => provider !== "azure-openai"),
+];
+
+/**
+ * Fill missing Azure model metadata by destination and known model id. Custom provider
+ * names miss PROVIDER_ALIASES; arbitrary deployment aliases still need explicit metadata.
+ */
+export function azureVendorModelMetadata(baseUrl: string | undefined, modelId: string, metadataConfigDir?: string): AzureModelMetadata | undefined {
+  if (!isAzureModelMetadataDestination(baseUrl)) return undefined;
+  const published = publishedAzureModelMetadata(modelId, metadataConfigDir);
+  for (const provider of AZURE_VENDOR_METADATA_PRIORITY) {
+    const meta = getModelMetadata(provider, modelId) ?? getModelMetadataCaseInsensitive(provider, modelId);
+    if (meta) return { ...meta, ...published };
+  }
+  return published;
 }
 
 function entryToPreset(entry: ProviderRegistryEntry): DerivedProviderPreset {

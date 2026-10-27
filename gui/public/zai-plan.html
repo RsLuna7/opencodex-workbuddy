@@ -2,50 +2,64 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <title>ZCode Plan</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ZCode Start Plan</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; color: #111; }
-    code { background: #f4f4f4; padding: 0.1em 0.3em; }
-    button { margin-right: 8px; padding: 6px 12px; }
-    pre { background: #f7f7f7; padding: 12px; overflow: auto; }
-    .muted { color: #666; }
+    :root { color-scheme: light dark; font-family: system-ui,sans-serif; background: light-dark(#fff,#212121); color: light-dark(#111,#ececec); }
+    body { max-width: 720px; margin: 32px auto; padding: 0 20px; line-height: 1.5; }
+    h1 { font-size: 24px; margin-bottom: 8px; } h2 { font-size: 18px; margin: 0 0 12px; }
+    section { border-top: 1px solid light-dark(#e6e6e6,#3d3d3d); padding: 24px 0; }
+    code,pre { font-family: ui-monospace,monospace; background: light-dark(#f7f7f7,#262626); }
+    code { padding: 2px 4px; } pre { padding: 16px; overflow: auto; max-height: 420px; }
+    button,input,select { font: inherit; padding: 8px 12px; border: 1px solid light-dark(#bbb,#666); border-radius: 6px; }
+    button { cursor: pointer; } button:disabled { cursor: default; opacity: .5; }
+    input,select { min-width: 0; max-width: 100%; box-sizing: border-box; } select,input { width: 100%; }
+    label { display: block; margin: 12px 0 4px; } .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .muted { color: light-dark(#666,#aaa); } #status { min-height: 24px; overflow-wrap: anywhere; }
+    :focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
   </style>
 </head>
-<body>
-  <h1>ZCode Plan</h1>
-  <p class="muted">领取 / 日活 / 指纹。自动领取和每日日活默认关。对话走 Codex 选 <code>zai-plan/GLM-5.3-Flash</code>。</p>
-  <p>
-    <button id="refresh">刷新</button>
-    <button id="import">从桌面导入</button>
-    <button id="preview">预览套餐</button>
-    <button id="telemetry">上报日活</button>
-    <button id="rotate">换设备指纹</button>
-  </p>
-  <pre id="out">loading…</pre>
-  <script>
-    const out = document.getElementById("out");
-    async function call(path, opts) {
-      const res = await fetch(path, opts);
-      const text = await res.text();
-      try { return JSON.stringify(JSON.parse(text), null, 2); }
-      catch { return text; }
-    }
-    document.getElementById("refresh").onclick = async () => {
-      out.textContent = await call("/api/zai-plan/accounts");
-    };
-    document.getElementById("import").onclick = async () => {
-      out.textContent = await call("/api/zai-plan/import", { method: "POST" });
-    };
-    document.getElementById("preview").onclick = async () => {
-      out.textContent = await call("/api/zai-plan/accounts/me/preview");
-    };
-    document.getElementById("telemetry").onclick = async () => {
-      out.textContent = await call("/api/zai-plan/accounts/me/telemetry", { method: "POST" });
-    };
-    document.getElementById("rotate").onclick = async () => {
-      out.textContent = await call("/api/zai-plan/accounts/me/fingerprint/rotate", { method: "POST" });
-    };
-    document.getElementById("refresh").click();
-  </script>
+<body id="zcode-panel">
+  <h1>ZCode Start Plan</h1>
+  <p class="muted"><span data-copy="intro">对话选择</span> <code>zai-plan/GLM-5.3-Flash</code></p>
+  <section aria-labelledby="account-heading">
+    <h2 id="account-heading" data-copy="account">账户与权益</h2>
+    <div class="actions">
+    <button id="refresh" data-copy="refresh">刷新</button>
+    <button id="balance" data-copy="balance">刷新权益</button>
+    <button id="import" data-copy="import">从桌面导入</button>
+    </div>
+  </section>
+  <section aria-labelledby="plan-heading">
+    <h2 id="plan-heading" data-copy="plans">活动套餐</h2>
+    <button id="preview" data-copy="preview">预览套餐</button>
+    <form id="claim-form">
+      <label for="plans" data-copy="planLabel">可领取套餐</label>
+      <select id="plans" disabled><option value="" data-copy="choosePlan">先预览套餐</option></select>
+      <div class="actions"><button id="claim" data-copy="claim" disabled>领取选中套餐</button></div>
+    </form>
+  </section>
+  <section aria-labelledby="diagnostic-heading">
+    <h2 id="diagnostic-heading" data-copy="diagnostic">在线诊断</h2>
+    <p class="muted" data-copy="diagnosticHelp">仅点击后发送一条小型测试请求，最多 64 个输出 Token，会使用套餐额度。通过正常代理入口验证，并读取请求记录确认模型、实际账户与套餐。</p>
+    <form id="probe-form">
+      <label for="model" data-copy="model">测试模型</label>
+      <select id="model" disabled><option value="" data-copy="chooseModel">先刷新权益</option></select>
+      <label for="gateway-key" data-copy="gatewayKey">代理 API Key（本机回环通常可留空）</label>
+      <input id="gateway-key" type="password" autocomplete="off" spellcheck="false" aria-describedby="key-help">
+      <p id="key-help" class="muted" data-copy="gatewayHelp">仅用于当前代理的数据接口，不是 ZCode 登录令牌，不保存到浏览器。</p>
+      <div class="actions"><button id="probe" data-copy="probe" disabled>发送一次测试请求</button></div>
+    </form>
+  </section>
+  <section aria-labelledby="maintenance-heading">
+    <h2 id="maintenance-heading" data-copy="maintenance">手动维护</h2>
+    <div class="actions">
+    <button id="telemetry" data-copy="telemetry">上报日活</button>
+    <button id="rotate" data-copy="rotate">换设备指纹</button>
+    </div>
+  </section>
+  <p id="status" data-copy="loading" role="status" aria-live="polite">正在读取账户…</p>
+  <details id="details"><summary data-copy="data">诊断数据</summary><pre id="out"></pre></details>
+  <script type="module" src="/zai-plan.js"></script>
 </body>
 </html>

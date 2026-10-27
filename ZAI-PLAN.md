@@ -2,12 +2,12 @@
 
 ZCode Plan 提供方 id：`zai-plan`（仪表盘 label「ZCode Plan」）。不要占用 `ocx zcode`（那是把 ZCode 客户端接到 ocx）。
 
-上游：`POST https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages`  
-登录：`ocx login zai-plan`（默认导入本机 `~/.zcode/v2` 桌面 JWT）。Codex 选 `zai-plan/GLM-5.3-Flash`。
+上游：`POST https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages`
+登录：`ocx account login zai-plan`（默认导入本机 `~/.zcode/v2` 桌面 JWT）。Codex 选 `zai-plan/GLM-5.3-Flash`。
 
 首次对话会弹独立 Chrome 过阿里云无痕验证（headless 会 F001）。验证码和 `/messages` 必须同一 Chrome 出站。
 
-运营页：`http://127.0.0.1:10100/zai-plan`  
+运营页：`http://127.0.0.1:10100/zai-plan`
 自动领取 / 每日日活默认关。
 
 ## 3012 unusual activity

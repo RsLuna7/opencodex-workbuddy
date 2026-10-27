@@ -1,43 +1,50 @@
 import type { CodebuddyOAuthMetadata, KiroOAuthMetadata, OAuthController, OAuthCredentials, ZaiPlanOAuthMetadata } from "./types";
 import { initializeProviderModelSelection } from "../providers/initial-model-selection";
 import type { OcxConfig, OcxProviderConfig, RefreshPolicy } from "../types";
-import { ConfigMutationLockError, loadConfig, mutatePersistedConfig, saveConfig } from "../config";
+import { getDefaultConfig, initializePersistedConfigIfMissing, loadConfig, mutatePersistedConfig, observeInitialConfigState, saveConfig } from "../config";
 import { resolveProviderApiKey } from "../providers/key-store";
 import { projectEmail } from "../lib/privacy";
 import { KiroTokenRefreshError, environmentKiroRoutingMetadata, loginKiro, refreshKiroToken, settleKiroLoginTransaction } from "./kiro";
+import { KiroUserIdentityUnavailableError, kiroReauthIdentityMatches } from "./kiro-account-identity";
 import {
   OAuthMutationBusyError,
   OAuthRefreshIntentIOError,
   clearOAuthRefreshIntent,
-  clearOAuthRefreshIntentIfMatch,
   createOAuthRefreshIntentLock,
   credentialGeneration,
   getAccountCredential,
   getAccountCredentialWithStatus,
   getAccountSet,
   getCredential,
-  markAccountNeedsReauthIfGeneration,
-  markOAuthRefreshIntentCleanupPending,
+  markAccountNeedsReauthIfGeneration, accountNeedsReauthForStatus, markAccountRefreshAttentionIfGeneration,
   markOAuthRefreshIntentStaleOwner,
   mergeAccountCredential,
   normalizeAuthStoreBuffer,
   readOAuthRefreshIntent,
-  removeAccount,
+  rollbackCredentialWriteIfMatch,
   saveAccountCredential,
   saveCredential,
-  setActiveAccount,
+  saveCredentialWithReceipt,
   writeOAuthRefreshIntent,
+  type OAuthCredentialWriteReceipt,
   type OAuthRefreshIntent,
-  type OAuthRefreshIntentCleanupPending,
+  type AuthStore,
 } from "./store";
 import { loginXai, refreshXaiToken, XAI_LOCAL_CLI_DETACH_WARNING, XaiTokenRequestError } from "./xai";
-import { ANTHROPIC_OAUTH_BETA, AnthropicTokenError, loginAnthropic, refreshAnthropicToken } from "./anthropic";
+import { ANTHROPIC_OAUTH_BETA, AnthropicTokenError } from "./anthropic";
+import { isAnthropicOAuthInstance, anthropicInstanceRowShapeMatches } from "../providers/anthropic-instance";
+import { captureModelsOAuthTarget, guardModelsOAuthRequest, mayResolveModelsOAuth } from "./model-discovery-auth";
+import { anthropicOAuthDefinition, assertAnthropicInstanceLoginConfig, AnthropicInstanceCollisionError,
+  clearAnthropicRefreshIntentBestEffort, clearAnthropicRefreshIntentForKnownFailure,
+  resumeAnthropicRefreshIntentCleanup, clearObservedAnthropicRefreshIntent } from "./anthropic-oauth-definitions";
 import { loginKimi, refreshKimiToken } from "./kimi";
 import { loginNous, NousTokenError, refreshNousToken, clearNousRefreshIntent, RefreshIntentIOError } from "./nous";
-import { loginChatGPT, refreshChatGPTToken, type ChatGPTLoginFlow } from "./chatgpt";
+import { ChatGptTokenRequestError, ChatGptTokenError, loginChatGPT, refreshChatGPTToken, type ChatGPTLoginFlow } from "./chatgpt";
 import { loginAntigravity, refreshAntigravityToken } from "./google-antigravity";
 import { loginCursor, refreshCursorToken } from "./cursor";
-import { loginDevin, refreshDevinToken } from "./devin";
+import { loginZed, refreshZedToken } from "./zed";
+import { assertDevinCliAdoptionOwnership, loginDevin, refreshDevinToken } from "./devin";
+import { validateDevinApiBaseUrl } from "./devin/api-base";
 import { loginGithubCopilot, refreshGithubCopilotToken, validateCopilotApiBaseUrl } from "./github-copilot";
 import { loginCommandCode, refreshCommandCodeToken } from "./command-code";
 import { loginMetaMuse, refreshMetaMuseToken } from "./meta-muse";
@@ -47,16 +54,16 @@ import { workbuddyModelsUrl } from "./codebuddy-hosts";
 import { routedWorkbuddyRealm } from "./codebuddy-realm";
 import { loginZaiPlan, refreshZaiPlanToken } from "./zai-plan";
 import { loginOrcaRouter, orcaRouterInferenceBaseUrl, refreshOrcaRouterKey } from "./orcarouter";
-import { ANTIGRAVITY_REQUEST_UA } from "../adapters/google-antigravity-wire";
+import { ANTIGRAVITY_DISCOVERY_UA } from "../adapters/google-antigravity-wire";
 import { deriveOAuthDefaultModel, deriveOAuthProviderConfig } from "../providers/derive";
 import { apiKeyPoolEntryId, sanitizeApiKeyValue } from "../providers/api-keys";
 import { effectiveGoogleMode, getProviderRegistryEntry, mergeRegistryStaticHeaders, providerMatchesRegistryTransport } from "../providers/registry";
 import { providerModelsUrl, resolveProviderModelDiscoveryUrl } from "../providers/model-discovery";
 import { resolveProviderTransport } from "../providers/xai-transport";
-import { detectClaudeCodeToken, detectGrokCliToken, hasComparableGrokIdentity, isSameGrokIdentity, shouldAdoptGrokGeneration } from "./local-token-detect";
+import { detectGrokCliToken, hasComparableGrokIdentity, isSameGrokIdentity, shouldAdoptGrokGeneration } from "./local-token-detect";
 import { logOAuthEvent } from "./log";
 import { captureConfigGeneration, sweepExpiredOnWrite } from "../lib/state-store-sweeper";
-import { clearManualCodeSlot, ensureManualCodeSlot, kiroLoginSettling, loginAbort, loginState, waitForManualLoginCode } from "./login-flow-state";
+import { clearManualCodeSlot, ensureManualCodeSlot, kiroLoginSettling, loginAbort, loginState, waitForManualLoginCode, type OAuthLoginHint } from "./login-flow-state";
 export { reconcileOAuthFlowState, submitManualLoginCode } from "./login-flow-state";
 import { randomUUID } from "node:crypto";
 export {
@@ -83,7 +90,11 @@ export {
 export { OAUTH_REFRESH_LOCK_WAIT_MS, peekAuthStore, peekOAuthRefreshIntent } from "./store";
 import { codexAccountNamespaceProviderCollisionError } from "../codex/account-namespace-match";
 
-const REFRESH_SKEW_MS = 60_000;
+import { REFRESH_SKEW_MS } from "./refresh-policy";
+import { newerClaudeCredentialForInstance, captureAnthropicCredentialOwnerForInstance } from "./anthropic-continuity";
+import { normalizeOAuthPlan, mergeOAuthPlan } from "./plan";
+import { mergeAnthropicIdentity, type AnthropicIdentityResolver } from "./anthropic-identity";
+import { AnthropicCrossInstanceDuplicateError, AnthropicLocalCliImportError, assertAnthropicCredentialSource } from "./store-anthropic-instance";
 export interface OAuthAccessSnapshot {
   provider: string;
   accountId: string;
@@ -94,17 +105,21 @@ export interface OAuthAccessSnapshot {
   /** Safe request-routing subset; refresh-only Kiro client secrets never leave the credential store. */
   kiro?: Pick<KiroOAuthMetadata, "profileArn" | "apiRegion" | "ssoRegion" | "authType">;
   /**
-   * Allowlisted GitHub Copilot API origin belonging to THIS account.
+   * Allowlisted API origin belonging to THIS account.
    *
-   * Copilot pins its bearer to an account-scoped regional host. Initial routing, 401 refresh, and
-   * account failover must resolve transport from this same snapshot; rereading the active account
-   * can pair account A's token with account B's origin during a concurrent switch (#2568d).
+   * Copilot and Devin pin credentials to account-scoped regional or tenant hosts. Initial routing,
+   * discovery, refresh, and account failover must resolve transport from this same snapshot;
+   * rereading the active account can pair account A's token with account B's origin during a
+   * concurrent switch (#2568d).
    */
   apiBaseUrl?: string;
-  /** CodeBuddy / WorkBuddy routing headers belonging to THIS account. */
+  /**
+   * The upstream's own user id for providers that sign requests with it (Zed's `user_id`).
+   * `accountId` is the local store slot key, a hash, and must never stand in for it.
+   */
+  providerUserId?: string;
+  /** WorkBuddy account-specific routing headers, carried with the serving bearer. */
   codebuddy?: CodebuddyOAuthMetadata;
-  /** ZCode Plan device identity belonging to THIS account. Never includes codingKey. */
-  zaiPlan?: Pick<ZaiPlanOAuthMetadata, "deviceMid" | "userId" | "sessionId">;
 }
 
 export interface ObservedOAuthAccessSnapshot extends OAuthAccessSnapshot {
@@ -114,6 +129,7 @@ export interface ObservedOAuthAccessSnapshot extends OAuthAccessSnapshot {
 
 export type OAuthActiveTokenObservation =
   | { readonly kind: "available"; readonly snapshot: ObservedOAuthAccessSnapshot }
+  | { readonly kind: "paused" }
   | { readonly kind: "missing" }
   | { readonly kind: "malformed" }
   | { readonly kind: "needs-reauth" }
@@ -167,7 +183,7 @@ export function seedOAuthTokenRefreshFlightsForTests(rows: Array<{ key: string; 
 const XAI_PERMANENT_FAILURE_TTL_MS=30_000;
 const permanentRefreshFailures=new Map<string,number>();
 interface XaiRefreshDeps { intentLock?:ReturnType<typeof createOAuthRefreshIntentLock>; now?:()=>number; afterPrePersistRead?:()=>void|Promise<void>; signal?: AbortSignal }
-interface AnthropicRefreshDeps { intentLock?:ReturnType<typeof createOAuthRefreshIntentLock>; now?:()=>number; afterPrePersistRead?:()=>void|Promise<void>; signal?: AbortSignal; flight?: OAuthRefreshFlightEvidence; replacedStaleFlight?: OAuthRefreshFlightEvidence }
+interface AnthropicRefreshDeps { resolveIdentity?: AnthropicIdentityResolver; intentLock?:ReturnType<typeof createOAuthRefreshIntentLock>; now?:()=>number; afterPrePersistRead?:()=>void|Promise<void>; signal?: AbortSignal; flight?: OAuthRefreshFlightEvidence; replacedStaleFlight?: OAuthRefreshFlightEvidence }
 interface GenericRefreshDeps { intentLock?:ReturnType<typeof createOAuthRefreshIntentLock>; afterPrePersistRead?:()=>void|Promise<void>; signal?: AbortSignal }
 function verdictKey(p:string,a:string,c:OAuthCredentials){return `${p}\0${a}\0${credentialGeneration(c)}`;}
 function cached(p:string,a:string,c:OAuthCredentials,now:()=>number){const k=verdictKey(p,a,c),u=permanentRefreshFailures.get(k);if(u===undefined)return false;if(u<=now()){permanentRefreshFailures.delete(k);return false;}return true;}
@@ -188,16 +204,19 @@ export interface LoginOpts {
 }
 
 export interface LoginFlowLifecycle {
+  flowId?: string;
   /** Runs after background credential/config persistence settles, before status becomes done. */
   onSettled?: () => void | Promise<void>;
 }
 
-interface OAuthProviderDef {
+export interface OAuthProviderDef {
   login(ctrl: OAuthController, opts?: LoginOpts, providerConfig?: OcxProviderConfig): Promise<OAuthCredentials>;
   refresh(
     refreshToken: string,
     signal?: AbortSignal,
     credential?: OAuthCredentials,
+    /** Store row being refreshed; passed by the generic lock only. */
+    accountId?: string,
   ): Promise<OAuthCredentials>;
   /** provider entry written into config.json on first login. */
   providerConfig: OcxProviderConfig;
@@ -261,15 +280,8 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
     providerConfig: oauthConfig("xai"),
     defaultModel: oauthDefaultModel("xai"),
   },
-  anthropic: {
-    login: (ctrl, opts) => loginAnthropic(ctrl, { importLocal: opts?.forceLogin ? "off" : "fallback" }),
-    refresh: refreshAnthropicToken,
-    providerConfig: oauthConfig("anthropic"),
-    defaultModel: oauthDefaultModel("anthropic"),
-    // Anthropic actively server-side-blocks subscription OAuth outside its own clients (Feb 2026).
-    // Never generate background refresh traffic for it — grade 20, highest ToS risk.
-    defaultRefreshPolicy: "disabled",
-  },
+  anthropic: anthropicOAuthDefinition("anthropic"),
+  anthropic2: anthropicOAuthDefinition("anthropic2"),
   kimi: {
     login: (ctrl) => loginKimi(ctrl),
     refresh: refreshKimiToken,
@@ -296,7 +308,7 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
     defaultRefreshPolicy: "lazy-only",
   },
   "zai-plan": {
-    login: (ctrl) => loginZaiPlan(ctrl, { importLocal: "fallback" }),
+    login: (ctrl, opts) => loginZaiPlan(ctrl, { importLocal: "fallback", forceLogin: opts?.forceLogin }),
     refresh: (rt, signal, credential) => refreshZaiPlanToken(rt, signal, credential),
     providerConfig: oauthConfig("zai-plan"),
     defaultModel: oauthDefaultModel("zai-plan"),
@@ -336,6 +348,13 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
     providerConfig: oauthConfig("cursor"),
     defaultModel: oauthDefaultModel("cursor"),
   },
+  zed: {
+    login: ctrl => loginZed(ctrl),
+    refresh: refreshZedToken,
+    providerConfig: oauthConfig("zed"),
+    defaultModel: oauthDefaultModel("zed"),
+    defaultRefreshPolicy: "disabled",
+  },
   devin: {
     // Import-first: adopts a signed-in Devin CLI credential when one exists and
     // only then falls back to the Auth0 browser flow. forceLogin skips the
@@ -356,7 +375,7 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
   },
   chatgpt: {
     login: (ctrl, opts) => loginChatGPT(ctrl, { forceLogin: opts?.forceLogin, flow: opts?.flow }),
-    refresh: (rt) => refreshChatGPTToken(rt),
+    refresh: (rt, signal) => refreshChatGPTToken(rt, { signal }),
     providerConfig: { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" as const },
     defaultModel: "gpt-5.6-luna",
   },
@@ -366,7 +385,7 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
  * Removed provider ids that still name a live successor.
  *
  * `devin-cli` was merged into `devin` (import-first login absorbed the CLI
- * credential import; devlog/_plan/260913_devin_provider_merge). The id can
+ * credential import; devlog/_fin/260913_devin_provider_merge). The id can
  * still arrive here from a saved config row or a stored credential slot that
  * the startup migration has not rekeyed yet, and from a user typing the old
  * name at `ocx login`. It is deliberately NOT an OAUTH_PROVIDERS entry:
@@ -439,9 +458,19 @@ export class OAuthLoginRequiredError extends Error {
   }
 }
 
-export class OAuthProviderPublicationError extends Error {
+/** An operator-paused account is temporarily unavailable, not an invalid login. */
+export class OAuthAccountPausedError extends Error {
   constructor() {
-    super("OAuth credential was saved, but the provider entry was not written. Resolve the account namespace collision, then retry login.");
+    super("OAuth account is paused. Resume it in account settings and retry.");
+    this.name = "OAuthAccountPausedError";
+  }
+}
+
+export class OAuthProviderPublicationError extends Error {
+  constructor(provider?: string, credentialWritten = true) {
+    super(provider !== "anthropic2" ? "OAuth credential was saved, but the provider entry was not written. Resolve the account namespace collision, then retry login."
+      : credentialWritten ? "Anthropic Pool 2 credential was saved as an orphan auth row, but the provider entry was not written. Repair the persisted config or resolve the provider/account namespace collision, then retry login."
+      : "Anthropic Pool 2 login did not start because the config file is missing or could not be written; no credential was saved. Repair the persisted config, then retry login.");
     this.name = "OAuthProviderPublicationError";
   }
 }
@@ -476,6 +505,7 @@ export function publicOAuthAuthenticationErrorMessage(error: unknown): string {
   }
   if (
     (error instanceof OAuthLoginRequiredError && isOAuthProvider(error.provider))
+    || error instanceof OAuthAccountPausedError
     || error instanceof OAuthProviderPublicationError
     // Reauth identity outcomes carry fixed, account-free remediation text. Dropping them to the
     // generic message hides WHICH failure the user must fix (sign in with the selected account).
@@ -483,11 +513,17 @@ export function publicOAuthAuthenticationErrorMessage(error: unknown): string {
     || error instanceof OAuthReauthIdentityUnverifiedError
     || error instanceof OAuthTokenRefreshBusyError
     || error instanceof OAuthTokenRefreshStaleError
+    || error instanceof AnthropicInstanceCollisionError
+    || error instanceof AnthropicCrossInstanceDuplicateError
+    || error instanceof AnthropicLocalCliImportError
+    // Fixed, account-free text: a Kiro login that could not name its user left the existing
+    // organization account in place, and the user must confirm the signed-in CLI user (#6641).
+    || error instanceof KiroUserIdentityUnavailableError
   ) return error.message;
   return "OAuth authentication failed. Check the OpenCodex account status and retry.";
 }
 
-function accessSnapshot(provider: string, accountId: string, cred: OAuthCredentials): OAuthAccessSnapshot {
+function accessSnapshot(provider: string, accountId: string, cred: OAuthCredentials, oauthProvider = provider): OAuthAccessSnapshot {
   // Derived, not read back: a stored `authType` is trusted when present, but a credential imported
   // before the field existed still routes correctly because the client pair implies SSO OIDC.
   const kiroAuthType = cred.kiro?.authType
@@ -505,36 +541,27 @@ function accessSnapshot(provider: string, accountId: string, cred: OAuthCredenti
   // Validated here, not at the call site: an unvalidated origin from a legacy or crafted
   // credential must never travel with a bearer, and dropping it makes the transport fall back to
   // the canonical host rather than to whatever the previous account was using.
-  const copilotApiBaseUrl = provider === "github-copilot"
+  // The host rides on the OAuth definition the snapshot was resolved through, not the routed
+  // slot name: a custom provider reusing the Devin definition keeps its stored tenant URL.
+  const accountApiBaseUrl = oauthProvider === "github-copilot"
     ? validateCopilotApiBaseUrl(cred.apiBaseUrl)
-    : undefined;
-  const codebuddyUid = cred.codebuddy?.uid ?? cred.accountId;
-  const codebuddy: CodebuddyOAuthMetadata | undefined = (cred.codebuddy || (provider === "workbuddy" && codebuddyUid))
-    ? {
-      ...(codebuddyUid ? { uid: codebuddyUid } : {}),
-      ...(cred.codebuddy?.enterpriseId ? { enterpriseId: cred.codebuddy.enterpriseId } : {}),
-      ...(cred.codebuddy?.domain ? { domain: cred.codebuddy.domain } : {}),
-      ...(cred.codebuddy?.realm ? { realm: cred.codebuddy.realm } : {}),
-      ...(cred.codebuddy?.platform ? { platform: cred.codebuddy.platform } : {}),
-      ...(cred.codebuddy?.deviceToken ? { deviceToken: cred.codebuddy.deviceToken } : {}),
-    }
-    : undefined;
-  const zaiPlan: OAuthAccessSnapshot["zaiPlan"] | undefined = cred.zaiPlan
-    ? {
-      ...(cred.zaiPlan.deviceMid ? { deviceMid: cred.zaiPlan.deviceMid } : {}),
-      ...(cred.zaiPlan.userId ? { userId: cred.zaiPlan.userId } : {}),
-      ...(cred.zaiPlan.sessionId ? { sessionId: cred.zaiPlan.sessionId } : {}),
-    }
-    : undefined;
+    : oauthProvider === "devin" || oauthProvider === "devin-cli"
+      ? validateDevinApiBaseUrl(cred.apiBaseUrl)
+      : undefined;
   return {
     provider,
     accountId,
     generation: credentialGeneration(cred),
     accessToken: cred.access,
     ...(cred.projectId ? { projectId: cred.projectId } : {}),
-    ...(copilotApiBaseUrl ? { apiBaseUrl: copilotApiBaseUrl } : {}),
-    ...(codebuddy && Object.keys(codebuddy).length > 0 ? { codebuddy } : {}),
-    ...(zaiPlan && Object.keys(zaiPlan).length > 0 ? { zaiPlan } : {}),
+    ...(accountApiBaseUrl ? { apiBaseUrl: accountApiBaseUrl } : {}),
+    ...(oauthProvider === "zed" && cred.accountId ? { providerUserId: cred.accountId } : {}),
+    ...(provider === CODEBUDDY_PROVIDER_ID ? {
+      codebuddy: {
+        ...(cred.codebuddy ?? {}),
+        ...(cred.codebuddy?.uid || cred.accountId ? { uid: cred.codebuddy?.uid ?? cred.accountId } : {}),
+      },
+    } : {}),
     // Stored account metadata remains authoritative. Metadata-less legacy/environment credentials
     // may use explicit environment routing, but never borrow the currently signed-in local CLI account.
     ...(provider === "kiro"
@@ -568,11 +595,14 @@ export function observeActiveOAuthAccessToken(
   const accountSet = authStore.store[provider];
   const account = accountSet?.accounts.find(candidate => candidate.id === accountSet.activeAccountId);
   if (!account) return { kind: "missing" };
+  if (account.paused === true) return { kind: "paused" };
   if (account.needsReauth) return { kind: "needs-reauth" };
   if (account.credential.expires <= now) return { kind: "expired" };
   if (account.credential.expires <= now + REFRESH_SKEW_MS) return { kind: "near-expiry" };
 
-  const apiBaseUrl = validateCopilotApiBaseUrl(account.credential.apiBaseUrl);
+  const apiBaseUrl = provider === "github-copilot"
+    ? validateCopilotApiBaseUrl(account.credential.apiBaseUrl)
+    : undefined;
   return {
     kind: "available",
     snapshot: {
@@ -587,18 +617,20 @@ async function resolveAccessSnapshotForAccount(
   accountId: string,
   rejectedGeneration?: string,
   requireUsableAccount = false,
+  oauthProvider = provider,
 ): Promise<OAuthAccessSnapshot> {
-  const def = OAUTH_PROVIDERS[provider];
-  if (!def) throw new UnsupportedOAuthProviderError(provider);
+  const def = OAUTH_PROVIDERS[oauthProvider];
+  if (!def) throw new UnsupportedOAuthProviderError(oauthProvider);
   // One store read answers both questions. A caller that opts in gets the account REJECTED
   // when it needs reauthentication, which a bare credential read cannot detect: a revoked
   // account keeps a readable credential, so resolution would otherwise succeed and the
   // request would dispatch on an account already known to need a fresh login.
   const row = getAccountCredentialWithStatus(provider, accountId);
   if (!row) throw new OAuthLoginRequiredError(provider);
+  if (row.paused === true) throw new OAuthAccountPausedError();
   if (requireUsableAccount && row.needsReauth) throw new OAuthLoginRequiredError(provider);
   const cred = row.credential;
-  const current = accessSnapshot(provider, accountId, cred);
+  const current = accessSnapshot(provider, accountId, cred, oauthProvider);
   if (rejectedGeneration !== undefined && current.generation !== rejectedGeneration) return current;
   if (rejectedGeneration === undefined && cred.expires > Date.now() + REFRESH_SKEW_MS) return current;
 
@@ -627,12 +659,14 @@ async function resolveAccessSnapshotForAccount(
   };
   const refresh = (async (): Promise<OAuthAccessSnapshot> => {
     const accessToken = await refreshAndPersistAccessToken(provider, accountId, def, cred, abort.signal, flight, replacedStaleFlight);
-    const persisted = getAccountCredential(provider, accountId);
-    if (!persisted) throw new OAuthLoginRequiredError(provider);
+    const persistedRow = getAccountCredentialWithStatus(provider, accountId);
+    if (!persistedRow) throw new OAuthLoginRequiredError(provider);
+    if (persistedRow.paused === true) throw new OAuthAccountPausedError();
+    const persisted = persistedRow.credential;
     if (persisted.access !== accessToken) {
       throw new Error(`OAuth refresh persisted an unexpected access token for ${provider}`);
     }
-    return accessSnapshot(provider, accountId, persisted);
+    return accessSnapshot(provider, accountId, persisted, oauthProvider);
   })().catch(error => {
     if (abort.signal.reason instanceof OAuthTokenRefreshStaleError) throw abort.signal.reason;
     throw error;
@@ -644,10 +678,13 @@ async function resolveAccessSnapshotForAccount(
   return refresh;
 }
 
-export async function getValidAccessTokenSnapshot(provider: string): Promise<OAuthAccessSnapshot> {
+export async function getValidAccessTokenSnapshot(
+  provider: string,
+  options: { oauthProvider?: string } = {},
+): Promise<OAuthAccessSnapshot> {
   const set = getAccountSet(provider);
   if (!set) throw new OAuthLoginRequiredError(provider);
-  return resolveAccessSnapshotForAccount(provider, set.activeAccountId);
+  return resolveAccessSnapshotForAccount(provider, set.activeAccountId, undefined, false, options.oauthProvider);
 }
 
 /** Providers whose upstream-401 replay path may force a snapshot refresh. */
@@ -657,6 +694,7 @@ const FORCE_REFRESH_PROVIDERS = new Set([
   "kiro",
   "google-antigravity",
   "orcarouter-oauth",
+  "devin",
 ]);
 
 export async function forceRefreshOAuthAccessSnapshot(
@@ -708,10 +746,14 @@ function isTerminalRefreshError(err: unknown): boolean {
     || msg.includes("expired_token");
 }
 function terminal(error:unknown):boolean{
+  if (error instanceof ChatGptTokenRequestError) return false;
   if(error instanceof XaiTokenRequestError)return ["invalid_grant","refresh_token_reused","revoked_token"].includes(error.oauthError??"");
   if(error instanceof AnthropicTokenError)return (error.httpStatus===400||error.httpStatus===401)&&["invalid_grant","refresh_token_reused","revoked","revoked_token","refresh_token_revoked"].includes(error.oauthError??"");
   if(error instanceof KiroTokenRefreshError)return (error.httpStatus===400||error.httpStatus===401)&&error.oauthError!==undefined;
   if(error instanceof NousTokenError)return error.terminal===true||["invalid_grant","refresh_token_reused","revoked","revoked_token","expired_token"].includes(error.oauthError??"");
+  // ChatGPT carries the pool classifier's verdict on the error itself: revoked and
+  // expired grants are terminal; unknown/transient failures stay retryable.
+  if(error instanceof ChatGptTokenError)return error.terminal;
   // Local durable-write/read/cleanup failures are operational, not credential
   // death: the provider credential was never rejected or consumed. Never mark
   // the account needsReauth for broken local persistence infrastructure.
@@ -736,136 +778,17 @@ function definitivelyAnswered(error: unknown): boolean {
   return false;
 }
 
-/**
- * Intent cleanup is secondary to the refresh outcome it protects.
- *
- * Once a credential is already durable, cleanup remains secondary and best-effort. A known
- * failed attempt takes the stricter path below: its retry-safe marker must become durable before
- * the original provider error can be returned.
- */
-function clearAnthropicRefreshIntentBestEffort(
-  provider: string,
-  accountId: string,
-  expected: OAuthRefreshIntent,
-): boolean {
-  try {
-    return expected.attemptId
-      ? clearOAuthRefreshIntentIfMatch(provider, accountId, expected)
-      : clearOAuthRefreshIntent(provider, accountId, expected.generation);
-  } catch {
-    console.warn(
-      "[opencodex] Anthropic refresh intent cleanup failed; preserving the durable replay guard.",
-    );
-    return false;
-  }
-}
-
-const ANTHROPIC_INTENT_MARK_RETRY_DELAYS_MS = [10, 25, 50] as const;
-
-function isConfigMutationLockContention(error: unknown): boolean {
-  if (!(error instanceof ConfigMutationLockError)) return false;
-  const cause = error.cause;
-  const code = cause && typeof cause === "object" && "code" in cause
-    ? String((cause as { code?: unknown }).code)
-    : "";
-  return code === "SQLITE_BUSY" || code === "SQLITE_LOCKED";
-}
-
-async function clearAnthropicRefreshIntentForKnownFailure(
-  provider: string,
-  accountId: string,
-  expected: OAuthRefreshIntent,
-  cleanupPending: OAuthRefreshIntentCleanupPending,
-  refreshError: unknown,
-): Promise<boolean> {
-  let marked: OAuthRefreshIntent | undefined;
-  for (let attempt = 0; attempt <= ANTHROPIC_INTENT_MARK_RETRY_DELAYS_MS.length; attempt += 1) {
-    try {
-      marked = markOAuthRefreshIntentCleanupPending(
-        provider,
-        accountId,
-        expected,
-        cleanupPending,
-      );
-      break;
-    } catch (cause) {
-      const retryDelay = ANTHROPIC_INTENT_MARK_RETRY_DELAYS_MS[attempt];
-      if (!isConfigMutationLockContention(cause) || retryDelay === undefined) {
-        throw new OAuthRefreshIntentIOError(
-          "mark-cleanup-pending",
-          cause,
-          refreshError,
-        );
-      }
-      // The provider has definitively answered, so caller cancellation no longer changes the
-      // settlement obligation. Yield briefly while retaining the per-account refresh lock, then
-      // rerun the existing compare-and-swap marker against current disk state.
-      await Bun.sleep(retryDelay);
-    }
-  }
-  if (!marked) {
-    throw new OAuthRefreshIntentIOError(
-      "mark-cleanup-pending",
-      new Error("Anthropic refresh intent changed before safe cleanup"),
-      refreshError,
-    );
-  }
-
-  let cleared: boolean;
-  try {
-    cleared = clearOAuthRefreshIntentIfMatch(provider, accountId, marked);
-  } catch {
-    console.warn(
-      "[opencodex] Anthropic refresh intent cleanup failed; retry-safe cleanup remains pending.",
-    );
-    return false;
-  }
-  if (!cleared) {
-    throw new OAuthRefreshIntentIOError(
-      "clear-cleanup-pending",
-      new Error("Anthropic refresh intent changed during safe cleanup"),
-      refreshError,
-    );
-  }
-  return true;
-}
-
-function resumeAnthropicRefreshIntentCleanup(
-  provider: string,
-  accountId: string,
-  pendingIntent: OAuthRefreshIntent,
-): void {
-  let cleared: boolean;
-  try {
-    cleared = clearOAuthRefreshIntentIfMatch(provider, accountId, pendingIntent);
-  } catch (cause) {
-    throw new OAuthRefreshIntentIOError(
-      "resume-cleanup",
-      cause,
-    );
-  }
-  if (!cleared) {
-    throw new OAuthRefreshIntentIOError(
-      "resume-cleanup",
-      new Error("Pending Anthropic refresh intent changed before cleanup"),
-    );
-  }
-}
-
-function clearObservedAnthropicRefreshIntent(
-  provider: string,
-  accountId: string,
-  pendingIntent: OAuthRefreshIntent,
-): boolean {
-  return pendingIntent.attemptId
-    ? clearOAuthRefreshIntentIfMatch(provider, accountId, pendingIntent)
-    : clearOAuthRefreshIntent(provider, accountId, pendingIntent.generation);
-}
 function authoritative(stored:OAuthCredentials,active:boolean,now:()=>number):OAuthCredentials{if(stored.source!=="local-cli")return stored;const disk=detectGrokCliToken();if(!disk)return stored;const allowed=isSameGrokIdentity(stored,disk)||(active&&!hasComparableGrokIdentity(stored,disk));return allowed&&shouldAdoptGrokGeneration(stored,disk,now(),REFRESH_SKEW_MS)?disk:stored;}
 function merged(fresh: OAuthCredentials, previous: OAuthCredentials): OAuthCredentials {
   return {
     ...fresh,
-    source: previous.source === "local-cli" ? "oauth" : fresh.source ?? previous.source ?? "oauth",
+    ...mergeAnthropicIdentity(fresh, previous),
+    plan: mergeOAuthPlan(fresh, previous),
+    // Shared: a refresh function returns "local-cli" only when the credential it hands back
+    // still is the local CLI's (Devin re-reading the CLI file, Meta Muse echoing its durable
+    // CLI key). Relabelling that "oauth" would stop the next forced refresh from re-reading it.
+    source: fresh.source === "local-cli" ? "local-cli"
+      : previous.source === "local-cli" ? "oauth" : fresh.source ?? previous.source ?? "oauth",
     ...(fresh.projectId === undefined && previous.projectId ? { projectId: previous.projectId } : {}),
     ...(fresh.apiBaseUrl === undefined && previous.apiBaseUrl ? { apiBaseUrl: previous.apiBaseUrl } : {}),
     ...(fresh.email === undefined && previous.email ? { email: previous.email } : {}),
@@ -873,14 +796,8 @@ function merged(fresh: OAuthCredentials, previous: OAuthCredentials): OAuthCrede
     ...(fresh.kiro === undefined && previous.kiro ? { kiro: previous.kiro } : {}),
   };
 }
-export async function refreshXaiAccountWithLock(provider:string,accountId:string,def:OAuthProviderDef,callerCredential:OAuthCredentials,deps:XaiRefreshDeps={}):Promise<string>{const writerGeneration=captureConfigGeneration();const now=deps.now??Date.now;const guard=await(deps.intentLock??createOAuthRefreshIntentLock(provider,accountId)).acquire();try{const stored=getAccountCredential(provider,accountId);if(!stored)throw new OAuthLoginRequiredError(provider);const active=getAccountSet(provider)?.activeAccountId===accountId,candidate=authoritative(stored,active,now);if(credentialGeneration(candidate)!==credentialGeneration(callerCredential)&&candidate.expires>now()+REFRESH_SKEW_MS){if(credentialGeneration(candidate)!==credentialGeneration(stored)){const o=await mergeAccountCredential(provider,accountId,candidate,{expectedGeneration:credentialGeneration(stored),afterPrePersistRead:deps.afterPrePersistRead});if(o.superseded){if(o.stored.expires>now()+REFRESH_SKEW_MS)return o.stored.access;throw new OAuthLoginRequiredError(provider);}}return candidate.access;}if(cached(provider,accountId,candidate,now))throw new OAuthLoginRequiredError(provider);const generation=credentialGeneration(candidate);try{const fresh=merged(await def.refresh(candidate.refresh,deps.signal),candidate);const o=await mergeAccountCredential(provider,accountId,fresh,{expectedGeneration:generation,afterPrePersistRead:deps.afterPrePersistRead});if(o.superseded){if(o.stored.expires>now()+REFRESH_SKEW_MS)return o.stored.access;throw new OAuthLoginRequiredError(provider);}permanentRefreshFailures.delete(verdictKey(provider,accountId,candidate));if(candidate.source==="local-cli")console.warn(XAI_LOCAL_CLI_DETACH_WARNING);return fresh.access;}catch(error){if(error instanceof OAuthMutationBusyError){permanentRefreshFailures.delete(verdictKey(provider,accountId,candidate));throw error;}if(!terminal(error))throw error;const failedAt=now();permanentRefreshFailures.set(verdictKey(provider,accountId,candidate),failedAt+XAI_PERMANENT_FAILURE_TTL_MS);sweepExpiredOnWrite(failedAt);await markAccountNeedsReauthIfGeneration(provider,accountId,generation,writerGeneration);throw new OAuthLoginRequiredError(provider);}}finally{guard.release();}}
+export async function refreshXaiAccountWithLock(provider:string,accountId:string,def:OAuthProviderDef,callerCredential:OAuthCredentials,deps:XaiRefreshDeps={}):Promise<string>{const writerGeneration=captureConfigGeneration();const now=deps.now??Date.now;const guard=await(deps.intentLock??createOAuthRefreshIntentLock(provider,accountId)).acquire();try{const row=getAccountCredentialWithStatus(provider,accountId);if(!row)throw new OAuthLoginRequiredError(provider);if(row.paused)throw new OAuthAccountPausedError();const stored=row.credential;const active=getAccountSet(provider)?.activeAccountId===accountId,candidate=authoritative(stored,active,now);if(credentialGeneration(candidate)!==credentialGeneration(callerCredential)&&candidate.expires>now()+REFRESH_SKEW_MS){if(credentialGeneration(candidate)!==credentialGeneration(stored)){const o=await mergeAccountCredential(provider,accountId,candidate,{expectedGeneration:credentialGeneration(stored),afterPrePersistRead:deps.afterPrePersistRead});if(o.superseded){if(o.stored.expires>now()+REFRESH_SKEW_MS)return o.stored.access;throw new OAuthLoginRequiredError(provider);}}return candidate.access;}if(cached(provider,accountId,candidate,now))throw new OAuthLoginRequiredError(provider);const generation=credentialGeneration(candidate);try{const fresh=merged(await def.refresh(candidate.refresh,deps.signal),candidate);const o=await mergeAccountCredential(provider,accountId,fresh,{expectedGeneration:generation,afterPrePersistRead:deps.afterPrePersistRead});if(o.superseded){if(o.stored.expires>now()+REFRESH_SKEW_MS)return o.stored.access;throw new OAuthLoginRequiredError(provider);}permanentRefreshFailures.delete(verdictKey(provider,accountId,candidate));if(candidate.source==="local-cli")console.warn(XAI_LOCAL_CLI_DETACH_WARNING);return fresh.access;}catch(error){if(error instanceof OAuthMutationBusyError){permanentRefreshFailures.delete(verdictKey(provider,accountId,candidate));throw error;}if(!terminal(error))throw error;const failedAt=now();permanentRefreshFailures.set(verdictKey(provider,accountId,candidate),failedAt+XAI_PERMANENT_FAILURE_TTL_MS);sweepExpiredOnWrite(failedAt);await markAccountNeedsReauthIfGeneration(provider,accountId,generation,writerGeneration);throw new OAuthLoginRequiredError(provider);}}finally{guard.release();}}
 
-function newerClaudeCredential(stored: OAuthCredentials, now: number): OAuthCredentials | undefined {
-  if (stored.source !== "local-cli") return undefined;
-  const disk = detectClaudeCodeToken();
-  if (!disk || disk.expires <= now + REFRESH_SKEW_MS) return undefined;
-  return credentialGeneration(disk) !== credentialGeneration(stored) ? disk : undefined;
-}
 
 /**
  * Preserve an already-rotated Nous refresh token (RT-B) after a terminal refresh
@@ -930,35 +847,47 @@ export async function refreshAnthropicAccountWithLock(
   callerCredential: OAuthCredentials,
   deps: AnthropicRefreshDeps = {},
 ): Promise<string> {
+  if (!isAnthropicOAuthInstance(provider)) throw new UnsupportedOAuthProviderError(provider);
   const writerGeneration = captureConfigGeneration();
   const now = deps.now ?? Date.now;
   const guard = await (deps.intentLock ?? createOAuthRefreshIntentLock(provider, accountId)).acquire();
   try {
-    const stored = getAccountCredential(provider, accountId);
-    if (!stored) throw new OAuthLoginRequiredError(provider);
-    const account = getAccountSet(provider)?.accounts.find(candidate => candidate.id === accountId);
+    const accountSet = getAccountSet(provider);
+    const account = accountSet?.accounts.find(candidate => candidate.id === accountId);
+    if (!accountSet || !account) throw new OAuthLoginRequiredError(provider);
+    if (account.paused) throw new OAuthAccountPausedError();
+    const stored = account.credential;
+    const owns = captureAnthropicCredentialOwnerForInstance(provider, accountSet, accountId);
     const generation = credentialGeneration(stored);
     let pendingIntent = readOAuthRefreshIntent(provider, accountId);
-    const disk = newerClaudeCredential(stored, now());
-    if (disk) {
-      const outcome = await mergeAccountCredential(provider, accountId, disk, {
-        expectedGeneration: credentialGeneration(stored),
-        afterPrePersistRead: deps.afterPrePersistRead,
-      });
-      if (outcome.superseded) {
-        // The disk credential is already durable here, so cleanup is secondary: an unlink
-        // failure must not mask a committed credential by throwing over the return below.
-        if (pendingIntent) clearAnthropicRefreshIntentBestEffort(provider, accountId, pendingIntent);
-        if (outcome.stored.expires > now() + REFRESH_SKEW_MS) return outcome.stored.access;
-        throw new OAuthLoginRequiredError(provider);
+    const observed = await newerClaudeCredentialForInstance(provider, stored, now(), deps.signal, deps.resolveIdentity);
+    const assertOwner = (store: AuthStore, checkDisk = true) => {
+      if (observed.kind !== "absent" && deps.signal?.aborted) throw new OAuthTokenRefreshStaleError();
+      if (!owns(store, checkDisk && observed.kind !== "absent" ? observed.diskGeneration : undefined)) {
+        if (store[provider]?.accounts.find(a => a.id === accountId)?.paused) throw new OAuthAccountPausedError();
+        throw new OAuthTokenRefreshStaleError();
       }
+    };
+    assertOwner({ [provider]: getAccountSet(provider)! }, observed.kind !== "adopt");
+    if (observed.kind === "adopt") {
+      const outcome = await mergeAccountCredential(provider, accountId, observed.credential, {
+        expectedGeneration: generation,
+        afterPrePersistRead: deps.afterPrePersistRead,
+        assertOwnership: assertOwner,
+      });
+      // A superseding write did not adopt our candidate. Its pending intent remains owned by it.
+      if (outcome.superseded) throw new OAuthTokenRefreshStaleError();
       if (pendingIntent) clearAnthropicRefreshIntentBestEffort(provider, accountId, pendingIntent);
-      return disk.access;
+      return observed.credential.access;
     }
+    // Unknown rotation may have consumed this refresh token. Refuse without replay or changing health.
+    if (observed.kind === "unresolved") throw new OAuthLoginRequiredError(provider);
     if (pendingIntent?.cleanupPending && pendingIntent.generation === generation) {
       resumeAnthropicRefreshIntentCleanup(provider, accountId, pendingIntent);
       pendingIntent = undefined;
     }
+    if (observed.kind === "different"
+      && (pendingIntent?.uncertain || pendingIntent?.generation === generation)) throw new OAuthLoginRequiredError(provider);
     if (!pendingIntent?.uncertain && pendingIntent?.generation === generation) {
       if (pendingIntent.staleOwner) throw new OAuthTokenRefreshStaleError();
       if (deps.replacedStaleFlight && pendingIntent.flightId === deps.replacedStaleFlight.flightId) {
@@ -1000,6 +929,7 @@ export async function refreshAnthropicAccountWithLock(
       const outcome = await mergeAccountCredential(provider, accountId, fresh, {
         expectedGeneration: generation,
         afterPrePersistRead: deps.afterPrePersistRead,
+        assertOwnership: store => { if (!owns(store, undefined, true)) throw new OAuthTokenRefreshStaleError(); },
       });
       if (outcome.superseded) {
         if (attemptIntent) clearAnthropicRefreshIntentBestEffort(provider, accountId, attemptIntent);
@@ -1018,18 +948,16 @@ export async function refreshAnthropicAccountWithLock(
         // OAuthLoginRequiredError. One 503 locked the account out of refresh until manual
         // re-auth even after upstream recovered.
         //
-        // Only clear the intent when the server DEFINITIVELY answered and rejected the
-        // request. The adapter attaches an HTTP status only to that explicit non-success
-        // response. A timeout, a dropped connection, or an unreadable/unparseable body
-        // carries no status: the server may already have
-        // rotated the token, and replaying it could trip refresh-token-reuse revocation.
-        // Those outcomes keep the intent so the guard still refuses a blind replay.
-        if ((!refreshMayHaveReachedProvider || definitivelyAnswered(error)) && attemptIntent) {
+        // Clear only for proven pre-dispatch failure or an explicit HTTP rejection.
+        // Other transport/body failures may follow rotation and keep the replay guard.
+        const requestNotSent = !refreshMayHaveReachedProvider
+          || (error instanceof AnthropicTokenError && error.requestNotSent);
+        if ((requestNotSent || definitivelyAnswered(error)) && attemptIntent) {
           await clearAnthropicRefreshIntentForKnownFailure(
             provider,
             accountId,
             attemptIntent,
-            refreshMayHaveReachedProvider ? "definitive-rejection" : "pre-dispatch",
+            requestNotSent ? "pre-dispatch" : "definitive-rejection",
             error,
           );
         }
@@ -1055,8 +983,11 @@ export async function refreshGenericAccountWithLock(
   logOAuthEvent("OAuth refresh started", { provider, accountId });
   const guard = await (deps.intentLock ?? createOAuthRefreshIntentLock(provider, accountId)).acquire();
   try {
-    const stored = getAccountCredential(provider, accountId);
-    if (!stored) throw new OAuthLoginRequiredError(provider);
+    // Re-read under the lock: a pause committed while this caller waited must stop the refresh.
+    const row = getAccountCredentialWithStatus(provider, accountId);
+    if (!row) throw new OAuthLoginRequiredError(provider);
+    if (row.paused) throw new OAuthAccountPausedError();
+    const stored = row.credential;
     if (
       credentialGeneration(stored) !== credentialGeneration(callerCredential)
       && stored.expires > Date.now() + REFRESH_SKEW_MS
@@ -1066,10 +997,15 @@ export async function refreshGenericAccountWithLock(
     }
     const generation = credentialGeneration(stored);
     try {
-      const fresh = merged(await def.refresh(stored.refresh, deps.signal, stored), stored);
+      const refreshed = await def.refresh(stored.refresh, deps.signal, stored, accountId);
+      const fresh = merged(refreshed, stored);
       const outcome = await mergeAccountCredential(provider, accountId, fresh, {
         expectedGeneration: generation,
         afterPrePersistRead: deps.afterPrePersistRead,
+        ...(provider === "devin" ? { assertOwnership: (store: AuthStore) => {
+          if (store[provider]?.accounts.find(row => row.id === accountId)?.paused) throw new OAuthAccountPausedError();
+          assertDevinCliAdoptionOwnership(store, provider, accountId, refreshed);
+        } } : {}),
       });
       if (outcome.superseded) {
         if (outcome.stored.expires > Date.now() + REFRESH_SKEW_MS) return outcome.stored.access;
@@ -1096,6 +1032,10 @@ export async function refreshGenericAccountWithLock(
       return fresh.access;
     } catch (error) {
       if (error instanceof OAuthMutationBusyError) throw error;
+      if (provider === "kiro" && error instanceof KiroTokenRefreshError && error.refreshAttention) {
+        await markAccountRefreshAttentionIfGeneration(provider, accountId, generation, writerGeneration);
+        throw error;
+      }
       if (!terminal(error)) throw error;
       // Nous-specific failure-atomicity: a terminal refresh error that carries
       // an already-issued rotated refresh token (e.g. the access JWT lacked the
@@ -1157,20 +1097,22 @@ async function refreshAndPersistAccessToken(
   replacedStaleFlight?: OAuthRefreshFlightEvidence,
 ): Promise<string> {
   if (provider === "xai") return refreshXaiAccountWithLock(provider, accountId, def, cred, { signal });
-  if (provider === "anthropic") return refreshAnthropicAccountWithLock(provider, accountId, def, cred, { signal, flight, replacedStaleFlight });
+  if (isAnthropicOAuthInstance(provider)) return refreshAnthropicAccountWithLock(provider, accountId, def, cred, { signal, flight, replacedStaleFlight });
   return refreshGenericAccountWithLock(provider, accountId, def, cred, { signal });
 }
 
-/**
- * Shared bearer-token resolver for /models listing — used by BOTH server.ts:fetchAllModels and
- * codex-catalog.ts:fetchProviderModels so OAuth providers' models are listed once logged in.
- * Returns undefined for forward-mode or oauth-not-logged-in (caller skips).
- */
+/** Resolve discovery credentials only for the caller-owned configured OAuth row. */
+export async function getModelsOAuthAccessSnapshot(name: string, prov: OcxProviderConfig | undefined): Promise<OAuthAccessSnapshot> {
+  if (!mayResolveModelsOAuth(name, prov)) throw new OAuthLoginRequiredError(name);
+  return getValidAccessTokenSnapshot(name);
+}
+
+/** Shared /models auth resolver; custom key rows keep their own key, including omitted authMode. */
 export async function resolveModelsAuthToken(name: string, prov: OcxProviderConfig): Promise<string | undefined> {
   if (prov.authMode === "forward") return undefined;
   if (prov.authMode === "oauth") {
     try {
-      return await getValidAccessToken(name);
+      return (await getModelsOAuthAccessSnapshot(name, prov)).accessToken;
     } catch {
       return undefined;
     }
@@ -1215,6 +1157,8 @@ export function buildModelsRequest(
   providerName = "",
   observedAuth?: ModelsRequestObservedAuth,
 ): { method?: "POST"; url: string; headers: Record<string, string> } {
+  const authorizedTarget = captureModelsOAuthTarget(providerName, prov);
+  if (prov.authMode === "oauth" && !mayResolveModelsOAuth(providerName, prov)) apiKey = undefined;
   const transportSeed = modelDiscoveryTransportSeed(providerName, prov);
   const copilotApiBaseUrl = observedAuth === undefined
     ? (providerName === "github-copilot" ? getOAuthCredentialApiBaseUrl(providerName) : undefined)
@@ -1241,16 +1185,20 @@ export function buildModelsRequest(
     effectiveProvider.baseUrl,
     defaultUrl,
   );
+  const guarded = <T extends { url: string; headers: Record<string, string> }>(request: T): T =>
+    guardModelsOAuthRequest(providerName, prov, request, authorizedTarget);
   if (effectiveGoogleMode(providerName, effectiveProvider) === "cloud-code-assist") {
     headers.Accept = "application/json";
     headers["Content-Type"] = "application/json";
-    headers["User-Agent"] = ANTIGRAVITY_REQUEST_UA;
+    // CLI UA: CCA lists Gemini 4 Argon's wire ids only to the CLI client family. Inference keeps
+    // choosing per wire model (antigravityUserAgentForWireModel).
+    headers["User-Agent"] = ANTIGRAVITY_DISCOVERY_UA;
     if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-    return {
-      method: "POST",
+    return guarded({
+      method: "POST" as const,
       url: discoveryUrl(`${effectiveProvider.baseUrl.replace(/\/+$/, "")}/v1internal:fetchAvailableModels`),
       headers,
-    };
+    });
   }
   if (effectiveGoogleMode(providerName, effectiveProvider) === "ai-studio") {
     // Generative Language API: API key goes in x-goog-api-key (never Authorization: Bearer),
@@ -1258,7 +1206,7 @@ export function buildModelsRequest(
     // enough to list everything without a pageToken loop. Vertex/antigravity keep the
     // generic branch (they fall back to their static model lists).
     if (apiKey) headers["x-goog-api-key"] = apiKey;
-    return { url: discoveryUrl(`${effectiveProvider.baseUrl}/v1beta/models?pageSize=1000`), headers };
+    return guarded({ url: discoveryUrl(`${effectiveProvider.baseUrl}/v1beta/models?pageSize=1000`), headers });
   }
   if (effectiveProvider.adapter === "anthropic") {
     const base = effectiveProvider.baseUrl.replace(/\/v1\/?$/, "");
@@ -1270,21 +1218,10 @@ export function buildModelsRequest(
       if (effectiveProvider.apiKeyTransport === "bearer") headers["Authorization"] = `Bearer ${apiKey}`;
       else headers["x-api-key"] = apiKey;
     }
-    return { url: discoveryUrl(`${base}/v1/models?limit=1000`), headers };
+    return guarded({ url: discoveryUrl(`${base}/v1/models?limit=1000`), headers });
   }
   if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-  if (providerName === CODEBUDDY_PROVIDER_ID) {
-    const cred = getCredential(CODEBUDDY_PROVIDER_ID);
-    const realm = routedWorkbuddyRealm(cred);
-    applyWorkbuddyLoginOriginHeaders(headers, realm);
-    applyCodebuddyAccountHeaders(headers, cred);
-    if (realm === "global") {
-      headers["X-Domain"] = "www.workbuddy.ai";
-      headers["X-No-Enterprise-Id"] = "1";
-    }
-    return { url: discoveryUrl(workbuddyModelsUrl(realm)), headers };
-  }
-  return { url: discoveryUrl(providerModelsUrl(effectiveProvider.baseUrl)), headers };
+  return guarded({ url: discoveryUrl(providerModelsUrl(effectiveProvider.baseUrl)), headers });
 }
 
 /**
@@ -1319,6 +1256,7 @@ const OAUTH_RECONCILE_FIELDS: (keyof OcxProviderConfig)[] = [
   "modelReasoningEffortMap",
   "noTemperatureModels",
   "noTopPModels",
+  "noStopModels",
   "noPenaltyModels",
   "autoToolChoiceOnlyModels",
   "preserveReasoningContentModels",
@@ -1442,6 +1380,7 @@ function projectOAuthProviderReconciliation(config: OcxConfig): OAuthReconcilePr
   const touchedAntigravityVersion = projected.googleAntigravityStaticCatalogVersion !== beforeAntigravityVersion;
 
   for (const [name, prov] of Object.entries(projected.providers)) {
+    if (name === "anthropic2" && !anthropicInstanceRowShapeMatches(name, prov)) continue;
     const beforeProvider = JSON.stringify(prov);
     const def = OAUTH_PROVIDERS[name];
     if (name === "command-code" && isLegacyCommandCodeStaticCatalog(prov)) {
@@ -1578,6 +1517,7 @@ const OAUTH_LOGIN_OWNED_PROVIDER_FIELDS = [
 
 /** Add/refresh only an OAuth provider's login-owned config fields (does not persist). */
 export function upsertOAuthProvider(config: OcxConfig, provider: string): void {
+  assertAnthropicInstanceLoginConfig(config, provider);
   if (provider === "chatgpt") return;
   const def = OAUTH_PROVIDERS[provider];
   if (!def) return;
@@ -1599,6 +1539,10 @@ export function upsertOAuthProvider(config: OcxConfig, provider: string): void {
   // Login used to rebuild the whole row from the preset, so catalog data refreshed
   // immediately. Keep that timing without overwriting unrelated operator-owned fields.
   applyOAuthPresetCatalog(next, providerConfig);
+  // The per-model Copilot tier is operator intent, not account or preset metadata.
+  if (existing?.modelContextTiers !== undefined) {
+    next.modelContextTiers = structuredClone(existing.modelContextTiers);
+  }
   // The original Command Code seed was an implementation-owned static catalog, not an
   // operator opt-out. Promote that exact legacy shape when OAuth login refreshes the row.
   if (provider === "command-code" && existing && isLegacyCommandCodeStaticCatalog(existing)) {
@@ -1638,31 +1582,14 @@ export function upsertOAuthProvider(config: OcxConfig, provider: string): void {
 
 interface RunLoginDeps {
   saveCredential?: typeof saveCredential;
+  saveCredentialWithReceipt?: typeof saveCredentialWithReceipt;
   saveAccountCredential?: typeof saveAccountCredential;
   loadConfig?: typeof loadConfig;
   saveConfig?: typeof saveConfig;
+  mutatePersistedConfig?: typeof mutatePersistedConfig;
   settleKiroLoginTransaction?: typeof settleKiroLoginTransaction;
-  removeAccount?: typeof removeAccount;
-  setActiveAccount?: typeof setActiveAccount;
+  rollbackCredentialWrite?: typeof rollbackCredentialWriteIfMatch;
   assertCurrentOwner?: () => void;
-}
-
-/** Roll back only accounts created by this forced login, preserving concurrent refreshes of others. */
-async function rollbackForcedKiroAccountWrite(
-  provider: string,
-  previousActiveId: string | undefined,
-  previousAccountIds: ReadonlySet<string>,
-  deps: Pick<RunLoginDeps, "removeAccount" | "setActiveAccount">,
-): Promise<void> {
-  const set = getAccountSet(provider);
-  if (!set) return;
-  for (const account of [...set.accounts]) {
-    if (previousAccountIds.has(account.id)) continue;
-    await (deps.removeAccount ?? removeAccount)(provider, account.id);
-  }
-  if (previousActiveId && getAccountCredential(provider, previousActiveId)) {
-    await (deps.setActiveAccount ?? setActiveAccount)(provider, previousActiveId);
-  }
 }
 
 /** Run the login flow, persist the credential + upsert the provider entry to disk, return cred. */
@@ -1676,25 +1603,42 @@ export async function runLogin(
   if (!def) throw new UnsupportedOAuthProviderError(provider);
   const loadLatestConfig = deps.loadConfig ?? loadConfig;
   const saveLatestConfig = deps.saveConfig ?? saveConfig;
-  const preflightConfig = provider !== "chatgpt" ? loadLatestConfig() : undefined;
+  const initialBConfigState = provider === "anthropic2" ? observeInitialConfigState() : undefined;
+  let preflightConfig = provider !== "chatgpt" ? loadLatestConfig() : undefined;
+  if (provider === "anthropic2" && preflightConfig && initialBConfigState === "missing") {
+    // Explicit first-login onboarding may create the ordinary defaults, without a B row.
+    // The create-only owner never replaces a concurrent file. Reload its winner before login;
+    // once the browser starts, later deletion remains a publication refusal, not recreation.
+    if (initializePersistedConfigIfMissing(getDefaultConfig()) === "invalid") {
+      throw new OAuthProviderPublicationError(provider, false);
+    }
+    preflightConfig = loadLatestConfig();
+  }
   if (preflightConfig) {
+    assertAnthropicInstanceLoginConfig(preflightConfig, provider);
     const namespaceCollision = codexAccountNamespaceProviderCollisionError(
       preflightConfig.codexAccountNamespaces,
       provider,
     );
     if (namespaceCollision) throw new Error(namespaceCollision);
   }
+  if (provider === "anthropic2" && observeInitialConfigState() !== "exists") {
+    throw new OAuthProviderPublicationError(provider, false);
+  }
   // loginKiro keys its pending CLI-session transaction by object identity. Keep this exact object
   // for settlement even when source normalization below creates a derived credential object.
   const shouldRollbackKiroAccounts = provider === "kiro" && opts?.forceLogin === true;
-  const previousKiroAccounts = shouldRollbackKiroAccounts ? getAccountSet(provider) : undefined;
-  const previousKiroActiveId = previousKiroAccounts?.activeAccountId;
-  const previousKiroAccountIds = new Set(previousKiroAccounts?.accounts.map(account => account.id) ?? []);
+  let kiroCredentialWrite: OAuthCredentialWriteReceipt | null = null;
   const loginProviderConfig = preflightConfig
     ? (def.resolveProviderConfig?.(preflightConfig) ?? preflightConfig.providers[provider] ?? def.providerConfig)
     : def.providerConfig;
+  if (provider === "kiro" && opts?.reauthAccountId
+    && getAccountSet("kiro")?.accounts.some(a => a.id === opts.reauthAccountId && a.loginOrigin === "kiro-device")) {
+    throw new Error("Native Kiro device accounts cannot be reauthenticated with kiro-cli; remove and re-add the account.");
+  }
   const rawCred = await def.login(ctrl, opts, loginProviderConfig);
   const cred: OAuthCredentials = rawCred.source ? rawCred : { ...rawCred, source: "oauth" };
+  if (isAnthropicOAuthInstance(provider)) assertAnthropicCredentialSource(provider, cred);
   const settleKiroTransaction = deps.settleKiroLoginTransaction ?? settleKiroLoginTransaction;
   try {
     deps.assertCurrentOwner?.();
@@ -1710,42 +1654,71 @@ export async function runLogin(
       if (!existing.accountId && !existing.email) {
         throw new OAuthReauthIdentityUnverifiedError();
       }
-      const identityMatches = existing.accountId && cred.accountId
-        ? existing.accountId === cred.accountId
-        : existing.email && cred.email
-          ? existing.email.toLowerCase() === cred.email.toLowerCase()
-          : false;
+      // A Kiro organization profile ARN is shared by its users, so it alone is not the account.
+      const identityMatches = provider === "kiro"
+        ? kiroReauthIdentityMatches(existing, cred, getAccountSet("kiro")?.accounts
+          .filter(account => account.id !== opts.reauthAccountId).map(account => account.credential))
+        : existing.accountId && cred.accountId
+          ? existing.accountId === cred.accountId
+          : existing.email && cred.email
+            ? existing.email.toLowerCase() === cred.email.toLowerCase()
+            : false;
       if (!identityMatches) {
         throw new OAuthReauthIdentityMismatchError();
       }
-      await (deps.saveAccountCredential ?? saveAccountCredential)(provider, opts.reauthAccountId, cred, {
+      // Proven same account: a reauth whose tier read failed keeps the stored label.
+      const reauthPlan = mergeOAuthPlan(cred, existing);
+      const reauthCred = reauthPlan === undefined ? cred : { ...cred, plan: reauthPlan };
+      await (deps.saveAccountCredential ?? saveAccountCredential)(provider, opts.reauthAccountId, reauthCred, {
         assertBeforePersist: deps.assertCurrentOwner,
+        rotateLoginId: true,
       });
     } else {
-      await (deps.saveCredential ?? saveCredential)(provider, cred, {
-        preserveIdentityless: opts?.forceLogin === true,
+      const saveOptions = {
+        preserveIdentityless: opts?.forceLogin === true || (provider === "anthropic" && cred.source === "local-cli"),
         assertBeforePersist: deps.assertCurrentOwner,
-      });
+      };
+      if (shouldRollbackKiroAccounts && !deps.saveCredential) {
+        kiroCredentialWrite = await (deps.saveCredentialWithReceipt ?? saveCredentialWithReceipt)(
+          provider,
+          cred,
+          saveOptions,
+        );
+      } else {
+        await (deps.saveCredential ?? saveCredential)(provider, cred, saveOptions);
+      }
     }
     if (provider !== "chatgpt") {
       // Re-run against post-credential state so same-provider API-key additions, removals,
       // and active-key switches survive. A late namespace claim wins over provider creation.
-      const latestConfig = loadLatestConfig();
-      const lateCollision = codexAccountNamespaceProviderCollisionError(
-        latestConfig.codexAccountNamespaces,
-        provider,
-      );
-      if (lateCollision) {
-        throw new OAuthProviderPublicationError();
+      if (provider === "anthropic2") {
+        const publication = (deps.mutatePersistedConfig ?? mutatePersistedConfig)(latestConfig => {
+          assertAnthropicInstanceLoginConfig(latestConfig, provider, true);
+          if (codexAccountNamespaceProviderCollisionError(latestConfig.codexAccountNamespaces, provider)) {
+            throw new OAuthProviderPublicationError(provider);
+          }
+          upsertOAuthProvider(latestConfig, provider);
+          return { changed: true, value: undefined };
+        });
+        if (publication.status === "unavailable") throw new OAuthProviderPublicationError(provider);
+      } else {
+        const latestConfig = loadLatestConfig();
+        const lateCollision = codexAccountNamespaceProviderCollisionError(
+          latestConfig.codexAccountNamespaces,
+          provider,
+        );
+        if (lateCollision) {
+          throw new OAuthProviderPublicationError();
+        }
+        upsertOAuthProvider(latestConfig, provider);
+        saveLatestConfig(latestConfig);
       }
-      upsertOAuthProvider(latestConfig, provider);
-      saveLatestConfig(latestConfig);
     }
   } catch (error) {
     const errors: unknown[] = [error];
-    if (shouldRollbackKiroAccounts) {
+    if (kiroCredentialWrite) {
       try {
-        await rollbackForcedKiroAccountWrite(provider, previousKiroActiveId, previousKiroAccountIds, deps);
+        await (deps.rollbackCredentialWrite ?? rollbackCredentialWriteIfMatch)(kiroCredentialWrite);
       } catch (rollbackError) {
         errors.push(rollbackError);
       }
@@ -1796,6 +1769,7 @@ export interface OAuthAccountSummary {
   email?: string;
   active: boolean;
   needsReauth?: boolean;
+  needsReauthReason?: "verify_account";
   expiresAt?: number;
   /**
    * Subscription tier, mirroring the field the OpenAI/Codex provider reports, so a consumer
@@ -1806,10 +1780,9 @@ export interface OAuthAccountSummary {
    * version looked and upstream did not say. Omitting it would make those indistinguishable and
    * invite a consumer to assume a tier.
    *
-   * Every OAuth provider reports `null` today. Anthropic's `/api/oauth/usage` returns quota
-   * buckets only — `five_hour`, `seven_day`, the model-scoped weekly windows and `limits[]` —
-   * and carries no subscription/tier field, and its token response carries none either. See
-   * `fetchAnthropicUsageQuota` in `src/providers/quota.ts`.
+   * Reports the validated upstream tier stored with the credential. Anthropic profile reads
+   * supply the organization tier; Antigravity loadCodeAssist reads prefer paidTier to currentTier.
+   * Missing or invalid labels remain null; quota percentages never establish a subscription.
    */
   plan: string | null;
 }
@@ -1822,7 +1795,7 @@ export interface OAuthAccountSummary {
  * the config at its request boundary and resolves the policy there with `emailMaskingEnabled`.
  * The default masks, so every existing caller keeps today's behaviour.
  */
-export function getLoginStatus(provider: string, maskEmails = true): { loggedIn: boolean; email?: string; source?: OAuthCredentials["source"]; error?: string; done: boolean; activeAccountId?: string; accounts?: OAuthAccountSummary[] } {
+export function getLoginStatus(provider: string, maskEmails = true): { loggedIn: boolean; email?: string; source?: OAuthCredentials["source"]; error?: string; done: boolean; hint?: OAuthLoginHint; activeAccountId?: string; accounts?: OAuthAccountSummary[] } {
   const cred = getCredential(provider);
   const st = loginState.get(provider);
   const set = getAccountSet(provider);
@@ -1831,28 +1804,27 @@ export function getLoginStatus(provider: string, maskEmails = true): { loggedIn:
     ...(a.alias ? { alias: a.alias } : {}),
     email: projectEmail(a.credential.email, maskEmails) ?? undefined,
     active: a.id === set.activeAccountId,
-    ...(a.needsReauth ? { needsReauth: true } : {}),
+    ...(accountNeedsReauthForStatus(provider, a) ? { needsReauth: true } : {}),
+    ...(a.needsReauth && a.needsReauthReason === "verify_account" ? { needsReauthReason: a.needsReauthReason } : {}),
     expiresAt: a.credential.expires,
-    // Explicitly null rather than omitted — see OAuthAccountSummary.plan. No OAuth provider
-    // exposes a subscription tier today, so there is nothing truthful to put here; deriving one
-    // from quota percentages is not possible, because they are normalized per account and a
-    // half-consumed small seat is indistinguishable from a half-consumed large one.
-    plan: null,
+    // Explicitly null rather than omitted when upstream tier metadata is unknown.
+    plan: normalizeOAuthPlan(a.credential.plan) ?? null,
   }));
 
   // A stored credential counts as "logged in" when it exists and is not marked for
   // re-authentication. An expired access token with a valid refresh token is still
-  // logged in: request resolution refreshes expired/near-expiry credentials lazily.
+  // logged in unless refresh-attention evidence applies; refresh eligibility stays internal.
   // Invalid/unknown local-import expiries are handled at parse/adoption time
   // (local-token-detect.ts), never by over-reporting login state here.
-  const activeNeedsReauth = set?.accounts
-    .find(a => a.id === set.activeAccountId)?.needsReauth === true;
+  const activeAccount = set?.accounts.find(a => a.id === set.activeAccountId);
+  const activeNeedsReauth = activeAccount && accountNeedsReauthForStatus(provider, activeAccount);
   return {
     loggedIn: !!cred && !activeNeedsReauth,
     email: projectEmail(cred?.email, maskEmails) ?? undefined,
     source: cred?.source,
     error: st?.error,
     done: st?.done ?? false,
+    ...(st?.hint && !st.done ? { hint: { url: st.hint.url, instructions: st.hint.instructions, deviceCode: st.hint.deviceCode } } : {}),
     ...(set ? { activeAccountId: set.activeAccountId, accounts } : {}),
   };
 }
@@ -1869,17 +1841,18 @@ export function oauthLoginSummary(maskEmails = true): Array<{ provider: string; 
 }
 
 export function clearLoginState(provider: string): void {
-  loginAbort.get(provider)?.abort("cleared");
+  loginAbort.get(provider)?.controller.abort("cleared");
   loginAbort.delete(provider);
   clearManualCodeSlot(provider);
   loginState.delete(provider);
 }
 
-export function cancelLoginFlow(provider: string): boolean {
-  const ctrl = loginAbort.get(provider);
+export function cancelLoginFlow(provider: string, flowId?: string): boolean {
+  const active = loginAbort.get(provider);
   const existing = loginState.get(provider);
-  if (!ctrl && (!existing || existing.done)) return false;
-  ctrl?.abort("cancelled");
+  if (flowId !== undefined && active?.flowId !== flowId) return false;
+  if (!active && (!existing || existing.done)) return false;
+  active?.controller.abort("cancelled");
   loginAbort.delete(provider);
   clearManualCodeSlot(provider);
   loginState.set(provider, { done: true, error: "Login cancelled" });
@@ -1900,14 +1873,21 @@ export async function startLoginFlow(
   clearManualCodeSlot(provider);
   loginState.set(provider, { done: false });
   const abort = new AbortController();
-  loginAbort.set(provider, abort);
+  loginAbort.set(provider, { controller: abort, flowId: lifecycle?.flowId });
   if (provider === "kiro") kiroLoginSettling.add(provider);
   return new Promise((resolve, reject) => {
     let urlResolved = false;
     const ctrl: OAuthController = {
       onAuth: ({ url, instructions, deviceCode }) => {
-        urlResolved = true;
-        resolve({ url, instructions, deviceCode });
+        if (abort.signal.aborted || loginAbort.get(provider)?.controller !== abort) return;
+        // Device approval can fall back to manual input. Replace, never merge: the
+        // previous device code must disappear when the provider changes the next step.
+        const hint = { url, instructions, deviceCode };
+        loginState.set(provider, { done: false, hint });
+        if (!urlResolved) {
+          urlResolved = true;
+          resolve({ ...hint });
+        }
       },
       onProgress: () => {},
       // GUI fallback when the browser cannot hit the loopback callback server.
@@ -1915,7 +1895,7 @@ export async function startLoginFlow(
       signal: abort.signal,
     };
     const abandonIfNotOwner = (error?: unknown): boolean => {
-      if (loginAbort.get(provider) === abort) return false;
+      if (loginAbort.get(provider)?.controller === abort) return false;
       if (!urlResolved) reject(error ?? new Error("OAuth login was superseded"));
       return true;
     };
@@ -1953,7 +1933,7 @@ export async function startLoginFlow(
     // Background: runLogin persists the credential + provider entry to disk. The lifecycle hook
     // lets a long-lived server config adopt that settled state before clients observe done=true.
     const assertCurrentOwner = (): void => {
-      if (loginAbort.get(provider) !== abort) throw new OAuthLoginSupersededError();
+      if (loginAbort.get(provider)?.controller !== abort) throw new OAuthLoginSupersededError();
     };
     void runLogin(provider, ctrl, opts, { assertCurrentOwner }).then(
       () => settle(),

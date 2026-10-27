@@ -1,6 +1,6 @@
 # 本分支：OpenCodex + WorkBuddy
 
-基于官方 **v2.48.0**。额外功能：腾讯 WorkBuddy / CodeBuddy **中国站 + 国际站**作为 OAuth 提供方（同一个 `workbuddy` 槽，域写在账号上）。选择器仍是 `workbuddy/<model>`，请求打当前账号所属站点。同分支还有 **ZCode Plan**（`zai-plan`），见 [ZAI-PLAN.md](./ZAI-PLAN.md)。
+本分支跟随上游 `dev` 更新，并保留腾讯 WorkBuddy / CodeBuddy **中国站 + 国际站** OAuth 提供方（同一个 `workbuddy` 槽，域写在账号上）。`codebuddy` 仍指向本分支的 WorkBuddy，不启用上游 CodeBuddy CLI 密钥预设。选择器是 `workbuddy/<model>`，请求打当前账号所属站点。同分支还有 **ZCode Plan**（`zai-plan`），见 [ZAI-PLAN.md](./ZAI-PLAN.md)。
 
 WorkBuddy 额度：
 

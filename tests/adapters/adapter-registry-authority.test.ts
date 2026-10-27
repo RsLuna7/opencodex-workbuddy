@@ -21,10 +21,13 @@ const EXPECTED_ADAPTER_NAMES = {
   "azure-openai": "azure-openai",
   cursor: "cursor",
   devin: "devin",
+  zed: "zed",
   "mimo-free": "mimo-free",
   codebuddy: "codebuddy",
+  workbuddy: "codebuddy",
   "zai-plan": "zai-plan",
   qoder: "qoder",
+  "claude-cli": "claude-cli",
 } as const;
 
 function provider(adapter: string): OcxProviderConfig {
@@ -34,8 +37,10 @@ function provider(adapter: string): OcxProviderConfig {
     // adapter accepts the placeholder URL.
     baseUrl: adapter === "mimo-free"
       ? "https://api.xiaomimimo.com/api/free-ai/openai/chat"
-      : adapter === "codebuddy"
+      : adapter === "workbuddy"
         ? "https://copilot.tencent.com/v2"
+        : adapter === "codebuddy"
+          ? "https://www.codebuddy.ai"
         : adapter === "zai-plan"
           ? "https://zcode.z.ai/api/v1/zcode-plan/anthropic"
         : adapter === "qoder"

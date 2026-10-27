@@ -10,6 +10,8 @@ import { createHash } from "node:crypto";
 import { CODEBUDDY_PROVIDER_ID } from "./codebuddy";
 import { credentialWorkbuddyRealm, type WorkbuddyRealm } from "./codebuddy-realm";
 import { getAccountSet } from "./store";
+import type { OAuthCredentials } from "./types";
+import type { WorkbuddyAccountPoolView, WorkbuddyModelCooldownView } from "../providers/quota-types";
 import type { OcxConfig } from "../types";
 import {
   WORKBUDDY_MODEL_COST_TTL_MS,
@@ -43,6 +45,7 @@ const FLUSH_DEBOUNCE_MS = 5_000;
 
 interface AccountRuntime {
   credits: number;
+  creditsKnown?: boolean;
   creditsExpiring: number;
   until: number;
   reason?: string;
@@ -95,6 +98,7 @@ function hydrateFromFile(file: WorkbuddyPoolFile): void {
   for (const [id, persisted] of Object.entries(file.accounts)) {
     const row = ensureAccount(id);
     row.credits = persisted.credits ?? 0;
+    row.creditsKnown = persisted.credits !== undefined;
     row.creditsExpiring = Math.min(persisted.creditsExpiring ?? 0, row.credits);
     row.until = persisted.until ?? 0;
     row.reason = persisted.reason;
@@ -176,7 +180,25 @@ export function flushWorkbuddyPool(): void {
   }
   if (!dirty) return;
   dirty = false;
-  saveWorkbuddyPoolFile(snapshotFile());
+  try {
+    saveWorkbuddyPoolFile(snapshotFile());
+  } catch (error) {
+    // Keep the state flushable: the next markDirty() or shutdown flush retries.
+    dirty = true;
+    throw error;
+  }
+}
+
+/** Timer-side flush: a failed save (e.g. a Windows icacls stall) must not become an uncaughtException. */
+export function flushWorkbuddyPoolQuietly(): boolean {
+  try {
+    flushWorkbuddyPool();
+    return true;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(`[workbuddy-pool] persist failed, will retry on next change: ${reason}`);
+    return false;
+  }
 }
 
 function markDirty(): void {
@@ -184,7 +206,7 @@ function markDirty(): void {
   if (flushTimer) return;
   flushTimer = setTimeout(() => {
     flushTimer = null;
-    flushWorkbuddyPool();
+    flushWorkbuddyPoolQuietly();
   }, FLUSH_DEBOUNCE_MS);
 }
 
@@ -316,6 +338,7 @@ export function setWorkbuddyPoolCredits(
   ensureWorkbuddyPoolLoaded(now);
   const row = ensureAccount(accountId);
   row.credits = Math.max(0, credits);
+  row.creditsKnown = true;
   row.creditsExpiring = Math.min(Math.max(0, creditsExpiring), row.credits);
   markDirty();
 }
@@ -509,4 +532,40 @@ export function workbuddyAccountIdForUid(uid: string | undefined): string | unde
 
 export function hashWorkbuddySessionFallback(text: string): string {
   return `fb:${createHash("sha256").update(text).digest("hex").slice(0, 32)}`;
+}
+
+export function projectWorkbuddyAccountPoolView(
+  accountId: string,
+  credential?: OAuthCredentials,
+  now = Date.now(),
+): WorkbuddyAccountPoolView {
+  ensureWorkbuddyPoolLoaded(now);
+  const realm = credential ? credentialWorkbuddyRealm(credential) : accountRealm(accountId);
+  const row = accounts.get(accountId);
+  if (!row) return { realm };
+  const modelCooldowns: Record<string, WorkbuddyModelCooldownView> = {};
+  const activeModels = [...row.modelCooldowns.entries()]
+    .filter(([, cooldown]) => cooldown.until > now)
+    .sort((a, b) => a[1].until - b[1].until || a[0].localeCompare(b[0]));
+  for (const [model, cooldown] of activeModels) {
+    modelCooldowns[model] = {
+      until: cooldown.until,
+      ...(cooldown.resetAt ? { resetAt: cooldown.resetAt } : {}),
+      ...(cooldown.reason ? { reason: cooldown.reason } : {}),
+    };
+  }
+  return {
+    realm,
+    ...(row.creditsKnown || row.credits > 0 ? { credits: row.credits } : {}),
+    ...(row.creditsExpiring > 0 ? { creditsExpiring: Math.min(row.creditsExpiring, row.credits) } : {}),
+    ...(row.until > now ? { until: row.until, ...(row.reason ? { reason: row.reason } : {}) } : {}),
+    ...(row.breakerUntil > now ? { breakerUntil: row.breakerUntil, ...(row.retryCount > 0 ? { retryCount: row.retryCount } : {}) } : {}),
+    ...(row.consecutiveFails > 0 ? { consecutiveFails: row.consecutiveFails } : {}),
+    ...(row.successCount > 0 ? { successCount: row.successCount } : {}),
+    ...(row.errTotal > 0 ? { errTotal: row.errTotal } : {}),
+    ...(row.lastUsed > 0 ? { lastUsed: row.lastUsed } : {}),
+    ...(row.lastSuccess > 0 ? { lastSuccess: row.lastSuccess } : {}),
+    ...(row.lastErr > 0 ? { lastErr: row.lastErr } : {}),
+    ...(Object.keys(modelCooldowns).length > 0 ? { modelCooldowns } : {}),
+  };
 }

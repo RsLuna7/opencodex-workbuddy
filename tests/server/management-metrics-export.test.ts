@@ -21,6 +21,7 @@ import {
   REQUEST_DURATION_BUCKETS_SECONDS,
   REQUEST_METRICS_PROTOCOLS,
   REQUEST_METRICS_RECOVERY_CLASSES,
+  REQUEST_METRICS_FAILURE_CAUSES,
   REQUEST_METRICS_RESULTS,
   REQUEST_TTFT_BUCKETS_SECONDS,
 } from "../../src/server/request-metrics";
@@ -355,6 +356,7 @@ describe("request metrics aggregation", () => {
         { ...attempt(1, ["rate-limit-429"]), ordinal: 2 },
         { ...attempt(1, ["reasoning-effort-downgrade"]), ordinal: 3 },
         { ...attempt(1, ["image-413"]), ordinal: 4 },
+        { ...attempt(1, ["anthropic-fast-downgrade"]), ordinal: 5 },
       ],
     } as RequestLogContext, 400, undefined, () => {});
 
@@ -366,6 +368,9 @@ describe("request metrics aggregation", () => {
     expect(sampleValue(output, 'opencodex_recoveries_total{protocol="responses",recovery="payload"}')).toBe(1);
     expect(sampleValue(output, 'opencodex_recoveries_total{protocol="responses",recovery="rate_limit"}')).toBe(1);
     expect(sampleValue(output, 'opencodex_recoveries_total{protocol="responses",recovery="effort_downgrade"}')).toBe(1);
+    // Also a rejected parameter, but the remedy is an Anthropic fast-mode entitlement, not an
+    // effort change, so it must not inflate effort_downgrade.
+    expect(sampleValue(output, 'opencodex_recoveries_total{protocol="responses",recovery="fast_downgrade"}')).toBe(1);
     expect(sampleValue(output, 'opencodex_recoveries_total{protocol="responses",recovery="quota"}')).toBe(0);
     expect(sampleValue(output, 'opencodex_recoveries_total{protocol="responses",recovery="policy"}')).toBe(0);
     expect(sampleValue(output, 'opencodex_recoveries_total{protocol="responses",recovery="other"}')).toBe(0);
@@ -462,6 +467,7 @@ describe("request metrics aggregation", () => {
       cells
       + REQUEST_METRICS_PROTOCOLS.length
       + REQUEST_METRICS_PROTOCOLS.length * REQUEST_METRICS_RECOVERY_CLASSES.length
+      + REQUEST_METRICS_PROTOCOLS.length * REQUEST_METRICS_FAILURE_CAUSES.length
       + cells * perHistogram(REQUEST_DURATION_BUCKETS_SECONDS)
       + cells * perHistogram(REQUEST_TTFT_BUCKETS_SECONDS)
       + cells
@@ -480,10 +486,15 @@ describe("request metrics aggregation", () => {
       .toBeLessThan(output.indexOf("opencodex_request_duration_seconds_bucket"));
     const helpLines = output.split("\n").filter(line => line.startsWith("# HELP "));
     const typeLines = output.split("\n").filter(line => line.startsWith("# TYPE "));
-    expect(helpLines).toHaveLength(7);
-    expect(typeLines).toHaveLength(7);
-    expect(new Set(helpLines.map(line => line.split(" ")[2])).size).toBe(7);
-    expect(new Set(typeLines.map(line => line.split(" ")[2])).size).toBe(7);
+    // Every metric name the exporter emits, read from the exposition rather than counted by
+    // hand: the literal was correct until a metric was added, which is the same staleness the
+    // sample arithmetic above avoids.
+    const metricNames = new Set(helpLines.map(line => line.split(" ")[2]));
+    expect(helpLines).toHaveLength(metricNames.size);
+    expect(typeLines).toHaveLength(metricNames.size);
+    expect(new Set(typeLines.map(line => line.split(" ")[2]))).toEqual(metricNames);
+    // Each name appears exactly once in each group, which is what deterministic grouping means.
+    expect(helpLines.length).toBeGreaterThan(REQUEST_METRICS_PROTOCOLS.length);
     expect(sampleValue(output, 'opencodex_request_duration_seconds_bucket{protocol="responses",result="completed",le="+Inf"}'))
       .toBe(sampleValue(output, 'opencodex_request_duration_seconds_count{protocol="responses",result="completed"}'));
     expect(metrics.snapshot()).toBe(output);
@@ -535,9 +546,8 @@ describe("metrics management boundary", () => {
     }
     expect(source).not.toMatch(/(?:let|const)\s+activeRequestMetrics/);
     const composition = readFileSync(repoPath("src/server/index/serve-options.ts"), "utf8");
-    expect(composition).toContain(
-      "metricsExportEnabled(config) ? createRequestMetricsOwner() : undefined",
-    );
+    expect(composition).toContain("metricsExportEnabled(config)");
+    expect(composition).toContain("createRequestMetricsOwner(Date.now() / 1000, cachedKiroQuotaMetricRows)");
     expect(composition).toContain("requestMetrics ? { requestMetricsRecorder: requestMetrics } : {}");
     expect(composition).toContain("createWebsocketHandler(ctx, requestMetrics)");
     expect(readFileSync(repoPath("src/server/index/websocket-handler.ts"), "utf8"))

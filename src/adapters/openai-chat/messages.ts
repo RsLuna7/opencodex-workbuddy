@@ -1,11 +1,13 @@
 import { isNativeOpenAIChatTarget, stripBracketedModelSuffix } from "./wire";
 import { reasoningDetailSegmentForWire } from "./response-events";
+import { translatedChatDeveloperWireRole } from "./developer-role";
 import { isVolcengineArkPaygChatTarget } from "./tool-schema";
 import { contentPartsToText } from "../image";
 import { EMPTY_TOOL_OUTPUT_ANNOTATION, isWhitespaceOnlyTextPartArray } from "../empty-tool-output-annotation";
 import { identifyRoutedModel } from "../identity";
 import { buildNonOpenAIToolCatalogNudgeForTools, shouldInjectNonOpenAIToolCatalogNudge } from "../tool-catalog-nudge";
 import { peekReasoningForCall } from "../../responses/reasoning-replay-cache";
+import type { ClaudeThinkingProjection } from "../../lib/claude-request-projection";
 import { inlineDocumentDataUrl } from "../../responses/inline-document";
 import type { OcxAssistantMessage, OcxContentPart, OcxParsedRequest, OcxProviderConfig, OcxTextContent, OcxThinkingContent, OcxToolCall } from "../../types";
 import { modelInList, namespacedToolName } from "../../types";
@@ -60,10 +62,36 @@ export function toolResultImageChatParts(content: string | OcxContentPart[]): un
   return parts;
 }
 
+/**
+ * Whether this wire serializes a replayed thinking block for the given model.
+ *
+ * The single source of truth for that question on the Chat wire: the assistant branch below uses
+ * it to decide `reasoning_content`, and the Messages ingress uses it to decide how much of a
+ * prompt is worth counting. Two copies of this rule would drift, and the count would then
+ * describe a body this adapter does not send.
+ */
+export function openAIChatSerializesThinking(
+  provider: OcxProviderConfig,
+  modelId: string,
+): ClaudeThinkingProjection {
+  return {
+    text: modelInList(provider.preserveReasoningContentModels, modelId),
+    // The wire has no `signature` field — base64 replay tokens are Anthropic-wire-only.
+    signature: false,
+    // A `redacted_thinking` block is opaque provider data with no Chat representation: the
+    // assistant branch below reads only `type: "thinking"` parts, so the encrypted form is
+    // dropped whatever the preserve list says.
+    redacted: false,
+  };
+}
+
 export function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] {
   const out: unknown[] = [];
   const { context, options } = parsed;
   const replayCacheScope = parsed._reasoningReplayScope;
+  // One question, one answer for the whole conversion: does this wire carry replayed thinking
+  // back for this model? Asked once so a long history cannot pay for it per message.
+  const wireSerializesThinking = openAIChatSerializesThinking(provider, parsed.modelId).text;
 
   interface PendingToolCall { id: string; name: string }
   let pendingToolCalls: PendingToolCall[] = [];
@@ -114,19 +142,16 @@ export function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProv
   };
 
   const nativeOpenAI = isNativeOpenAIChatTarget(provider);
-  // `developer` is part of the Chat Completions role set, but not every OpenAI-compatible
-  // gateway accepts it: one that does not answers `400 role 'developer' is not allowed` and the
-  // turn never starts. #5213 removed a hostname test that decided the role, which was right —
-  // a gateway proxying OpenAI accepts the role and the hostname cannot say so. Defaulting to
-  // forwarding instead was wrong in the other direction: it assumed every destination accepts a
-  // role until an operator marks it, so a gateway that rejects it broke on the next request and
-  // no test in this repository could see it, because what breaks lives outside the repository.
-  //
-  // The key is tri-state and the unset state is the safe one. Absent means nobody has recorded
-  // what this destination accepts, so the role folds to `system`; `true` means it is known to
-  // reject the role; `false` means it is known to accept it and the role is forwarded. Either
-  // way the message keeps the slot it arrived in — only the role changes, never the position.
-  const developerWireRole = provider.foldDeveloperRoleToSystem === false ? "developer" : "system";
+  // Leading-system chat templates reject non-leading system and every developer role while a
+  // later user renders in place: Qwen3.8-27B, Flash-Next, and the OrcaSAQ-2-Cyber-27B GGUF family.
+  // Gateways serve them under namespaced ids (LiteLLM's openai/Qwen3.8-27B, #6674), so any
+  // number of leading path segments is accepted; the final segment names the checkpoint.
+  // Orca's GGUF marker must precede any colon quant tag; other Orca variants are unchanged.
+  const leadingSystemTemplate = !nativeOpenAI && /^(?:[^/]+\/)*(?:flash-next|Qwen3\.8-Flash-Next|Qwen3\.8-27B|qwen3-8-27b(?:-(?:fp8|lora))?|OrcaSAQ-2-Cyber-27B(?=[^:/\s]*GGUF)[^:/\s]*(?::[\w-]+)?)$/i.test(parsed.modelId);
+  // Which role a developer message carries, and why the unrecorded state folds, is stated once
+  // in ./developer-role.ts and read from there by the native passthrough as well. Either way the
+  // message keeps the slot it arrived in — only the role changes, never the position.
+  const developerWireRole = translatedChatDeveloperWireRole(provider);
   // A developer message keeps the slot it arrived in. Hoisting its text into the leading
   // system block moved a mid-conversation instruction ahead of every turn it was written to
   // follow, and the caller saw an ordinary answer either way (#5213). The Claude inbound mints
@@ -172,7 +197,7 @@ export function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProv
           // message instead is rejected by some upstreams. Native OpenAI keeps its existing
           // empty-developer wire, which is a separate question from placement.
           if (!nativeOpenAI && text.length === 0) break;
-          chatMsg = { role: developerWireRole, content: text };
+          chatMsg = { role: leadingSystemTemplate ? "user" : developerWireRole, content: text };
         } else if (typeof msg.content === "string") {
           chatMsg = { role: "user", content: msg.content };
         } else if (!hasStructured) {
@@ -232,8 +257,8 @@ export function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProv
         let reasoningContent = thinkingParts.map(p => p.thinking).join("");
         if (
           reasoningContent.length === 0
-          && toolCalls.length > 0
-          && modelInList(provider.preserveReasoningContentModels, parsed.modelId)
+          && (toolCalls.length > 0 || thinkingParts.length > 0)
+          && wireSerializesThinking
         ) {
           const cached = toolCalls
             .map(tc => (tc.id ? peekReasoningForCall(tc.id, replayCacheScope) : undefined))
@@ -243,11 +268,11 @@ export function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProv
           if (cached.length > 0) {
             reasoningContent = [...new Set(cached)].join("\n");
           } else if (modelInList(provider.requiresReasoningPlaceholderModels ?? provider.preserveReasoningContentModels, parsed.modelId)) {
-            // Fallback (extends #950, closes #1193): the replay cache is
+            // Fallback (extends #950 and #1193; fixes #5421): the replay cache is
             // bounded (64 entries / 256 KiB / 1 h TTL) and always misses on
-            // long sessions, and some tool rounds carry no recorded reasoning
-            // at all. DeepSeek thinking mode rejects ANY tool_call assistant
-            // message missing reasoning_content with HTTP 400, so inject a
+            // long sessions, and some thinking/tool rounds carry no recorded
+            // reasoning at all. DeepSeek thinking mode rejects replay without
+            // reasoning_content with HTTP 400, so inject a
             // minimal placeholder rather than emit a bare continuation the
             // upstream will reject. Scoped to requiresReasoningPlaceholderModels
             // (defaulting to the preserve list): preserve-listed providers with
@@ -256,7 +281,7 @@ export function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProv
             reasoningContent = " ";
           }
         }
-        if (reasoningContent.length > 0 && modelInList(provider.preserveReasoningContentModels, parsed.modelId)) {
+        if (reasoningContent.length > 0 && wireSerializesThinking) {
           // MiniMax's interleaved-thinking contract requires the structured
           // reasoning_details array back on the next turn; a reasoning_content
           // string is the native-format pass-back the docs mark unsupported.
@@ -267,7 +292,11 @@ export function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProv
           }
         }
         const hasReplayedReasoning = chatMsg.reasoning_content !== undefined || chatMsg.reasoning_details !== undefined;
-        if (chatMsg.content === undefined && toolCalls.length === 0 && !hasReplayedReasoning) break;
+        // A turn with no answer text, tools or reasoning carries nothing. Between a call and its
+        // result it would also split the pair, so drop it there; a standalone empty answer keeps
+        // its slot so templates that require strict user/assistant alternation still accept it.
+        const carriesNothing = !chatMsg.content && toolCalls.length === 0 && !hasReplayedReasoning;
+        if (carriesNothing && (chatMsg.content === undefined || pendingToolCalls.length > 0)) break;
         flushPendingToolCalls();
         const wireToolCalls = toolCalls.map(tc => {
           let id = tc.id;
@@ -310,7 +339,7 @@ export function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProv
           flushPendingToolCalls();
           const name = safeToolName(msg.toolName);
           const cachedReasoning =
-            toolCallId && modelInList(provider.preserveReasoningContentModels, parsed.modelId)
+            toolCallId && wireSerializesThinking
               ? peekReasoningForCall(toolCallId, replayCacheScope)
               : undefined;
           // Same fallback as the main-assistant path: never emit a bare orphan
@@ -324,7 +353,7 @@ export function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProv
           // falsy hit as a miss so the placeholder still fires.
           const orphanReasoning =
             cachedReasoning
-            || (modelInList(provider.preserveReasoningContentModels, parsed.modelId)
+            || (wireSerializesThinking
               && modelInList(provider.requiresReasoningPlaceholderModels ?? provider.preserveReasoningContentModels, parsed.modelId)
               ? " "
               : undefined);

@@ -88,7 +88,8 @@ describe("workspace account integration seam", () => {
     expect(poolBindings?.split(",").map(binding => binding.trim())).toContain("useProviderAccountPools");
     expect(page).toContain("const pools = useProviderAccountPools({");
     expect(source).toContain("accountLoadState={accountLoadStates[item.name]");
-    expect(source).toContain("switchingAccountId={switchingAccount?.provider === item.name");
+    // Switching state is tracked per provider, so Pool 2 and the primary pool can switch independently.
+    expect(source).toContain("switchingAccountId={switchingAccounts[item.name]?.accountId ?? null}");
     expect(source).toContain("onRetryAccounts: async provider => { await fetchAccountSets([provider]); }");
     expect(source).toContain("key={item.name}");
     expect(source).toContain("switchingAccountRef.current");
@@ -164,7 +165,7 @@ describe("workspace account integration seam", () => {
     // `requestLoginOAuth` is the warning-aware entry point and forwards the same
     // (provider, addAccount, accountId) triple.
     expect(page).toContain("requestLoginOAuth(provider, true, accountId)");
-    expect(page).toContain("void loginOAuth(pending.provider, pending.addAccount, pending.accountId)");
+    expect(page).toContain("void loginOAuth(pending.provider, pending.addAccount, pending.accountId, pending.realm)");
     expect(page).toContain("accountId: reauthTargetId, reauth: true");
     expect(page).toContain("prov.reauthIdentityMismatch");
     expect(page).toContain("oauthLoginGenerationRef");

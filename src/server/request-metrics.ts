@@ -1,6 +1,11 @@
 import type { ResponsesTerminalStatus } from "../bridge";
+import type { KiroQuotaMetricRow } from "../providers/kiro-quota-metrics";
 import type { AttemptRecoveryKind } from "../usage/log";
-import { type RequestFailureCause, causeForRecoveryKind } from "../lib/request-failure-model";
+import {
+  REQUEST_FAILURE_CAUSES,
+  type RequestFailureCause,
+  causeForRecoveryKind,
+} from "../lib/request-failure-model";
 import {
   REQUEST_OUTCOME_CLASSES,
   classifyRequestOutcome,
@@ -34,11 +39,24 @@ export const REQUEST_METRICS_RECOVERY_CLASSES = Object.freeze([
   "payload",
   "empty_completion",
   "effort_downgrade",
+  "fast_downgrade",
   "other",
 ] as const);
 
 export const REQUEST_DURATION_BUCKETS_SECONDS = Object.freeze([0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60] as const);
 export const REQUEST_TTFT_BUCKETS_SECONDS = Object.freeze([0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30] as const);
+
+/**
+ * The failure-cause label set IS the shared dictionary, for the same reason the result label set
+ * is the shared outcome vocabulary: a restated copy is what let two surfaces drift into
+ * disagreeing about the same request.
+ *
+ * It labels a COUNTER and never a histogram. Fifteen causes across four protocols is sixty
+ * series, fixed for the lifetime of the roster, and every value comes from a frozen list, so no
+ * user, model, account or request identifier can reach a series name. A histogram labelled by
+ * cause would multiply that by its bucket count for no question anyone asks.
+ */
+export const REQUEST_METRICS_FAILURE_CAUSES = REQUEST_FAILURE_CAUSES;
 
 export type RequestMetricsProtocol = typeof REQUEST_METRICS_PROTOCOLS[number];
 export type RequestMetricsResult = RequestOutcomeClass;
@@ -56,6 +74,11 @@ export interface RequestMetricFinalFact {
     recoveryKinds: readonly AttemptRecoveryKind[];
   }>;
   spendSends?: number;
+  /**
+   * Why this request failed, as the recorder derived it. Absent when it did not fail, which is
+   * why the counter below cannot be reconstructed by subtracting completions from totals.
+   */
+  failureCause?: RequestFailureCause;
 }
 
 export interface RequestMetricsRecorder {
@@ -79,6 +102,7 @@ interface HistogramCell {
 const protocolCell = (value: RequestMetricsProtocol): number => REQUEST_METRICS_PROTOCOLS.indexOf(value);
 const resultCell = (value: RequestMetricsResult): number => REQUEST_METRICS_RESULTS.indexOf(value);
 const recoveryCell = (value: RequestMetricsRecoveryClass): number => REQUEST_METRICS_RECOVERY_CLASSES.indexOf(value);
+const failureCauseCell = (value: RequestFailureCause): number => REQUEST_METRICS_FAILURE_CAUSES.indexOf(value);
 
 function matrix(rows: number, columns: number): number[][] {
   return Array.from({ length: rows }, () => Array.from({ length: columns }, () => 0));
@@ -121,6 +145,10 @@ const CAUSE_METRICS_CLASS = {
 } as const satisfies Record<RequestFailureCause, RequestMetricsRecoveryClass>;
 
 function recoveryClass(kind: AttemptRecoveryKind): RequestMetricsRecoveryClass {
+  // Both recoveries answer a rejected parameter, but an operator acts on them differently:
+  // an effort downgrade is a model/effort mismatch, a fast downgrade is a missing Anthropic
+  // fast-mode entitlement. Keep `effort_downgrade` meaning exactly what it always meant.
+  if (kind === "anthropic-fast-downgrade") return "fast_downgrade";
   return CAUSE_METRICS_CLASS[causeForRecoveryKind(kind)];
 }
 
@@ -161,12 +189,39 @@ function appendHistogram(
   }
 }
 
+function appendKiroQuotaGauges(lines: string[], rows: readonly KiroQuotaMetricRow[]): void {
+  const families = [
+    ["opencodex_kiro_quota_used_credits", "Cached Kiro plan credits used.", "used"],
+    ["opencodex_kiro_quota_limit_credits", "Cached Kiro plan credit limit.", "limit"],
+    ["opencodex_kiro_quota_used_percent", "Cached Kiro plan percent used.", "percent"],
+    ["opencodex_kiro_quota_seconds_to_reset", "Seconds until the observed Kiro reset.", "secondsToReset"],
+  ] as const;
+  const labels = new Set<string>();
+  const valid = rows.slice(0, 32).filter(row => {
+    if (!/^o[0-9a-f]{6}$/.test(row.account) || labels.has(row.account)) return false;
+    if (![row.used, row.limit, row.percent].every(value => Number.isFinite(value) && value >= 0)) return false;
+    if (row.limit <= 0 || row.percent > 100) return false;
+    labels.add(row.account);
+    return true;
+  });
+  for (const [name, help, key] of families) {
+    lines.push(`# HELP ${name} ${help}`, `# TYPE ${name} gauge`);
+    for (const row of valid) {
+      const value = row[key];
+      if (typeof value === "number" && Number.isFinite(value) && value >= 0)
+        lines.push(`${name}{account="${row.account}"} ${value}`);
+    }
+  }
+}
+
 export function createRequestMetricsOwner(
   processStartTimeSeconds = Date.now() / 1000,
+  kiroQuotaRows?: () => readonly KiroQuotaMetricRow[],
 ): RequestMetricsOwner {
   let logicalRequests = matrix(REQUEST_METRICS_PROTOCOLS.length, REQUEST_METRICS_RESULTS.length);
   let physicalSends = Array.from({ length: REQUEST_METRICS_PROTOCOLS.length }, () => 0);
   let recoveries = matrix(REQUEST_METRICS_PROTOCOLS.length, REQUEST_METRICS_RECOVERY_CLASSES.length);
+  let failureCauses = matrix(REQUEST_METRICS_PROTOCOLS.length, REQUEST_METRICS_FAILURE_CAUSES.length);
   let durations = histograms(REQUEST_DURATION_BUCKETS_SECONDS);
   let ttft = histograms(REQUEST_TTFT_BUCKETS_SECONDS);
   let missingTtft = matrix(REQUEST_METRICS_PROTOCOLS.length, REQUEST_METRICS_RESULTS.length);
@@ -186,6 +241,13 @@ export function createRequestMetricsOwner(
           Number.isInteger(attempt.sendCount) && attempt.sendCount >= 0 ? total + attempt.sendCount : total
         ), 0);
       physicalSends[protocolIndex]! += sends;
+
+      // Counted from the cause the recorder derived, not re-derived here. Two derivations of one
+      // answer is the disagreement this batch exists to remove, and the recorder is the only
+      // place that sees the transport facts a cause needs.
+      if (fact.failureCause !== undefined) {
+        failureCauses[protocolIndex]![failureCauseCell(fact.failureCause)]! += 1;
+      }
 
       for (const attempt of attempts ?? []) {
         for (const kind of new Set(attempt.recoveryKinds)) {
@@ -227,6 +289,15 @@ export function createRequestMetricsOwner(
           lines.push(`opencodex_recoveries_total{protocol="${protocol}",recovery="${recovery}"} ${recoveries[protocolCell(protocol)]![recoveryCell(recovery)]}`);
         }
       }
+      lines.push(
+        "# HELP opencodex_request_failures_total Finalized logical requests that did not deliver an answer, by derived cause.",
+        "# TYPE opencodex_request_failures_total counter",
+      );
+      for (const protocol of REQUEST_METRICS_PROTOCOLS) {
+        for (const cause of REQUEST_METRICS_FAILURE_CAUSES) {
+          lines.push(`opencodex_request_failures_total{protocol="${protocol}",cause="${cause}"} ${failureCauses[protocolCell(protocol)]![failureCauseCell(cause)]}`);
+        }
+      }
       appendHistogram(lines, "opencodex_request_duration_seconds", "Finalized logical request duration in seconds.", durations, REQUEST_DURATION_BUCKETS_SECONDS);
       appendHistogram(lines, "opencodex_ttft_seconds", "Observed time to first output in seconds.", ttft, REQUEST_TTFT_BUCKETS_SECONDS);
       lines.push(
@@ -238,6 +309,7 @@ export function createRequestMetricsOwner(
           lines.push(`opencodex_ttft_missing_total${sampleLabels(protocol, result)} ${missingTtft[protocolCell(protocol)]![resultCell(result)]}`);
         }
       }
+      appendKiroQuotaGauges(lines, kiroQuotaRows?.() ?? []);
       lines.push(
         "# HELP opencodex_metrics_process_start_time_seconds Unix time when this process metrics owner started.",
         "# TYPE opencodex_metrics_process_start_time_seconds gauge",
@@ -250,6 +322,7 @@ export function createRequestMetricsOwner(
       logicalRequests = matrix(REQUEST_METRICS_PROTOCOLS.length, REQUEST_METRICS_RESULTS.length);
       physicalSends = Array.from({ length: REQUEST_METRICS_PROTOCOLS.length }, () => 0);
       recoveries = matrix(REQUEST_METRICS_PROTOCOLS.length, REQUEST_METRICS_RECOVERY_CLASSES.length);
+      failureCauses = matrix(REQUEST_METRICS_PROTOCOLS.length, REQUEST_METRICS_FAILURE_CAUSES.length);
       durations = histograms(REQUEST_DURATION_BUCKETS_SECONDS);
       ttft = histograms(REQUEST_TTFT_BUCKETS_SECONDS);
       missingTtft = matrix(REQUEST_METRICS_PROTOCOLS.length, REQUEST_METRICS_RESULTS.length);

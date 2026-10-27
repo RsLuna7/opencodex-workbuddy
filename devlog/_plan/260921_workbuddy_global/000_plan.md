@@ -2,7 +2,7 @@
 
 状态：裁决已冻结，开工中。见 `003_implementation.md`。
 
-日期：2026-09-21  
+日期：2026-09-21
 对照基线：本仓库现有 `workbuddy` provider（仅中国站）+ 公开成熟网关源码（已 shallow clone 到 gitignored `.tmp/wb-research/`）。
 
 ## 一句话

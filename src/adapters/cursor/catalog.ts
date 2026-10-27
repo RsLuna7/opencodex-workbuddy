@@ -140,6 +140,25 @@ export const CURSOR_CAPABILITIES: Record<string, CursorCapability> = {
       thinking: { levels: FULL, order: T },
     },
   },
+  // 261008 Haiku 5.5: cursor.com/docs/models/claude-haiku-5-5, 1M and low..max.
+  // Preemptive regular-only shape until GetUsableModels confirms a thinking variant.
+  "claude-haiku-5-5": {
+    displayName: "Claude Haiku 5.5",
+    window: CONTEXT_1M,
+    defaultVariant: "regular",
+    variants: { regular: { levels: FULL } },
+  },
+  // 260929 Claude Sonnet 5.5: cursor.com/docs/models/claude-sonnet-5-5 lists it (1M max context),
+  // but the live GetUsableModels roster does not yet. Shaped like Opus 5.5 (flat effort ids, no
+  // thinking variant); re-shape from the roster once it appears.
+  "claude-sonnet-5-5": {
+    displayName: "Claude Sonnet 5.5",
+    window: CONTEXT_1M,
+    defaultVariant: "regular",
+    variants: {
+      regular: { levels: FULL },
+    },
+  },
   "claude-sonnet-5": {
     displayName: "Claude Sonnet 5",
     window: CONTEXT_1M,
@@ -184,6 +203,17 @@ export const CURSOR_CAPABILITIES: Record<string, CursorCapability> = {
       thinkingFast: { levels: FULL, order: T },
     },
   },
+  // 260923 Claude Opus 5.5: live GetUsableModels roster advertises flat effort-suffixed
+  // wire ids (claude-opus-5-5-{low..max} and -fast) rather than a thinking variant.
+  "claude-opus-5-5": {
+    displayName: "Claude Opus 5.5",
+    window: CONTEXT_1M,
+    defaultVariant: "regular",
+    variants: {
+      regular: { levels: FULL },
+      fast: { levels: FULL },
+    },
+  },
   "glm-5.2": {
     displayName: "GLM 5.2",
     window: CONTEXT_1M,
@@ -210,6 +240,14 @@ export const CURSOR_CAPABILITIES: Record<string, CursorCapability> = {
   },
   "gemini-3.8-flash": {
     displayName: "Gemini 3.8 Flash",
+    window: CONTEXT_GEMINI,
+    defaultVariant: "regular",
+    variants: { regular: { levels: ["low", "medium", "high"] } },
+  },
+  // 261014 preemptive, like gemini-3.8-flash: Cursor's models page lists Gemini 4 Argon, but the
+  // live GetUsableModels id is unverified. Inert until the live roster lists this id.
+  "gemini-4-argon": {
+    displayName: "Gemini 4 Argon",
     window: CONTEXT_GEMINI,
     defaultVariant: "regular",
     variants: { regular: { levels: ["low", "medium", "high"] } },
@@ -245,6 +283,16 @@ export const CURSOR_CAPABILITIES: Record<string, CursorCapability> = {
     window: CONTEXT_500K,
     defaultVariant: "regular",
     wirePrefix: "cursor-",
+    variants: {
+      regular: { levels: ["low", "medium", "high", "xhigh"] },
+      fast: { levels: ["low", "medium", "high", "xhigh"] },
+    },
+  },
+  // Live Cursor ids and xAI's 500k window: devlog/_fin/260923_grok47_parity/010_probe-evidence.md.
+  "grok-4.7": {
+    displayName: "Cursor Grok 4.7",
+    window: CONTEXT_500K,
+    defaultVariant: "regular",
     variants: {
       regular: { levels: ["low", "medium", "high", "xhigh"] },
       fast: { levels: ["low", "medium", "high", "xhigh"] },
@@ -741,6 +789,8 @@ export function cursorGrokFastSelection(
   const kind = fast === true ? upgradeToFast(parsed.baseId, parsed.kind) : parsed.kind;
   if (!parsed.known || kind !== "fast") return undefined;
   const capability = CURSOR_CAPABILITIES[parsed.baseId];
+  // 4.7 has no cursor- prefix and uses a flattened effort-fast id instead:
+  // devlog/_fin/260923_grok47_parity/010_probe-evidence.md.
   if (capability?.wirePrefix !== "cursor-") return undefined;
   const spec = capability.variants.fast;
   if (!spec) return undefined;

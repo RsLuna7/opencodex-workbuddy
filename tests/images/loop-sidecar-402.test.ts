@@ -56,7 +56,7 @@ describe("image-bridge loop 402 credential failover", () => {
         rotations++;
         seenRefusal = refusal;
         if (!retryParsed) throw new Error("the loop must pass the iteration request to on429");
-        return makeRotatingAdapter("after-rotate");
+        return { adapter: makeRotatingAdapter("after-rotate"), recoveryKind: "oauth-account-429" };
       },
     });
     const sse = await response.text();

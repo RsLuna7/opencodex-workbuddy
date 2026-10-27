@@ -1,4 +1,5 @@
 import type { UpstreamHttpVersion, ReasoningSummaryDelivery, CodexAccountMode } from "./wire";
+import type { AnthropicAccountPoolConfig } from "./anthropic-account-pool";
 
 /**
  * Per-provider proactive-refresh policy. The guardian only ever touches a provider whose EFFECTIVE
@@ -65,6 +66,31 @@ export interface TransientRetryPolicy {
    * share this single budget, so `3` means at most three real requests reach the provider.
    */
   attempts?: number;
+}
+
+/**
+ * Opt-in replacement of a Responses send whose upstream connection closed while the
+ * caller had observed nothing (`providers.<name>.retryOnReset`).
+ *
+ * Native Responses covers pre-header resets and post-header SSE carrying only control events.
+ * Generic translated dispatch covers initial and rebuilt pre-header sends, sharing the same
+ * grant and send budget; adapter-owned transports and translated post-header failures are excluded.
+ * Disabled unless present; `{}` opts in. Only self-contained requests qualify (see
+ * `src/server/responses/reset-replay.ts`). Replacement inference may still be billed if the
+ * origin had already started the first one, so this is opt-in rather than default.
+ */
+export interface ResetReplayPolicy {
+  /** Master switch. Presence of the object also enables the policy (default true). */
+  enabled?: boolean;
+  /**
+   * Replacement sends one LOGICAL request may make, across every leg and every combo child
+   * (1..2, default 1).
+   *
+   * Not a per-leg retry count and not a send budget. A request that resets before the head and
+   * again after it draws on this one number, and each replacement still has to fit inside the
+   * send allowance the leg already had.
+   */
+  replacements?: number;
 }
 
 /**
@@ -155,6 +181,8 @@ export interface RequestPacingRule {
   requestsPerMinute?: number;
   /** Minimum delay between request starts. The slower configured value wins. */
   minIntervalMs?: number;
+  /** Maximum number of requests concurrently in flight. */
+  maxConcurrentRequests?: number;
 }
 
 export interface ProviderRequestPacingConfig extends RequestPacingRule {
@@ -170,8 +198,10 @@ export interface FastWire {
    * `service_tier` request field; `cursor-variant` is a MODEL-VARIANT switch, because
    * Cursor has no tier field — its fast product is a different model id
    * (`claude-opus-5-thinking-high-fast`) or a `{id:"fast"}` request parameter for Grok.
+   * `model-variant` is internal only (config validation rejects it): the xAI OAuth Fast lane switch in
+   * src/providers/xai-fast-model.ts, whose only wire value is the serialized model id.
    */
-  kind: "service-tier" | "anthropic-speed" | "cursor-variant";
+  kind: "service-tier" | "anthropic-speed" | "cursor-variant" | "model-variant";
   /** Canonical tier name to upstream wire spelling. */
   canonicalToWire: Readonly<Record<string, string>>;
   /** Policy for non-canonical caller-provided tier values. */
@@ -191,6 +221,8 @@ export interface AttemptTierOutcome {
   callerFastSuppressedByConfig?: boolean;
   confirmation: "confirmed" | "assumed" | "downgraded" | "unknown";
   responseServiceTier?: string;
+  /** False retains the raw echo as evidence only, including during cost estimation. */
+  responseTierAuthoritative?: boolean;
 }
 
 /**
@@ -217,6 +249,12 @@ export interface TierObservationContext {
    * preserving the behaviour for the public API where the echo does mean what it says.
    */
   responseTierAuthoritative?: boolean;
+  /**
+   * Set when the upstream refused the fast wire earlier in this request and the proxy resent at
+   * standard speed (Anthropic `speed: "fast"` without entitlement). The resend's outcome is then
+   * a `response-declined` downgrade rather than an unavailable wire.
+   */
+  upstreamDeclinedFast?: boolean;
 }
 
 export type TierDecision =
@@ -237,6 +275,12 @@ export interface ModelCapabilities {
 }
 
 export interface OcxProviderConfig {
+  /** Explicit builtin Pool 2 provenance; endpoints never imply ownership. */
+  anthropicOAuthInstance?: "anthropic2";
+  /** Independent Anthropic pool settings; valid only on providers.anthropic2. */
+  anthropicAccountPool?: AnthropicAccountPoolConfig;
+  /** Optional browser-compatible outbound TLS profile; disabled by default. */
+  tlsProfile?: "antigravity-browser";
   /** Optional short provider namespace used only at request/catalog presentation time. */
   alias?: string;
   /** Native model id -> short, slash-free request alias. */
@@ -274,6 +318,13 @@ export interface OcxProviderConfig {
    * absence derives from the final model adapter.
    */
   fastWire?: FastWire | null;
+  /**
+   * Whether echoed service_tier can confirm or deny Fast. Set false for a relay whose
+   * response metadata cannot establish the granted tier. Absence keeps legacy authority;
+   * canonical ChatGPT Codex forwarding always treats the echo as non-authoritative.
+   * Observation only: this does not enable Fast or change request serialization.
+   */
+  responseTierAuthoritative?: boolean;
   baseUrl: string;
   /**
    * Optional relative resource path for key-auth openai-responses requests. Must start with `/`
@@ -298,6 +349,8 @@ export interface OcxProviderConfig {
    * version here instead of waiting for a code change. Absent uses the adapter's current default.
    */
   commandCodeVersion?: string;
+  /** Include bounded repository context in Command Code envelopes. Default omitted/off sends empty memory/taste/skills. */
+  projectContext?: "off" | "on";
   /**
    * Responses upstream that stores nothing server-side (DeepSeek documents "the API
    * is stateless"). Stateful request parameters are dropped, `store` is pinned false,
@@ -346,6 +399,13 @@ export interface OcxProviderConfig {
    * An explicit config value always wins over the registry default.
    */
   supportsServiceTier?: boolean;
+  /**
+   * Operator switch for the provider's Fast lane. `false` turns Fast off (no Fast toggle, no
+   * `--fast` row, no fast wire field) and overrides `supportsServiceTier`; `true` enables a lane the
+   * registry marks opt-in (Anthropic fast mode, which draws usage credits at 2x price). Absent keeps
+   * the registry default: off for opt-in entries, unchanged elsewhere.
+   */
+  fastEnabled?: boolean;
   /** Exact upstream model ids that override the provider-level service-tier capability. */
   modelSupportsServiceTier?: Record<string, boolean>;
   /**
@@ -356,6 +416,22 @@ export interface OcxProviderConfig {
    * `ocxr1` envelopes are still stripped because no upstream can decrypt them.
    */
   preserveResponsesReasoningContent?: boolean;
+  /**
+   * Whether to preserve Codex-private `input[].id` on `store: false` requests.
+   * Disabled by default: ordinary Responses upstreams interpret input IDs as references
+   * to nonexistent stored items and return 404. Upstream launcher relays such as
+   * Codex Web GPT (`chatgpt-web/*`) require the current-turn user message ID for
+   * browser-session replay (#6220).
+   */
+  preserveResponsesInputItemIds?: boolean;
+  /**
+   * Whether to preserve ChatGPT-internal `internal_chat_message_metadata_passthrough`
+   * on outgoing input messages for noncanonical destinations. Disabled by default:
+   * public Responses gateways reject the private field as an unknown parameter.
+   * Upstream launcher relays such as Codex Web GPT require this metadata (or the item ID)
+   * to extract turn provenance (#6220).
+   */
+  preserveResponsesMessageMetadata?: boolean;
   /**
    * Treat this provider's `modelReasoningEfforts` as authoritative at the wire, not only in the
    * catalog. Adapters that ship their own per-model effort table (currently `command-code`)
@@ -430,11 +506,14 @@ export interface OcxProviderConfig {
    * streaming POST turns use the configured Responses path (default `/v1/responses`): forward
    * providers use `{baseUrl}/responses`, while key-auth providers use `responsesPath` or the
    * legacy `/v1/responses` fallback. HTTPS providers use wss and are re-encoded to SSE; HTTP
-   * providers continue using SSE, and `openai-chat` requests stay on HTTP. This mirrors the
-   * canonical ChatGPT backend optimization for any OpenAI-compatible gateway that speaks the
-   * Responses WebSocket protocol (for example an aggregator like sub2api whose WS ingress is
-   * measurably faster than its SSE queue). Default false. Canonical ChatGPT backend WS selection
-   * is independent of this flag.
+   * providers continue using SSE, and `openai-chat` requests stay on HTTP. On a custom provider this
+   * opt-in is honored only for the first-party `https://api.openai.com/v1` upstream; every other
+   * endpoint stays on bounded HTTP/SSE. On the canonical ChatGPT `openai` provider the field
+   * selects the transport instead of opting in: omitted keeps the upstream WebSocket for eligible
+   * turns, an explicit `false` sends streaming turns over HTTP/SSE, and provider management rejects `true`. Either
+   * way it is independent of the client-facing `websockets` setting and changes neither the
+   * endpoint nor the credential; with `false`, native mid-turn steering and injection are
+   * unavailable.
    */
   upstreamWebsocket?: boolean;
   /**
@@ -543,6 +622,13 @@ export interface OcxProviderConfig {
   contextWindow?: number;
   /** Per-model fallback when context metadata is absent; otherwise caps the reported window. */
   modelContextWindows?: Record<string, number>;
+  /**
+   * Custom providers only, default off: fill a missing context window from bundled model-ID
+   * metadata before the Context cap / 128k fallback. An estimate, not verified relay capacity.
+   */
+  inferContextWindow?: boolean;
+  /** Per-model Copilot upstream tier; only the github-copilot route sends it. */
+  modelContextTiers?: Record<string, "default" | "long_context">;
   /** Model-specific Codex catalog input modalities, e.g. ["text"] or ["text", "image"]. */
   modelInputModalities?: Record<string, string[]>;
   modelCapabilities?: Record<string, ModelCapabilities>;
@@ -558,6 +644,8 @@ export interface OcxProviderConfig {
    * Responses `max_output_tokens`. Adapters still let an explicit request win.
    */
   defaultMaxOutputTokens?: number;
+  /** Opt-in Azure Responses floor for explicit positive output budgets; may raise the caller cap. */
+  minMaxOutputTokens?: number;
   /** Model-specific fallback output token budgets. Exact/model-pattern entries beat the provider default. */
   modelMaxOutputTokens?: Record<string, number>;
   /**
@@ -592,6 +680,8 @@ export interface OcxProviderConfig {
    */
   autoReviewModelOverrides?: Record<string, string>;
   headers?: Record<string, string>;
+  /** Inbound client metadata headers to copy to this provider when the outbound field is otherwise unset. */
+  forwardClientHeaders?: string[];
   /** Default provider-routing preferences for models sent through the canonical OpenRouter API. */
   openRouterRouting?: OpenRouterProviderRouting;
   /** Exact model-id overrides for `openRouterRouting`. Each matching entry replaces the default. */
@@ -619,13 +709,15 @@ export interface OcxProviderConfig {
    * Reactive 429 rotation remains available even when proactive routing is disabled.
    */
   oauthAccountFailover?: {
+    /** Kiro OAuth only: active serving requests per account, 1..100. */
+    maxConcurrentPerAccount?: number;
     enabled?: boolean;
     /**
      * Generic OAuth pool selection strategy (#695). Persisted through the pool-settings
      * contract. Consumed by the selector only while `pool.kernel` is on; with the flag off
      * it is still merely persisted, so omitted and set behave the same.
      */
-    strategy?: "quota" | "round-robin" | "fill-first";
+    strategy?: "quota" | "round-robin" | "fill-first" | "least-loaded";
     /**
      * 0-100 usage percent at which fill-first advances off the active account (#695).
      * Read only under `pool.kernel` with `strategy: "fill-first"`; 80 when unset, matching
@@ -779,6 +871,13 @@ export interface OcxProviderConfig {
   noTemperatureModels?: string[];
   /** Model ids that reject caller-specified top_p. */
   noTopPModels?: string[];
+  /**
+   * Model ids that reject caller-specified stop sequences. The openai-chat adapter
+   * drops `stop` for these (xAI grok-4.6 answers 400 invalid-argument
+   * "Model grok-4.6 does not support parameter stop.", which makes Claude Code's
+   * auto-mode safety classifier report the model as temporarily unavailable).
+   */
+  noStopModels?: string[];
   /** Model ids that reject caller-specified presence/frequency penalty values. */
   noPenaltyModels?: string[];
   /**
@@ -902,6 +1001,14 @@ export interface OcxProviderConfig {
    */
   showThinkingSummary?: boolean;
   /**
+   * Keep raw content-channel reasoning out of client frames for this provider. Provider-authored
+   * summaries (thinking_delta) stay visible, so an opted-in operator loses no summary; an explicit
+   * wire summary:"none" still hides both. This is a display control, not a confidentiality boundary:
+   * a Responses bridge route still carries the text to the client in the base64 `ocxr1` replay
+   * envelope; direct Chat/Messages encoders send no copy and replay from the server-side cache.
+   */
+  hideRawReasoning?: boolean;
+  /**
    * Opt-in same-target 429 retry policy. Codex itself never retries 429 (it retries 5xx only,
    * openai/codex#30471), and single-key pools have no failover, so the proxy waits and replays
    * the identical request on the same key before any failover. Pre-stream only: a 429 arrives
@@ -915,10 +1022,26 @@ export interface OcxProviderConfig {
    */
   transientRetryOn5xx?: TransientRetryPolicy;
   /**
+   * Opt-in replacement of self-contained Responses sends (`providers.<name>.retryOnReset`).
+   * Disabled unless present; `{}` opts in. Native sends and generic translated initial/rebuilt
+   * pre-header sends share the grant/budget; adapter-owned and translated post-header failures are excluded.
+   */
+  retryOnReset?: ResetReplayPolicy;
+  /**
    * Model ids whose OpenAI-compatible chat endpoint accepts `reasoning_split: true` and returns
    * thinking separately in `reasoning_content` / `reasoning_details` instead of visible content.
    */
   reasoningSplitModels?: string[];
+  /**
+   * Model ids served by a gateway that runs no server-side reasoning parser, so a thinking model
+   * leaves its chain of thought inline in `content` as `<think>` / `<thinking>` / `<reasoning>`
+   * blocks and never sends `reasoning_content` or `reasoning_details`. Without this the whole
+   * chain of thought renders as the answer. The openai-chat adapter then splits those blocks back
+   * into reasoning. Off by default and narrow on purpose: 66 registry providers share this
+   * adapter, and a gateway that does parse reasoning must not have its visible content rewritten.
+   * Prefer a provider-side parser or `reasoningSplitModels` when the upstream supports either.
+   */
+  inlineThinkTagModels?: string[];
   /**
    * Model ids whose chat endpoint carries thinking as a structured `reasoning_details` array
    * (MiniMax M-series with `reasoning_split`): stream deltas repeat each detail's `text` as a

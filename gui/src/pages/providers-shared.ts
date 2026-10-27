@@ -11,6 +11,7 @@ export interface ProvidersConfig {
     liveModels?: boolean;
     upstreamHttpVersion?: "auto" | "http1.1" | "h1" | "http2" | "h2";
     reasoningWireFormat?: "gateway-object";
+    preserveResponsesReasoningContent?: boolean;
     authMode?: string;
     keyOptional?: boolean;
     disabled?: boolean;
@@ -26,6 +27,7 @@ export interface OAuthStatus {
   email?: string;
   error?: string;
   done?: boolean;
+  hint?: import("../components/login-url-block").LoginHintData;
   needsReauth?: boolean;
   activeAccountId?: string | null;
 }
@@ -51,11 +53,14 @@ const OAUTH_LABELS: Record<string, string> = {
   codebuddy: "WorkBuddy",
   xai: "xAI (Grok)",
   anthropic: "Anthropic (Claude)",
+  anthropic2: "Anthropic · Pool 2",
   kimi: "Kimi (Moonshot)",
   "meta-muse": "Meta Muse Code (CLI)",
   "google-antigravity": "Google Antigravity",
   "github-copilot": "GitHub Copilot",
   cursor: "Cursor",
+  // Brand only: the experimental/use-at-your-own-risk notice is localized in the login warning.
+  zed: "Zed Hosted AI",
   // Accounts rows title through this map, not `formatProviderDisplayName`.
   // Without an entry the row reads its raw id. `devin-cli` needs no entry:
   // it is a deprecated alias that startup migration rewrites to `devin`, so a

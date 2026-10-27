@@ -19,6 +19,23 @@ export interface ProviderQuotaWindow {
   label: string;
   percent: number;
   resetAt?: number;
+  /**
+   * Set only when the PRODUCER proved this window covers one model family, structurally rather
+   * than by reading its label: an Anthropic `seven_day_<family>` body key, or a limit with
+   * `kind: "weekly_scoped"` and a recognized `scope.model.display_name`.
+   *
+   * Absent means provider-wide, which gates every model. That is the fail-closed direction and
+   * the behaviour every other producer keeps. Routing must key on THIS, never on the label text:
+   * `quota/antigravity.ts` passes an upstream `group.displayName` straight through, so a
+   * provider-wide group named "Opus" there would otherwise be mistaken for a per-model window.
+   */
+  scope?: "model";
+  /** Exact upstream model selector, populated only by an account-bound entitlement reader. */
+  modelId?: string;
+  /** Passive family readings have their own freshness clock, independent of active probes. */
+  passiveObservedAt?: number;
+  /** Upstream refusal evidence, distinct from a measured utilization counter. */
+  rejected?: true;
 }
 
 export interface ProviderQuotaCreditsUsd {
@@ -38,6 +55,29 @@ export interface WorkbuddyAccountActivity {
   dailyTask?: boolean;
 }
 
+export interface WorkbuddyModelCooldownView {
+  until: number;
+  resetAt?: number;
+  reason?: string;
+}
+
+export interface WorkbuddyAccountPoolView {
+  realm?: "cn" | "global";
+  credits?: number;
+  creditsExpiring?: number;
+  until?: number;
+  reason?: string;
+  breakerUntil?: number;
+  retryCount?: number;
+  consecutiveFails?: number;
+  successCount?: number;
+  errTotal?: number;
+  lastUsed?: number;
+  lastSuccess?: number;
+  lastErr?: number;
+  modelCooldowns?: Record<string, WorkbuddyModelCooldownView>;
+}
+
 export interface ProviderQuota {
   fiveHourPercent?: number;
   fiveHourResetAt?: number;
@@ -45,6 +85,9 @@ export interface ProviderQuota {
   weeklyResetAt?: number;
   monthlyPercent?: number;
   monthlyResetAt?: number;
+  /** Observed Kiro plan credits, independent of token and currency estimates. */
+  kiroCreditsUsed?: number;
+  kiroCreditsLimit?: number;
   customWindows?: ProviderQuotaWindow[];
   creditsUsd?: ProviderQuotaCreditsUsd;
   updatedAt: number;
@@ -59,6 +102,7 @@ export interface AccountQuotaFields {
   quotaUnavailable?: boolean;
   quotaFailure?: QuotaFailureCode;
   workbuddy?: WorkbuddyAccountActivity;
+  workbuddyPool?: WorkbuddyAccountPoolView;
 }
 
 
@@ -71,3 +115,4 @@ export type QuotaFailureCode = typeof QUOTA_FAILURE_CODES[number];
 export function parseQuotaFailureCode(value: unknown): QuotaFailureCode | undefined {
   return QUOTA_FAILURE_CODES.find(code => code === value);
 }
+

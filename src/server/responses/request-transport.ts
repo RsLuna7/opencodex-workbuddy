@@ -1,3 +1,12 @@
+import { SendBudgetExhaustedError } from "../../lib/upstream-retry";
+import { anthropicBillingPhysicalFetch } from "../../providers/anthropic-billing-ownership";
+import { rebindPhysicalSend } from "../../lib/request-execution-budget";
+import { anthropicModelQuotaFor } from "../../oauth/anthropic-model-quota";
+import { anthropicRatePolicyFor } from "../../oauth/anthropic-rate-limit-policy";
+import { configuredAnthropicInstance } from "../../providers/anthropic-instance";
+import { resolveAnthropicMessagesUrl } from "../../adapters/anthropic";
+import { bindAnthropicRefusalCredentialForSend } from "../../oauth/anthropic-account-refusal";
+import { captureAnthropicPhysicalSendOwnership, anthropicPhysicalSendOwnershipIsCurrent, type AnthropicPhysicalSendOwnership } from "../../oauth/anthropic-send-ownership";
 import type { ResponsesRequestContext, ResponsesAdmissionState } from "./core-options";
 import type { PreparedResponsesRequest } from "./request-prepare";
 import type { OAuthAccessSnapshot } from "../../oauth";
@@ -6,46 +15,58 @@ import {
   commitOAuthAccountSelection,
   getAccountCredentialWithStatus,
   credentialGeneration,
+  getAccountSet,
 } from "../../oauth/store";
+import { refreshKiroAccountModelsDetached } from "../../providers/kiro-model-catalog";
 import type { ProviderAdapter, AdapterRequest } from "../../adapters/base";
+import { releaseProviderRequestSlot, waitForProviderRequestSlot, type ProviderRequestSlot } from "../../providers/request-pacing";
 import type { AdapterEvent, OcxParsedRequest, OcxProviderConfig, OcxUsage } from "../../types";
 import type { AnthropicAccountSelectionReason } from "../../oauth/anthropic-routing";
+import { resolveAnthropicModelRouteForInstance, routeCandidates, type AnthropicRouteDecision } from "../../oauth/anthropic-model-routes";
 import {
-  isAnthropicAccountPoolEnabled,
-  getAnthropicPoolAccessSnapshot,
-  commitAnthropicSelectionRouting,
+  anthropicRoutingFor,
+  AnthropicAccountCooldownError,
   formatAnthropicProviderForLog,
   anthropicSessionKeyFromParts,
-  resolveAnthropicAccountForSession,
-  getAnthropicPoolRetryAfterSeconds,
-  hasAnthropicFailoverQuorum,
 } from "../../oauth/anthropic-routing";
 import {
+  OAuthAccountPausedError,
   getValidAccessSnapshotForAccount,
   forceRefreshOAuthAccessSnapshot,
   getValidAccessTokenSnapshot,
+  OAuthLoginRequiredError,
   publicOAuthAuthenticationErrorMessage,
   UnsupportedOAuthProviderError,
 } from "../../oauth";
 import {
-  failoverAccountSnapshot,
+  GENERIC_OAUTH_MAX_ACCOUNTS_PER_REQUEST,
+  GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST,
+  eligibleFailoverAccounts,
   forgetGenericFailoverRoster,
+  isGenericOAuthFailoverEnabled,
   isGenericFailoverProvider,
-  normalizeGenericFailoverModelId,
-  noteGenericPoolSelection,
+  isProactivePreferenceEnabled,
   preferredInitialAccount,
- rotateGenericOAuthAccountOn429,
- shouldAttemptGenericOAuthFailover,
+  refusalAwareInitialKiroAccount,
+  noteGenericPoolSelection,
+  shouldAttemptGenericOAuthFailover,
   type GenericRotateTarget,
 } from "../../oauth/generic-account-failover";
-import {
-  CODEBUDDY_PROVIDER_ID,
-  codebuddyFailoverHintFromErrorPayload,
-  recoverCodebuddyFailoverHint,
-  type CodebuddyFailoverHint,
-} from "../../oauth/codebuddy";
+import { CODEBUDDY_PROVIDER_ID, codebuddyFailoverHintFromErrorPayload, recoverCodebuddyFailoverHint } from "../../oauth/codebuddy";
+import { isWorkbuddyPoolCooled } from "../../oauth/workbuddy-pool";
+import { tryKiroAlternateAfterTerminalRefresh } from "../../oauth/kiro-terminal-failover";
+import { classifyModelFamilyForQuota } from "../../oauth/account-quota-rank";
+import { expandInferenceOAuthSendBudget } from "../inference/context";
 import { stampOAuthAccountLabel, usesApiKeyAccount } from "../../providers/label";
 import { resolveProviderTransport } from "../../providers/xai-transport";
+import { captureRouteStaticPolicy } from "../../router";
+import { CopilotAutoHttpError, resolveCopilotAuto } from "../../providers/github-copilot-auto";
+import {
+  AdmissionModelDeniedError,
+  admissionModelDeniedResponse,
+  assertRouteAllowedByScope,
+} from "../admission-model-scope";
+import { renameRoutedIdentityInContext } from "../../adapters/identity";
 import { resolveCopilotApiBaseUrl } from "../../oauth/github-copilot";
 import {
   providerApiKeySelectionIsCurrent,
@@ -55,7 +76,7 @@ import { resolveAdapter, resolveWireProtocolOverride } from "../adapter-resolve"
 import { providerFetch, sendWithConnectionPolicy } from "./fetch-helpers";
 import type { ProviderFetchOptions } from "./fetch-helpers";
 import { captureConfigGeneration } from "../../lib/state-store-sweeper";
-import { recordAnthropicAccountQuotaFromHeaders, hasPassiveAccountQuota } from "../../providers/quota";
+import { recordAnthropicAccountQuotaFromHeadersForInstance, hasPassiveAccountQuota } from "../../providers/quota";
 import { checkOutboundBodySize, describeOutboundBodyRefusal } from "./outbound-body-guard";
 import { formatErrorResponse } from "../../bridge";
 import { bindRouteReasoningReplayScope } from "./core-replay";
@@ -75,7 +96,17 @@ import {
   recordKeyAttemptUsage,
 } from "../request-log";
 import type { AttemptRecoveryKind } from "../../usage/log";
+import { bindAttemptDeliveryRecorder } from "../../usage/attempt-delivery";
 import { resolvePassiveRouteSubjectId } from "../passive-route-linker";
+import { anthropicPoolCooldownResponse, clientCancelledResponse } from "./core-errors";
+import { acquireAccountLease, KIRO_ACCOUNT_WAIT_MS } from "../../oauth/kiro-account-load";
+
+/** Return a renewed Chat wire to the native owner before sending inference. */
+export class CopilotAutoAdapterHandoff extends Error {
+  constructor(readonly adapter: ProviderAdapter) {
+    super("Copilot Auto dispatch requires the Chat adapter");
+  }
+}
 
 /** Owns live credential selection and adapter bindings for one request. */
 export async function prepareResponsesTransport(
@@ -88,10 +119,56 @@ export async function prepareResponsesTransport(
     | "inboundWire"
     | "selectedForwardHeaders"
     | "translatorBudget"
+    | "inboundSelector"
+    | "admissionScope"
   >,
 ) {
   const { config, logCtx, options, req } = requestContext;
   const { route, parsed, inboundWire, translatorBudget } = requestState;
+  const anthropicInstance = route.provider.authMode === "oauth"
+    ? configuredAnthropicInstance(config, route.providerName) : undefined;
+  // Refuse custom/orphan B OAuth before any generic resolver can observe its auth row.
+  if (route.providerName === "anthropic2" && route.provider.authMode === "oauth" && !anthropicInstance) {
+    return formatErrorResponse(401, "authentication_error", "Anthropic Pool 2 requires an enabled builtin OAuth provider");
+  }
+  const anthropicRouting = anthropicInstance ? anthropicRoutingFor(anthropicInstance) : undefined;
+  const anthropicQuota = anthropicInstance ? anthropicModelQuotaFor(anthropicInstance) : undefined;
+  const anthropicRatePolicy = anthropicInstance ? anthropicRatePolicyFor(anthropicInstance) : undefined;
+  const authorizedAnthropicTarget = anthropicInstance === "anthropic2"
+    ? resolveAnthropicMessagesUrl(route.provider) : undefined;
+  const anthropicAdmissionIsCurrent = (): boolean => {
+    if (!anthropicInstance) return true;
+    if (configuredAnthropicInstance(config, route.providerName) !== anthropicInstance || route.provider.authMode !== "oauth") return false;
+    if (anthropicInstance !== "anthropic2") return true;
+    try {
+      return resolveAnthropicMessagesUrl(config.providers[anthropicInstance]!) === authorizedAnthropicTarget
+        && resolveAnthropicMessagesUrl(route.provider) === authorizedAnthropicTarget;
+    } catch { return false; }
+  };
+  if (!anthropicAdmissionIsCurrent()) {
+    return formatErrorResponse(401, "authentication_error", "Anthropic Pool 2 provider target changed; retry the request");
+  }
+  const requireAnthropicAdmission = (): void => {
+    if (!anthropicAdmissionIsCurrent()) throw new OAuthLoginRequiredError(anthropicInstance!);
+  };
+  const currentAnthropicRouteDecision = (): AnthropicRouteDecision | null => {
+    requireAnthropicAdmission();
+    if (!anthropicInstance || !anthropicRouting?.isAnthropicAccountPoolEnabled(config)) return null;
+    const result = resolveAnthropicModelRouteForInstance(anthropicInstance, config, route.modelId);
+    if (result.error) throw new Error("Invalid Anthropic model route configuration");
+    return result.decision;
+  };
+  const rawKiroCap = route.providerName === "kiro" && route.provider.authMode === "oauth"
+    ? config.providers.kiro?.oauthAccountFailover?.maxConcurrentPerAccount : undefined;
+  const kiroCap = typeof rawKiroCap === "number" && Number.isInteger(rawKiroCap)
+    && rawKiroCap >= 1 && rawKiroCap <= 100 ? rawKiroCap : undefined;
+  const kiroLoadEnabled = route.providerName === "kiro" && route.provider.authMode === "oauth"
+    && (kiroCap !== undefined || (config.pool?.kernel === true
+      && config.providers.kiro?.oauthAccountFailover?.strategy === "least-loaded"
+      && isProactivePreferenceEnabled(config, "kiro", Date.now())));
+  const capacityResponse = () => new Response(JSON.stringify({ error: {
+    type: "server_error", code: "account_capacity", message: "Kiro account capacity is temporarily full; retry shortly.",
+  } }), { status: 503, headers: { "content-type": "application/json", "retry-after": "1" } });
 
 
   // OAuth providers: swap in a fresh access token (auto-refreshed) as the Bearer key, so the
@@ -102,20 +179,20 @@ export async function prepareResponsesTransport(
     || route.providerName === "kiro"
     || route.providerName === "google-antigravity"
     || route.providerName === "orcarouter-oauth"
+    // runTurn transport: the replay runs on the first-event preflight in run-turn-execution.
+    || route.providerName === "devin"
   ) && route.provider.authMode === "oauth";
   let sentOAuthSnapshot: OAuthAccessSnapshot | undefined;
+  // One inference-401 replay belongs to this request, even when Auto changes exchange wire.
+  let oauth401ReplayAttempted = false;
   let replayOAuthCredentialSnapshot: Pick<OAuthAccessSnapshot, "accountId" | "generation"> | undefined;
   let anthropicPoolAccountId: string | null = null;
   let anthropicPoolFailovers = 0;
+  let anthropicRouteDecision: AnthropicRouteDecision | null = null;
   // Generic OAuth rotation (#2568) for providers with no pool of their own. Bound to the account
   // the request actually used, so a concurrent rotation cannot cool an innocent replacement.
   let genericFailoverAccountId: string | null = null;
   let genericFailovers = 0;
-  /**
-   * True when the current rotation deliberately did NOT persist the operator's active
-   * account. WorkBuddy 6004 cools one account×model pair, so the next turn must not open
-   * by replaying that cooled credential -- but the operator's own choice must survive.
-   */
   let genericFailoverUnpersisted = false;
   let oauthSelection = route.provider.authMode === "oauth"
     ? captureOAuthAccountSelection(route.providerName) : null;
@@ -144,30 +221,40 @@ export async function prepareResponsesTransport(
   ): Promise<OAuthAccessSnapshot | null> => {
     const maxSelectionAttempts = 3;
     for (let attempt = 0; attempt < maxSelectionAttempts; attempt++) {
+      requireAnthropicAdmission();
+      if (candidate.provider !== route.providerName) return null;
+      if (anthropicInstance) anthropicRouteDecision = currentAnthropicRouteDecision();
       if (!oauthSelection) return null;
-      const proactiveEnabled = route.providerName === "anthropic"
-        ? isAnthropicAccountPoolEnabled(config)
+      const proactiveEnabled = anthropicInstance !== undefined
+        ? anthropicRouting!.isAnthropicAccountPoolEnabled(config)
         : (config.providers[route.providerName]?.oauthAccountFailover?.enabled
           ?? config.oauthAccountFailover?.enabled) === true;
       if (proactive && candidate.accountId !== oauthSelection.accountId && !proactiveEnabled) {
         oauthSelection = captureOAuthAccountSelection(route.providerName);
         if (!oauthSelection) return null;
-        candidate = route.providerName === "anthropic"
-          ? await getAnthropicPoolAccessSnapshot(oauthSelection.accountId)
+        candidate = anthropicInstance !== undefined
+          ? await anthropicRouting!.getAnthropicPoolAccessSnapshot(oauthSelection.accountId)
           : await getValidAccessSnapshotForAccount(route.providerName, oauthSelection.accountId, { requireUsableAccount: true });
       }
+      requireAnthropicAdmission();
+      if (candidate.provider !== route.providerName) return null;
+      if (anthropicInstance) anthropicRouteDecision = currentAnthropicRouteDecision();
+      if (anthropicRouteDecision && !routeCandidates(anthropicRouting!.getEligibleAnthropicAccounts(Date.now(), route.modelId), anthropicRouteDecision).includes(candidate.accountId)) return null;
       const committed = await commitOAuthAccountSelection(route.providerName, candidate.accountId, {
         expectedSelection: oauthSelection,
         expectedCredentialGeneration: candidate.generation,
         requireUsableAccount: true,
       });
+      requireAnthropicAdmission();
       if (committed) {
-        if (route.providerName === "anthropic" && !commitAnthropicSelectionRouting(
+        if (anthropicInstance) anthropicRouteDecision = currentAnthropicRouteDecision();
+        if (anthropicInstance !== undefined && !anthropicRouting!.commitAnthropicSelectionRouting(
           candidate.accountId, oauthSelection, committed,
-          { config, sessionKey: anthropicSessionKey, reason: anthropicReason, expectedCredentialGeneration: candidate.generation },
+          { config, sessionKey: anthropicSessionKey, reason: anthropicReason, expectedCredentialGeneration: candidate.generation, routeDecision: anthropicRouteDecision, model: route.modelId },
         )) return null;
         oauthSelection = committed;
         servingOAuthSnapshot = candidate;
+        if (anthropicInstance) replayOAuthCredentialSnapshot = { accountId: candidate.accountId, generation: candidate.generation };
         forgetGenericFailoverRoster(route.providerName);
         return candidate;
       }
@@ -175,8 +262,15 @@ export async function prepareResponsesTransport(
       // Resolve that choice, not the rejected candidate, before trying admission again.
       oauthSelection = captureOAuthAccountSelection(route.providerName);
       if (!oauthSelection) return null;
-      candidate = route.providerName === "anthropic"
-        ? await getAnthropicPoolAccessSnapshot(oauthSelection.accountId)
+      // A revision also changes on per-account policy edits. Re-evaluate the selector
+      // after credential waits even without a model route, rather than reusing stale active.
+      const revisedAnthropic = anthropicInstance !== undefined
+        ? anthropicRouting!.resolveAnthropicAccountForSession(anthropicSessionKey, config, Date.now(), anthropicRouteDecision, route.modelId) : null;
+      const revisedAnthropicId = revisedAnthropic?.accountId;
+      if (anthropicInstance !== undefined && !revisedAnthropicId) return null;
+      if (revisedAnthropic) anthropicReason = revisedAnthropic.reason;
+      candidate = anthropicInstance !== undefined
+        ? await anthropicRouting!.getAnthropicPoolAccessSnapshot(revisedAnthropicId ?? oauthSelection.accountId)
         : await getValidAccessSnapshotForAccount(route.providerName, oauthSelection.accountId, { requireUsableAccount: true });
       if (route.provider.googleMode === "cloud-code-assist" && !candidate.projectId) return null;
     }
@@ -184,11 +278,24 @@ export async function prepareResponsesTransport(
   };
   const refreshResolvedOAuthSelection = async (sent: OAuthAccessSnapshot): Promise<OAuthAccessSnapshot> => {
     const current = captureOAuthAccountSelection(route.providerName);
-    const unchanged = current?.accountId === oauthSelection?.accountId
-      && current?.revision === oauthSelection?.revision;
-    const candidate = unchanged ? await forceRefreshOAuthAccessSnapshot(sent) : sent;
+    // Keyed on the account, not the selection revision: a selection that moved away and back
+    // (A -> B -> A) before the 401 landed still serves the rejected credential, and skipping
+    // the refresh would replay it and spend the one recovery attempt.
+    const candidate = current?.accountId === sent.accountId ? await forceRefreshOAuthAccessSnapshot(sent) : sent;
     const admitted = await commitResolvedOAuthSelection(candidate);
     if (!admitted) throw new Error("OAuth selection changed during credential recovery");
+    if (kiroLoadEnabled && options.accountLoad?.lease?.accountId !== admitted.accountId) {
+      const signal = options.abortSignal ?? req.signal;
+      const replayLease = await acquireAccountLease("kiro", admitted.accountId, {
+        maxConcurrentPerAccount: kiroCap, signal,
+      });
+      if (!replayLease || !options.accountLoad || options.accountLoad.cancelled || signal.aborted) {
+        replayLease?.release();
+        throw new Error("Kiro replay account capacity is full");
+      }
+      options.accountLoad.lease?.release();
+      options.accountLoad.lease = replayLease;
+    }
     genericFailoverAccountId = admitted.accountId;
     stampOAuthAccountLabel(logCtx, route.providerName, route.provider, admitted.accountId);
     return admitted;
@@ -200,6 +307,92 @@ export async function prepareResponsesTransport(
    * the case the fence exists for. Stays 0 for every provider without a passive quota.
    */
   let passiveQuotaWriterGeneration = 0;
+  const copilotRequestedModel = route.modelId;
+  /** Project only bounded Copilot refusal metadata; upstream bodies and session tokens never reach the client. */
+  const copilotRefusalResponse = (error: unknown): Response | undefined => {
+    if (error instanceof AdmissionModelDeniedError) return admissionModelDeniedResponse(error);
+    if (!(error instanceof CopilotAutoHttpError) || ![401, 403, 429].includes(error.status)) return;
+    const response = formatErrorResponse(error.status, error.status === 429 ? "rate_limit_error" : "authentication_error",
+      error.message);
+    if (error.retryAfter) response.headers.set("retry-after", error.retryAfter);
+    return response;
+  };
+  let copilotSessionExpiresAt = Infinity;
+  let copilotNegotiationRefreshed = false;
+  let copilotAutoAdapter: OcxProviderConfig["adapter"] | undefined;
+  /** The operator-configured wire, captured before the first Auto negotiation can rewrite route.provider. */
+  let copilotConfiguredWire: { adapter: OcxProviderConfig["adapter"]; responsesPath?: string;
+    chatCompletionsPath?: string; apiVersion?: string } | undefined;
+  /** Start every negotiation from the configured wire, so a previous credential's Auto adapter,
+   *  endpoint and session headers never carry over to a credential that keeps the named model. */
+  const copilotNegotiationBase = (provider: OcxProviderConfig): OcxProviderConfig => {
+    if (!copilotConfiguredWire) return provider;
+    const headers = new Headers(provider.headers);
+    headers.delete("Copilot-Session-Token");
+    if (copilotConfiguredWire.apiVersion === undefined) headers.delete("X-GitHub-Api-Version");
+    else headers.set("X-GitHub-Api-Version", copilotConfiguredWire.apiVersion);
+    const base: OcxProviderConfig = { ...provider, adapter: copilotConfiguredWire.adapter,
+      headers: Object.fromEntries(headers) };
+    if (copilotConfiguredWire.responsesPath === undefined) delete base.responsesPath;
+    else base.responsesPath = copilotConfiguredWire.responsesPath;
+    if (copilotConfiguredWire.chatCompletionsPath === undefined) delete base.chatCompletionsPath;
+    else base.chatCompletionsPath = copilotConfiguredWire.chatCompletionsPath;
+    return base;
+  };
+  /** Resolve the request's ephemeral wire selection and recover at most one OAuth negotiation 401. */
+  const resolveCopilotSelection = async (requestParsed: OcxParsedRequest, insideDispatch = false): Promise<void> => {
+    if (route.providerName !== "github-copilot" || route.provider.authMode === "forward") return;
+    copilotConfiguredWire ??= {
+      adapter: route.provider.adapter,
+      responsesPath: route.provider.responsesPath,
+      chatCompletionsPath: route.provider.chatCompletionsPath,
+      apiVersion: new Headers(route.provider.headers).get("X-GitHub-Api-Version") ?? undefined,
+    };
+    /** Fence control-plane sends to the captured credential; reuse an already-held dispatch concurrency lease. */
+    const negotiate = () => {
+      const binding: DispatchBinding | undefined = oauthSelection && servingOAuthSnapshot
+        ? { kind: "oauth", selection: { ...oauthSelection }, snapshot: servingOAuthSnapshot }
+        : { kind: "api-key", provider: { ...route.provider } };
+      return resolveCopilotAuto(copilotNegotiationBase(route.provider), copilotRequestedModel, requestParsed,
+        options.abortSignal ?? req.signal, /** Fence each negotiation send against the captured credential binding before touching the network. */
+          () => selectionIsCurrent(binding), !insideDispatch);
+    };
+    let selected: Awaited<ReturnType<typeof resolveCopilotAuto>>;
+    try { selected = await negotiate(); }
+    catch (error) {
+      if (!(error instanceof CopilotAutoHttpError) || error.status !== 401 || copilotNegotiationRefreshed
+        || oauth401ReplayAttempted || route.provider.authMode !== "oauth" || !servingOAuthSnapshot) throw error;
+      copilotNegotiationRefreshed = true;
+      const refreshed = await refreshResolvedOAuthSelection(servingOAuthSnapshot);
+      route.provider = resolveProviderTransport(route.providerName,
+        { ...route.provider, apiKey: refreshed.accessToken }, parsed.options.promptCacheKey,
+        resolveCopilotApiBaseUrl(refreshed.apiBaseUrl));
+      sentOAuthSnapshot = refreshed;
+      replayOAuthCredentialSnapshot = { accountId: refreshed.accountId, generation: refreshed.generation };
+      selected = await negotiate();
+    }
+    assertRouteAllowedByScope(
+      // The scope captured at admission: a key edited or removed while negotiation was in
+      // flight must not widen this request. The refusal names the caller's own selector.
+      requestState.admissionScope,
+      requestState.inboundSelector,
+      { providerName: route.providerName, modelId: selected.modelId },
+    );
+    copilotSessionExpiresAt = selected.expiresAt ?? Infinity;
+    route.provider = selected.provider;
+    route.modelId = selected.modelId;
+    route.staticPolicy = captureRouteStaticPolicy(route.providerName, route.modelId, route.provider,
+      route.staticPolicy.effectiveAlias, inboundWire);
+    copilotAutoAdapter = selected.auto ? selected.provider.adapter : undefined;
+    for (const target of new Set([parsed, requestParsed])) {
+      target.modelId = selected.modelId;
+      if (target._rawBody && typeof target._rawBody === "object")
+        (target._rawBody as { model?: string }).model = selected.modelId;
+      target.context = renameRoutedIdentityInContext(target.context, selected.modelId);
+    }
+    logCtx.model = selected.modelId;
+    if (logCtx.activeAttempt) logCtx.activeAttempt.model = selected.modelId;
+  };
   /**
    * Apply a rotated account's FULL credential snapshot to the live route (#2568d).
    *
@@ -222,29 +415,75 @@ export async function prepareResponsesTransport(
    *   tolerates project discovery failing, so a stored account can legitimately have no project;
    *   sending that account's bearer with the FAILED account's project is worse than not rotating.
    */
+  const planGenericOAuthRotation = async (
+    refusal: Response | { status: number; message?: string },
+  ): Promise<{ failedAccountId: string; target: GenericRotateTarget; persistActive: boolean } | null> => {
+    const failedAccountId = genericFailoverAccountId;
+    if (!failedAccountId || genericFailovers >= genericFailoverLimit) return null;
+    const hint = route.providerName === CODEBUDDY_PROVIDER_ID
+      ? refusal instanceof Response
+        ? await recoverCodebuddyFailoverHint(refusal, options.abortSignal)
+        : refusal.message ? codebuddyFailoverHintFromErrorPayload(refusal.message) : undefined
+      : undefined;
+    if (!shouldAttemptGenericOAuthFailover(
+      config, route.providerName, refusal.status, failedAccountId, genericFailovers, hint, genericFailoverLimit,
+    )) return null;
+    return hint
+      ? {
+        failedAccountId,
+        target: {
+          scope: hint.scope,
+          modelId: route.modelId,
+          quotaExhausted: true,
+          resetAt: hint.resetAtMs,
+        },
+        persistActive: hint.scope !== "model",
+      }
+      : { failedAccountId, target: route.modelId, persistActive: true };
+  };
+
   const applyFailoverSnapshot = async (
     snapshot: OAuthAccessSnapshot,
     retryParsed: OcxParsedRequest = parsed,
+    insideDispatch = false,
     persistActive = true,
   ): Promise<OAuthAccessSnapshot | null> => {
+    requireAnthropicAdmission();
+    if (snapshot.provider !== route.providerName) return null;
     if (route.provider.googleMode === "cloud-code-assist" && !snapshot.projectId) return null;
+    const signal = options.abortSignal ?? req.signal;
+    let speculative = kiroLoadEnabled && options.accountLoad?.lease?.accountId !== snapshot.accountId
+      ? await acquireAccountLease("kiro", snapshot.accountId, { maxConcurrentPerAccount: kiroCap, signal }) : null;
+    if (speculative && (options.accountLoad?.cancelled || signal.aborted)) { speculative.release(); return null; }
+    if (kiroLoadEnabled && options.accountLoad?.lease?.accountId !== snapshot.accountId && !speculative) return null;
+    let committed: OAuthAccessSnapshot | null = snapshot;
     if (persistActive) {
-      const committed = await commitResolvedOAuthSelection(snapshot);
-      if (!committed) return null;
-      snapshot = committed;
+      try { committed = await commitResolvedOAuthSelection(snapshot); }
+      catch (error) { speculative?.release(); throw error; }
       genericFailoverUnpersisted = false;
     } else {
-      // Model-scoped rotation (WorkBuddy 6004) rebinds THIS request only. The credential is
-      // re-read below rather than trusted from the caller's snapshot, so a removed or
-      // reauth-flagged account still refuses the rotation instead of dispatching on it.
       const row = getAccountCredentialWithStatus(route.providerName, snapshot.accountId);
-      if (!row || row.needsReauth) return null;
-      oauthSelection = oauthSelection
-        ? { accountId: snapshot.accountId, revision: oauthSelection.revision }
-        : { accountId: snapshot.accountId };
+      const selected = captureOAuthAccountSelection(route.providerName);
+      if (!row || row.paused || row.needsReauth || !selected
+        || !oauthSelection || selected.revision !== oauthSelection.revision
+        || credentialGeneration(row.credential) !== snapshot.generation) return null;
+      oauthSelection = { accountId: snapshot.accountId, revision: selected.revision };
       servingOAuthSnapshot = snapshot;
       genericFailoverUnpersisted = true;
     }
+    if (!committed) { speculative?.release(); return null; }
+    if (speculative && (options.accountLoad?.cancelled || signal.aborted)) { speculative.release(); return null; }
+    if (kiroLoadEnabled && committed.accountId !== (speculative?.accountId ?? options.accountLoad?.lease?.accountId)) {
+      speculative?.release();
+      speculative = await acquireAccountLease("kiro", committed.accountId, { maxConcurrentPerAccount: kiroCap, signal });
+      if (speculative && (options.accountLoad?.cancelled || signal.aborted)) { speculative.release(); return null; }
+      if (!speculative) return null;
+    }
+    if (speculative && options.accountLoad) {
+      options.accountLoad.lease?.release();
+      options.accountLoad.lease = speculative;
+    }
+    snapshot = committed;
     let rotatedProvider: OcxProviderConfig = { ...route.provider, apiKey: snapshot.accessToken };
     if (route.providerName === "github-copilot") {
       rotatedProvider = resolveProviderTransport(
@@ -256,6 +495,9 @@ export async function prepareResponsesTransport(
     }
     if (snapshot.projectId) rotatedProvider = { ...rotatedProvider, project: snapshot.projectId };
     route.provider = rotatedProvider;
+    await resolveCopilotSelection(retryParsed, insideDispatch);
+    // Negotiation itself may have recovered a 401 with a newer committed credential.
+    if (route.providerName === "github-copilot" && servingOAuthSnapshot) snapshot = servingOAuthSnapshot;
     if (route.providerName === "kiro") {
       const kiroContext = { ...(snapshot.kiro ?? {}) };
       // Terminal-guard continuations are rebuilt from a shallow clone. Updating only the
@@ -264,21 +506,24 @@ export async function prepareResponsesTransport(
       parsed._kiroAuthContext = kiroContext;
       if (retryParsed !== parsed) retryParsed._kiroAuthContext = { ...kiroContext };
     }
-    if (snapshot.codebuddy || route.providerName === CODEBUDDY_PROVIDER_ID) {
-      // CodeBuddy / WorkBuddy routes on account-scoped headers (uid / enterprise / domain),
-      // exactly like Kiro's routing metadata: a token-only swap would pair B's bearer with
-      // A's identity. Continue past the original request too, as the kiro branch above does.
-      const codebuddyContext = { ...(snapshot.codebuddy ?? {}) };
-      parsed._codebuddyAuthContext = codebuddyContext;
-      if (retryParsed !== parsed) retryParsed._codebuddyAuthContext = { ...codebuddyContext };
+    if (route.providerName === CODEBUDDY_PROVIDER_ID) {
+      const context = { ...(snapshot.codebuddy ?? {}) };
+      parsed._codebuddyAuthContext = context;
+      if (retryParsed !== parsed) retryParsed._codebuddyAuthContext = { ...context };
+    }
+    if (route.providerName === "zed") {
+      // Zed signs with its own user id; `snapshot.accountId` is the local slot hash.
+      const zedContext = { userId: snapshot.providerUserId ?? "" };
+      parsed._zedAuthContext = zedContext;
+      if (retryParsed !== parsed) retryParsed._zedAuthContext = { ...zedContext };
     }
     // Re-stamp: a request that rotated accounts must be attributed to the account that actually
     // served it. All three rotation sites funnel through here, so this is the only re-stamp
     // needed -- and putting it anywhere else would let one of the three drift.
     stampOAuthAccountLabel(logCtx, route.providerName, route.provider, snapshot.accountId);
-    if (route.providerName === "anthropic") {
+    if (anthropicInstance !== undefined) {
       anthropicPoolAccountId = snapshot.accountId;
-      logCtx.provider = formatAnthropicProviderForLog("anthropic", snapshot.accountId, config);
+      logCtx.provider = formatAnthropicProviderForLog(anthropicInstance!, snapshot.accountId, config);
     } else {
       genericFailoverAccountId = snapshot.accountId;
     }
@@ -286,74 +531,6 @@ export async function prepareResponsesTransport(
     replayOAuthCredentialSnapshot = { accountId: snapshot.accountId, generation: snapshot.generation };
     return snapshot;
   };
-  /**
-   * One rotation DECISION for every site that can observe a credential refusal.
-   *
-   * Deliberately side-effect free: each site owns its own send-budget reservation, and the
-   * four sites settle it differently (#4709 -- an adapter-owned ladder spends its own
-   * reservation while a helper-routed replay hands the permit down). Fusing the send into
-   * here would rotate a credential at a site whose budget then refused the replay, cooling
-   * an account and moving the route for a send that never happens.
-   *
-   * What IS shared is the decision itself, because that is where the sites drifted: the
-   * continuation loop never grew the arm the streaming loop did, so a 429 stayed terminal
-   * there (#2568's follow-up).
-   *
-   * WorkBuddy adds a second shape on top of the 429: the vendor reports 6004/14018 in an
-   * HTTP 402 body, and 402 is not a status Codex retries. Scope comes from that hint --
-   * 6004 cools one account×model pair and deliberately does NOT persist the rotation, so
-   * the operator's active account survives a single model going quiet.
-   */
- const planGenericOAuthRotation = async (
-   refusal: Response | { status: number; message?: string },
-  ): Promise<{ failedAccountId: string; target: GenericRotateTarget; persistActive: boolean } | null> => {
-    // A preflight adapter error has a status and a message but no Response to read a body
-    // from, so the durable envelope is parsed from that message instead. The provider gate
-    // lives here rather than at each site, because a hint is what makes a 402 rotatable and
-    // a non-CodeBuddy 402 must not become one by accident.
-    const status = refusal.status;
-    let hint: CodebuddyFailoverHint | undefined;
-    if (route.providerName === CODEBUDDY_PROVIDER_ID) {
-      hint = refusal instanceof Response
-        ? await recoverCodebuddyFailoverHint(refusal, options.abortSignal)
-        : refusal.message !== undefined
-          ? codebuddyFailoverHintFromErrorPayload(refusal.message)
-          : undefined;
-    }
-    // The failed account is captured HERE, not read again at the call site: the planner is
-    // async and genericFailoverAccountId is mutable request state, so a re-read after this
-    // await could cool an account other than the one whose refusal produced the plan.
-    const failedAccountId = genericFailoverAccountId;
-    if (!shouldAttemptGenericOAuthFailover(
-      config,
-      route.providerName,
-      status,
-      failedAccountId,
-      genericFailovers,
-      hint,
-    ) || !failedAccountId) return null;
-   const modelId = normalizeGenericFailoverModelId(route.providerName, route.modelId);
-   // A model-scoped cooldown needs a model to scope it to. Without one the pair cannot be
-   // named, and cooling the whole account is the honest fallback rather than an unscoped
-   // model key that would cool nothing.
-   const scope = hint?.scope === "model" && modelId ? "model" : "account";
-   return {
-     failedAccountId,
-      // A plain 429 keeps upstream's own target shape: the bare routed model id, which the
-      // cooldown store reads as a quota FAMILY when the provider has one (Antigravity's
-      // gem/cla) and as an exact model otherwise. Collapsing it into an explicit account
-      // scope here would quietly widen every Antigravity cooldown to the whole account.
-      target: hint ? {
-        scope,
-        modelId: scope === "model" ? modelId : route.modelId,
-        cooldownUntilMs: hint.resetAtMs,
-        quotaExhausted: true,
-      } : route.modelId,
-      // WorkBuddy 6004 names ONE account×model pair and must not move the operator's stored
-      // selection; 14018 and an ordinary 429 cool the account and persist.
-      persistActive: scope !== "model",
-   };
- };
   // Key sends may be rebuilt while queued. Keep metadata pending until the guarded
   // physical dispatch binds it to the selection that actually reaches the upstream.
   let pendingKeySend: { estimate: number | undefined; recovery?: AttemptRecoveryKind } | undefined;
@@ -379,27 +556,27 @@ export async function prepareResponsesTransport(
     }
   };
   const selectionIsCurrent = (binding: DispatchBinding | undefined): boolean => {
+    if (!anthropicAdmissionIsCurrent()) return false;
     if (route.provider.authMode === "forward") return true;
     if (!binding) return false;
     if (binding.kind === "api-key") return providerApiKeySelectionIsCurrent(config, route.providerName, binding.provider);
-    const row = getAccountCredentialWithStatus(route.providerName, binding.snapshot.accountId);
-    const credentialOk = !!row && !row.needsReauth && row.credential.expires > Date.now()
-      && credentialGeneration(row.credential) === binding.snapshot.generation;
-    if (!credentialOk) return false;
-    // Model-scoped WorkBuddy 6004 rotation keeps the operator's active account on purpose and
-    // rebinds only THIS request, so the stored selection still names the other account. Reading
-    // that as "a concurrent manual switch happened" would refuse a dispatch the rotation just
-    // authorized; the credential comparison above is what actually has to hold.
-    if (
-      genericFailoverUnpersisted
-      && servingOAuthSnapshot
-      && binding.snapshot.accountId === servingOAuthSnapshot.accountId
-      && binding.snapshot.generation === servingOAuthSnapshot.generation
-    ) return true;
+    if (binding.snapshot.provider !== route.providerName) return false;
+    if (anthropicInstance) {
+      anthropicRouteDecision = currentAnthropicRouteDecision();
+      if (anthropicRouteDecision && !routeCandidates(anthropicRouting!.getEligibleAnthropicAccounts(Date.now(), route.modelId), anthropicRouteDecision).includes(binding.snapshot.accountId)) return false;
+    }
     const selected = captureOAuthAccountSelection(route.providerName);
-    return selected?.accountId === binding.selection.accountId && selected?.revision === binding.selection.revision;
+    const row = getAccountCredentialWithStatus(route.providerName, binding.snapshot.accountId);
+    return (genericFailoverUnpersisted && route.providerName === CODEBUDDY_PROVIDER_ID
+      ? selected?.revision === binding.selection.revision
+      : selected?.accountId === binding.selection.accountId && selected?.revision === binding.selection.revision)
+      && !!row && !row.paused && !row.needsReauth && row.credential.expires > Date.now()
+      && (anthropicInstance === undefined || !anthropicRouting!.getAnthropicAccountHealthSnapshot(binding.snapshot.accountId) && !anthropicRatePolicy!.anthropicRatePauseUntil(binding.snapshot.accountId) && !anthropicQuota!.anthropicFamilyRejected(binding.snapshot.accountId, route.modelId))
+      && credentialGeneration(row.credential) === binding.snapshot.generation;
   };
+  /** Bind the negotiated wire adapter and its built requests to the serving credential's authority. */
   const resolveSelectionAdapter = (provider: OcxProviderConfig, retention = config.cacheRetention): ProviderAdapter => {
+    if (copilotAutoAdapter) provider = { ...provider, adapter: copilotAutoAdapter };
     const resolved = resolveAdapter(provider, retention, route.providerName);
     if (route.provider.authMode === "forward") return resolved;
     const binding: DispatchBinding | undefined = route.provider.authMode === "oauth"
@@ -417,15 +594,25 @@ export async function prepareResponsesTransport(
         recordKeyAttemptUsage(logCtx, event.usage);
       }
     };
+    // Counted at the one seam every adapter parse passes, and counted for EVERY event rather
+    // than only usage-bearing ones: the number this pairs with is the frame count the client
+    // transport relayed, and a difference between the two is the loss signal (#3983). Reading
+    // the current attempt through logCtx rather than capturing one keeps the count with the
+    // attempt that is live when the event arrives, across a mid-request attempt rotation.
+    const delivery = bindAttemptDeliveryRecorder(translatorBudget, () => logCtx.activeAttempt);
+    const observeEvent = (event: AdapterEvent, response: object): void => {
+      delivery.noteAdapterEvent();
+      observeUsage(event, response);
+    };
     const parseStream = resolved.parseStream.bind(resolved);
     resolved.parseStream = async function* (...args) {
-      for await (const event of parseStream(...args)) { observeUsage(event, args[0]); yield event; }
+      for await (const event of parseStream(...args)) { observeEvent(event, args[0]); yield event; }
     };
     if (resolved.parseResponse) {
       const parseResponse = resolved.parseResponse.bind(resolved);
       resolved.parseResponse = async (...args) => {
         const events = await parseResponse(...args);
-        events.forEach(event => observeUsage(event, args[0]));
+        events.forEach(event => observeEvent(event, args[0]));
         return events;
       };
     }
@@ -440,21 +627,33 @@ export async function prepareResponsesTransport(
       const runTurn = resolved.runTurn.bind(resolved);
       rawRunTurns.set(resolved, (requestParsed, incoming, emit) => {
         const response = {};
-        return runTurn(requestParsed, incoming, event => { observeUsage(event, response); emit(event); });
+        return runTurn(requestParsed, incoming, event => { observeEvent(event, response); emit(event); });
       });
       resolved.runTurn = (requestParsed, incoming, emit) => runSelectedTurn(resolved, requestParsed, incoming, emit);
     }
     return resolved;
   };
+  /** Rebuild a stale queued selection while retaining the caller's dispatch lease and renewing Auto metadata. */
   const refreshDispatchAdapter = async (requestParsed: OcxParsedRequest): Promise<ProviderAdapter> => {
+    requireAnthropicAdmission();
     if (route.provider.authMode === "oauth") {
-      if (!servingOAuthSnapshot || !await applyFailoverSnapshot(servingOAuthSnapshot, requestParsed)) {
+      // Pacing may outlive admission. Preserve local pause/cooldown reasons even when
+      // a strict route rejects the old proposal before another bearer can be resolved.
+      let candidate = servingOAuthSnapshot;
+      if (anthropicInstance !== undefined) {
+        oauthSelection = captureOAuthAccountSelection(route.providerName);
+        const accountId = await anthropicRouting!.resolveAnthropicDispatchAccountId(config, anthropicSessionKey, anthropicRouteDecision, route.modelId);
+        candidate = await anthropicRouting!.getAnthropicPoolAccessSnapshot(accountId);
+      }
+      if (!candidate || !await applyFailoverSnapshot(candidate, requestParsed, true)) {
+        if (anthropicInstance !== undefined) await anthropicRouting!.resolveAnthropicDispatchAccountId(config, anthropicSessionKey, anthropicRouteDecision, route.modelId);
         throw new Error("OAuth account selection changed before dispatch");
       }
     } else {
       const current = resolveCurrentProviderApiKeyTransport(config, route.providerName, route.provider);
       if (!current) throw new Error("API key selection is unavailable before dispatch");
       route.provider = current;
+      await resolveCopilotSelection(requestParsed, true);
     }
     adapter = activeAdapter = runTurnAdapter = resolveSelectionAdapter(
       resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire, route.staticPolicy),
@@ -475,6 +674,9 @@ export async function prepareResponsesTransport(
     selectedAdapter: ProviderAdapter,
     ...[requestParsed, incoming, emit]: Parameters<NonNullable<ProviderAdapter["runTurn"]>>
   ): Promise<void> => {
+    const producer = options.sendBudget && "beginSpendProducer" in options.sendBudget
+      ? (options.sendBudget as import("../../lib/request-execution-budget").RequestExecutionBudget).beginSpendProducer?.() : undefined;
+    try {
     for (let attempt = 0; attempt < 3; attempt++) {
       if (!selectionIsCurrent(adapterBindings.get(selectedAdapter))) selectedAdapter = await refreshRunTurnAdapter(requestParsed);
       const binding = adapterBindings.get(selectedAdapter);
@@ -482,24 +684,32 @@ export async function prepareResponsesTransport(
       if (!run) throw new Error("Selected provider no longer supports this turn transport");
       let sent = false;
       let refused = false;
+      let attemptSlot: ProviderRequestSlot | undefined;
       // Both main and image-loop callers already acquired the initial pacing slot.
       // Subsequent physical messages retain this adapter/credential and are paced normally.
-      const fetch = providerFetch(route.provider, options.codexWsRuntimeIdentity, {
-        providerName: route.providerName, modelId: route.modelId, pacingSlotAcquired: true,
-        beforeDispatch: () => {
-          if (sent) return;
-          if (!selectionIsCurrent(binding)) {
-            refused = true;
-            throw new Error("Account selection changed before the first turn dispatch");
-          }
-          commitKeyAttemptSend();
-          sent = true;
-        },
-      });
       try {
+        attemptSlot = attempt === 0
+          ? incoming.pacingSlot ?? await waitForProviderRequestSlot(route.providerName, route.provider, route.modelId, incoming.abortSignal)
+          : await waitForProviderRequestSlot(route.providerName, route.provider, route.modelId, incoming.abortSignal);
+        const fetch = providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+          providerName: route.providerName, modelId: route.modelId, pacingSlotAcquired: true,
+          pacingSlot: attemptSlot,
+          turnScopedPacing: true,
+          beforeDispatch: () => {
+            if (sent) return;
+            if (!selectionIsCurrent(binding)) {
+              refused = true;
+              throw new Error("Account selection changed before the first turn dispatch");
+            }
+            commitKeyAttemptSend();
+            sent = true;
+          },
+        });
         await run(requestParsed, { ...incoming, providerFetch: fetch }, event => { if (!refused) emit(event); });
       } catch (error) {
         if (!refused) throw error;
+      } finally {
+        releaseProviderRequestSlot(attemptSlot);
       }
       if (!refused) return;
       // The adapter may map the guard's exception to an error event. Neither that
@@ -507,18 +717,24 @@ export async function prepareResponsesTransport(
       selectedAdapter = await refreshRunTurnAdapter(requestParsed);
     }
     throw new Error("Account selection changed repeatedly before turn dispatch");
+    } finally { producer?.close(); }
   };
-  const oauthDispatch = (wireRequest: AdapterRequest, requestParsed = parsed): ProviderFetchOptions["dispatchOverride"] => {
+  /** Fence the physical send, with bounded credential/session rebuilds and safe negotiated refusals. */
+  const oauthDispatch = (wireRequest: AdapterRequest, requestParsed = parsed, owner: "adapter" | "passthrough" = "adapter"): ProviderFetchOptions["dispatchOverride"] => {
     if (route.provider.authMode === "forward") return undefined;
-    return async (input, init, execute) => {
+    return /** Dispatch with the current binding and session, rebuilding at most three times before returning a safe refusal. */ async (input, init, execute) => {
       let destination = input;
       let dispatchInit = init;
       for (let attempt = 0; attempt < 3; attempt++) {
-        if (selectionIsCurrent(requestBindings.get(wireRequest))) {
+        if (selectionIsCurrent(requestBindings.get(wireRequest)) && copilotSessionExpiresAt > Date.now() + 1000) {
           const fetchImpl = (route.provider as OcxProviderConfig & { fetch?: typeof globalThis.fetch }).fetch ?? execute;
           const binding = requestBindings.get(wireRequest);
-          const snapshot = route.providerName === "anthropic" && anthropicPoolAccountId && binding?.kind === "oauth"
+          const snapshot = anthropicInstance !== undefined && binding?.kind === "oauth"
             ? binding.snapshot : undefined;
+          const target = destination instanceof Request ? destination.url : String(destination);
+          if (authorizedAnthropicTarget && target !== authorizedAnthropicTarget) {
+            throw new OAuthLoginRequiredError(anthropicInstance!);
+          }
           const writerGeneration = snapshot ? captureConfigGeneration() : 0;
           const sentHeaders = snapshot ? new Headers(dispatchInit.headers) : undefined;
           const ownsBearer = snapshot !== undefined
@@ -527,34 +743,71 @@ export async function prepareResponsesTransport(
           // Reselection can choose a provider override instead of the supplied executor.
           // Either way the send crosses the physical boundary, so the connection policy is
           // applied around whichever implementation was just selected (#4992).
-          commitKeyAttemptSend();
           // The binding travels with the send, so a rebuilt request resolves its provider route
           // against the destination it is actually going to rather than the one this dispatch
           // started with. Account reselection can move the upstream host, which would otherwise
           // apply a host-scoped decision to a different host.
-          const response = await sendWithConnectionPolicy(
-            fetchImpl,
-            destination,
-            { ...dispatchInit, redirect: "manual" },
-            { providerName: route.providerName, provider: route.provider },
-          );
-          if (!response.ok) await recordKeyAttemptFailure(logCtx, response, dispatchInit.signal ?? options.abortSignal);
+          const releaseFamily = snapshot ? anthropicQuota!.claimAnthropicFamilyRevalidation(snapshot.accountId, route.modelId) : () => {};
+          if (!releaseFamily) throw new AnthropicAccountCooldownError(1);
+          let response: Response;
+          let physicalOwner: AnthropicPhysicalSendOwnership | null = null;
+          try {
+            requireAnthropicAdmission();
+            if (!rebindPhysicalSend(options.sendBudget, { poolId: logCtx.spendPoolId ?? route.providerName,
+              identityId: logCtx.accountLogLabel })) throw new SendBudgetExhaustedError();
+            if (snapshot) {
+              // Reserve the incarnation at this synchronous send boundary, never on return.
+              physicalOwner = captureAnthropicPhysicalSendOwnership(snapshot);
+              if (!physicalOwner || !anthropicPhysicalSendOwnershipIsCurrent(physicalOwner)) {
+                throw new OAuthLoginRequiredError(anthropicInstance!);
+              }
+              sentOAuthSnapshot = snapshot;
+              passiveQuotaWriterGeneration = writerGeneration;
+            }
+            commitKeyAttemptSend();
+            response = await sendWithConnectionPolicy(
+              anthropicBillingPhysicalFetch(fetchImpl, route.providerName, route.provider),
+              destination,
+              { ...dispatchInit, redirect: "manual" },
+              { providerName: route.providerName, provider: route.provider },
+            );
+          } finally { releaseFamily(); }
           // Observe each physical response before retries replace it. The binding belongs to
           // this dispatch, so a manual switch cannot file A's headers against B. Header
           // overrides and credential replacement make ownership unprovable: skip those writes.
-          if (ownsBearer && snapshot) {
+          if (ownsBearer && snapshot && physicalOwner) {
             try {
-              const current = getAccountCredentialWithStatus("anthropic", snapshot.accountId);
-              if (current && !current.needsReauth && credentialGeneration(current.credential) === snapshot.generation) {
-                recordAnthropicAccountQuotaFromHeaders(snapshot.accountId, response.headers, writerGeneration);
+              const current = getAccountCredentialWithStatus(anthropicInstance!, snapshot.accountId);
+              if (anthropicPhysicalSendOwnershipIsCurrent(physicalOwner)
+                && snapshot.provider === anthropicInstance && current && !current.needsReauth
+                && current.credential.access === snapshot.accessToken
+                && credentialGeneration(current.credential) === snapshot.generation) {
+                bindAnthropicRefusalCredentialForSend(response, physicalOwner);
+                recordAnthropicAccountQuotaFromHeadersForInstance(anthropicInstance!, snapshot.accountId, response.headers, writerGeneration, response.status, route.modelId);
               }
             } catch { /* best-effort observation cannot fail the response */ }
           }
+          if (!response.ok) await recordKeyAttemptFailure(logCtx, response, dispatchInit.signal ?? options.abortSignal);
           return response;
         }
-        const nextAdapter = await refreshDispatchAdapter(requestParsed);
+        let nextAdapter: ProviderAdapter;
+        try { nextAdapter = await refreshDispatchAdapter(requestParsed); }
+        catch (error) {
+          if (error instanceof AdmissionModelDeniedError) throw error;
+          const refusal = copilotRefusalResponse(error);
+          if (refusal) return refusal;
+          throw error;
+        }
+        if (owner === "passthrough" && route.providerName === "github-copilot" && nextAdapter.name === "openai-chat") {
+          throw new CopilotAutoAdapterHandoff(nextAdapter);
+        }
+        // Rebind before rebuilding: the rebuild's bridged-search restore and continuation
+        // restore key on the serving identity, which must be the refreshed route's, not the
+        // credential whose selection just lapsed.
+        bindRouteReasoningReplayScope({ parsed: requestParsed, providerName: route.providerName, provider: route.provider,
+          adapterName: nextAdapter.name, oauthCredentialSnapshot: replayOAuthCredentialSnapshot });
         const rebuilt = await nextAdapter.buildRequest(requestParsed, {
-          headers: requestState.selectedForwardHeaders, translatorBudget,
+          headers: requestState.selectedForwardHeaders, providerName: route.providerName, translatorBudget,
           ...(imageTierBias > 0 ? { imageTierBias } : {}),
         });
         const bodySize = checkOutboundBodySize(rebuilt.body, config.maxUpstreamBodyBytes);
@@ -575,14 +828,12 @@ export async function prepareResponsesTransport(
         sameTargetToken = transportToken;
         destination = rebuilt.url;
         dispatchInit = { ...dispatchInit, method: rebuilt.method, headers, body: rebuilt.body };
-        bindRouteReasoningReplayScope({ parsed: requestParsed, providerName: route.providerName, provider: route.provider,
-          adapterName: nextAdapter.name, oauthCredentialSnapshot: replayOAuthCredentialSnapshot });
         // The next iteration validates synchronously and calls fetch in that same turn.
       }
       throw new Error("OAuth account selection changed repeatedly before dispatch");
     };
   };
-  const anthropicSessionKey = route.providerName === "anthropic" && route.provider.authMode === "oauth"
+  const anthropicSessionKey = anthropicInstance !== undefined && route.provider.authMode === "oauth"
     ? anthropicSessionKeyFromParts({
       sessionIdHeader: sessionIdHeaderFromRequest(req.headers),
       threadIdHeader: req.headers.get("thread-id"),
@@ -593,41 +844,40 @@ export async function prepareResponsesTransport(
     : null;
   if (route.provider.authMode === "oauth") {
     try {
-      if (route.providerName === "anthropic" && isAnthropicAccountPoolEnabled(config)) {
-        const selection = resolveAnthropicAccountForSession(anthropicSessionKey, config);
+      if (anthropicInstance !== undefined && anthropicRouting!.isAnthropicAccountPoolEnabled(config)) {
+        const routeResult = resolveAnthropicModelRouteForInstance(anthropicInstance, config, route.modelId);
+        if (routeResult.error) return formatErrorResponse(400, "invalid_request_error", `Invalid Anthropic model routes: ${routeResult.error}`);
+        anthropicRouteDecision = routeResult.decision;
+        const selection = anthropicRouting!.resolveAnthropicAccountForSession(anthropicSessionKey, config, Date.now(), anthropicRouteDecision, route.modelId);
         if (!selection.accountId) {
+          if (selection.reason === "paused") return formatErrorResponse(403, "permission_error", "Anthropic OAuth accounts are paused. Resume an account in account settings and retry.");
+          // Route names may resemble account IDs; log only the matched rule position.
+          if (anthropicRouteDecision) console.warn(`[${anthropicInstance}-pool] route:#${anthropicRouteDecision.position} ${selection.reason}; answering locally`);
           if (selection.reason === "all-cooled") {
-            const retryAfterSec = getAnthropicPoolRetryAfterSeconds();
-            return formatErrorResponse(
-              429,
-              "rate_limit_error",
-              "All Anthropic OAuth accounts are temporarily rate-limited",
-              retryAfterSec !== null ? { retryAfter: String(retryAfterSec) } : undefined,
+            return anthropicPoolCooldownResponse(
+              anthropicRouting!.anthropicPoolCooldownError(Date.now(), anthropicRouteDecision, route.modelId),
+              { comboAttempt: options.comboAttempt, logCtx },
             );
           }
-          return formatErrorResponse(401, "authentication_error", "No eligible Anthropic OAuth account available");
+          return formatErrorResponse(401, "authentication_error", anthropicRouteDecision ? "No eligible Anthropic OAuth account for this model route" : "No eligible Anthropic OAuth account available");
         }
-        const admitted = await commitResolvedOAuthSelection(await getAnthropicPoolAccessSnapshot(selection.accountId), true, selection.reason);
+        const admitted = await commitResolvedOAuthSelection(await anthropicRouting!.getAnthropicPoolAccessSnapshot(selection.accountId), true, selection.reason);
         if (!admitted) return formatErrorResponse(409, "conflict_error", "OAuth account selection changed; retry the request");
         anthropicPoolAccountId = admitted.accountId;
+        if (anthropicRouteDecision) console.info(`[${anthropicInstance}-pool] route:#${anthropicRouteDecision.position} ${selection.reason}`);
         route.provider = { ...route.provider, apiKey: admitted.accessToken };
-        logCtx.provider = formatAnthropicProviderForLog("anthropic", admitted.accountId, config);
+        logCtx.provider = formatAnthropicProviderForLog(anthropicInstance!, admitted.accountId, config);
       } else {
         // Prefer the account with known headroom BEFORE the first attempt. Rotation alone
         // only reacts to a 429, so a turn could open on an account a previous probe already
         // measured as spent. A null answer means "use the active account", so every provider
         // without quota evidence keeps the resolution it has today.
-        const preferredAccountId = isGenericFailoverProvider(route.providerName, route.provider)
-          ? preferredInitialAccount(
-            config,
-            route.providerName,
-            Date.now(),
-            route.modelId,
-            route.providerName === CODEBUDDY_PROVIDER_ID
-              ? parsed.options.promptCacheKey?.trim() || undefined
-              : undefined,
-          )
-          : null;
+        const refusalAwareId = route.providerName === "kiro" && oauthSelection?.accountId
+          ? refusalAwareInitialKiroAccount(config, oauthSelection.accountId, Date.now(), route.modelId) : null;
+        const preferredAccountId = refusalAwareId ?? (isGenericFailoverProvider(route.providerName, route.provider)
+          ? preferredInitialAccount(config, route.providerName, Date.now(), route.modelId)
+          : null);
+        let safetyAlternateId: string | null = refusalAwareId;
         // Resolved account-scoped, NOT through failoverAccountSnapshot: that helper marks a
         // rotation site, and rotation sites must apply their credential through
         // applyFailoverSnapshot's pairing rules. This is initial resolution — the code below
@@ -654,10 +904,28 @@ export async function prepareResponsesTransport(
             // Drop the stale roster so the next request re-reads it, and carry on.
             forgetGenericFailoverRoster(route.providerName);
             usedPreferredAccount = false;
+            safetyAlternateId = null;
             resolved = await getValidAccessTokenSnapshot(route.providerName);
           }
         } else {
-          resolved = await getValidAccessTokenSnapshot(route.providerName);
+          const failedId = route.providerName === "kiro" ? oauthSelection?.accountId : undefined;
+          const failedRow = failedId ? getAccountCredentialWithStatus("kiro", failedId) : null;
+          const failedGeneration = failedRow ? credentialGeneration(failedRow.credential) : undefined;
+          try {
+            if (anthropicInstance === "anthropic2") {
+              const accountId = oauthSelection?.accountId;
+              if (!accountId) throw new OAuthLoginRequiredError(anthropicInstance);
+              resolved = await anthropicRouting!.getAnthropicPoolAccessSnapshot(accountId);
+            } else resolved = await getValidAccessTokenSnapshot(route.providerName);
+          }
+          catch (error) {
+            if (route.providerName !== "kiro" || !(error instanceof OAuthLoginRequiredError)
+              || !failedId || !failedGeneration) throw error;
+            const alternate = await tryKiroAlternateAfterTerminalRefresh(config, failedId, failedGeneration);
+            if (!alternate) throw error;
+            resolved = alternate;
+            safetyAlternateId = alternate.accountId;
+          }
         }
         // A Cloud Code Assist account needs its own project. Antigravity's refresh path
         // tolerates project discovery failing, so a stored account can legitimately have
@@ -668,31 +936,48 @@ export async function prepareResponsesTransport(
           resolved = await getValidAccessTokenSnapshot(route.providerName);
           usedPreferredAccount = false;
         }
-        // Cooldown avoidance is not the proactive pool. With the knob off, preferredInitialAccount
-        // only names a spare after this account×model (or the whole account) already 402/429'd --
-        // it is the first attempt of the NEXT turn avoiding a replay of the last one's refusal.
-        // Persisting that choice would silently move the operator's active account as a side
-        // effect of a failure, so the rotation is applied to this request only.
-        const persistPreferredAccount = usedPreferredAccount && (
-          (config.providers[route.providerName]?.oauthAccountFailover?.enabled
-            ?? config.oauthAccountFailover?.enabled) === true
-        );
+        const transientWorkbuddyAlternate = route.providerName === CODEBUDDY_PROVIDER_ID
+          && !!oauthSelection?.accountId && resolved.accountId === preferredAccountId
+          && isWorkbuddyPoolCooled(oauthSelection.accountId, route.modelId);
         let admitted: OAuthAccessSnapshot | null;
-        if (usedPreferredAccount && !persistPreferredAccount) {
-          if (await applyFailoverSnapshot(resolved, parsed, false)) {
-            admitted = servingOAuthSnapshot ?? resolved;
-          } else {
-            // The unpersisted rebind refused (credential gone or needs reauth). Fall back to
-            // admitting the resolved account through the ordinary path rather than dispatching
-            // on a snapshot the store already rejected.
-            usedPreferredAccount = false;
-            resolved = await getValidAccessTokenSnapshot(route.providerName);
-            admitted = await commitResolvedOAuthSelection(resolved, true);
+        if (transientWorkbuddyAlternate) {
+          const selected = captureOAuthAccountSelection(route.providerName);
+          if (!selected || selected.revision !== oauthSelection?.revision) {
+            return formatErrorResponse(409, "conflict_error", "OAuth account selection changed; retry the request");
           }
+          oauthSelection = { accountId: resolved.accountId, revision: selected.revision };
+          servingOAuthSnapshot = resolved;
+          genericFailoverUnpersisted = true;
+          admitted = resolved;
         } else {
-          admitted = await commitResolvedOAuthSelection(resolved, true);
+          admitted = await commitResolvedOAuthSelection(resolved, safetyAlternateId === null);
         }
         if (!admitted) return formatErrorResponse(409, "conflict_error", "OAuth account selection changed; retry the request");
+        if (safetyAlternateId && admitted.accountId !== safetyAlternateId)
+          return formatErrorResponse(409, "conflict_error", "OAuth account selection changed; retry the request");
+        if (kiroLoadEnabled) {
+          const transportSignal = options.abortSignal ?? req.signal;
+          const lease = await acquireAccountLease("kiro", admitted.accountId, {
+            maxConcurrentPerAccount: kiroCap, waitMs: KIRO_ACCOUNT_WAIT_MS, signal: transportSignal,
+          });
+          if (!lease) return transportSignal.aborted
+            ? clientCancelledResponse() : capacityResponse();
+          // The lease may be granted between the holder's cleanup and this install;
+          // re-check cancellation before the holder can no longer reach it.
+          if (options.accountLoad?.cancelled || transportSignal.aborted) {
+            lease.release();
+            return clientCancelledResponse();
+          }
+          if (options.accountLoad) options.accountLoad.lease = lease;
+          else lease.release();
+        }
+        if (route.providerName === "kiro") {
+          const account = getAccountSet("kiro")?.accounts.find(row => row.id === admitted.accountId);
+          if (account) refreshKiroAccountModelsDetached(account, route.provider);
+        }
+        if (route.providerName === CODEBUDDY_PROVIDER_ID) {
+          parsed._codebuddyAuthContext = { ...(resolved.codebuddy ?? {}) };
+        }
         if (admitted.accountId !== resolved.accountId) usedPreferredAccount = true;
         resolved = admitted;
         replayOAuthCredentialSnapshot = {
@@ -719,7 +1004,7 @@ export async function prepareResponsesTransport(
         // dropped whenever the pool flag is off, and a later 429 has no account to cool. Reactive
         // failover needs only the id: no affinity bind, no promotion, no quota-ranked pick. Those
         // are proactive and stay behind anthropicAccountPool.enabled.
-        if (route.providerName === "anthropic" && hasAnthropicFailoverQuorum()) {
+        if (anthropicInstance !== undefined && anthropicRouting!.hasAnthropicFailoverQuorum()) {
           anthropicPoolAccountId = resolved.accountId;
         }
         // Captured beside the account it fences, so the two can never disagree.
@@ -731,17 +1016,14 @@ export async function prepareResponsesTransport(
           // Only genuinely accountless adapter calls leave the context undefined and use local/env fallback.
           parsed._kiroAuthContext = { ...(resolved.kiro ?? {}) };
         }
+        if (route.providerName === "zed") {
+          parsed._zedAuthContext = { userId: resolved.providerUserId ?? "" };
+        }
         // Project identity belongs to the admitted account on EVERY request, including
         // the request after a pool transition made that account the persisted active one.
         if (route.provider.googleMode === "cloud-code-assist") {
           if (!resolved.projectId) return formatErrorResponse(401, "authentication_error", publicOAuthAuthenticationErrorMessage(new Error("Cloud Code Assist account project is unavailable")));
           route.provider = { ...route.provider, project: resolved.projectId };
-        }
-        // Account-scoped routing headers under the same contract as Kiro's above: an empty
-        // object means a genuinely accountless request, which keeps the adapter's own
-        // local/env behaviour rather than pinning headers from a previous account.
-        if (route.providerName === CODEBUDDY_PROVIDER_ID) {
-          parsed._codebuddyAuthContext = { ...(resolved.codebuddy ?? {}) };
         }
       }
     } catch (err) {
@@ -752,6 +1034,9 @@ export async function prepareResponsesTransport(
           "invalid_request_error",
           `${redactSecretString(err.message)}. Remove or reconfigure provider '${safeProviderName}' in the OpenCodex configuration.`,
         );
+      }
+      if (err instanceof OAuthAccountPausedError) {
+        return formatErrorResponse(403, "permission_error", publicOAuthAuthenticationErrorMessage(err));
       }
       return formatErrorResponse(401, "authentication_error", publicOAuthAuthenticationErrorMessage(err));
     }
@@ -784,7 +1069,15 @@ export async function prepareResponsesTransport(
       ? resolveCopilotApiBaseUrl(sentOAuthSnapshot?.apiBaseUrl)
       : undefined,
   );
+  try { await resolveCopilotSelection(parsed); }
+  catch (error) {
+    if ((options.abortSignal ?? req.signal).aborted) return clientCancelledResponse();
+    const refusal = copilotRefusalResponse(error);
+    if (refusal) return refusal;
+    return formatErrorResponse(502, "provider_error", "GitHub Copilot Auto negotiation failed; retry or check your Copilot account permissions.");
+  }
   let adapterProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire, route.staticPolicy);
+  if (copilotAutoAdapter) adapterProvider = { ...adapterProvider, adapter: copilotAutoAdapter };
   const stripClaudeMainAuth = options.stripClaudeMainAuthForNoncanonicalForward === true
     && !isCanonicalOpenAiForwardProvider(adapterProvider)
     && ((adapterProvider.adapter === "openai-responses" && adapterProvider.authMode === "forward")
@@ -863,7 +1156,19 @@ export async function prepareResponsesTransport(
     );
   }
 
+  // Freeze the request ceiling before any 429 writes cooldowns. Selection still reads
+  // live eligibility on every hop; cooled accounts cannot shorten this request's allowance.
+  // The snapshot is clamped: a larger roster must not raise one request's hops or sends.
+  const genericRosterSize = genericFailoverAccountId ? new Set([
+    genericFailoverAccountId,
+    ...eligibleFailoverAccounts(route.providerName, Date.now(), classifyModelFamilyForQuota(route.providerName, route.modelId)),
+  ]).size : 0;
+  const fundedAccounts = Math.min(genericRosterSize, GENERIC_OAUTH_MAX_ACCOUNTS_PER_REQUEST);
+  const genericFailoverLimit = Math.max(GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST, fundedAccounts - 1);
+  if (genericFailoverAccountId) expandInferenceOAuthSendBudget(options.sendBudget, fundedAccounts);
+
   return {
+    genericFailoverLimit,
     isOAuth401ReplayProvider,
     get sentOAuthSnapshot(): OAuthAccessSnapshot | undefined {
       return sentOAuthSnapshot;
@@ -877,6 +1182,9 @@ export async function prepareResponsesTransport(
     set replayOAuthCredentialSnapshot(value: Pick<OAuthAccessSnapshot, "accountId" | "generation"> | undefined) {
       replayOAuthCredentialSnapshot = value;
     },
+    get anthropicRouteDecision(): AnthropicRouteDecision | null { return anthropicRouteDecision; },
+    get anthropicInstance() { return anthropicInstance; },
+    currentAnthropicRouteDecision,
     get anthropicPoolAccountId(): string | null {
       return anthropicPoolAccountId;
     },
@@ -901,6 +1209,8 @@ export async function prepareResponsesTransport(
     set genericFailovers(value: typeof genericFailovers) {
       genericFailovers = value;
     },
+    get oauth401ReplayAttempted(): boolean { return oauth401ReplayAttempted; },
+    set oauth401ReplayAttempted(value: boolean) { oauth401ReplayAttempted = value; },
     get adapter(): ProviderAdapter {
       return adapter;
     },
@@ -955,10 +1265,12 @@ export async function prepareResponsesTransport(
     planGenericOAuthRotation,
     commitResolvedOAuthSelection,
     refreshResolvedOAuthSelection,
-    passiveQuotaWriterGeneration,
+    get passiveQuotaWriterGeneration(): number { return passiveQuotaWriterGeneration; },
     applyFailoverSnapshot,
     selectionIsCurrent,
     resolveSelectionAdapter,
+    resolveCopilotSelection,
+    copilotRefusalResponse,
     refreshRunTurnAdapter,
     oauthDispatch,
     noteRoutedAttemptSend,

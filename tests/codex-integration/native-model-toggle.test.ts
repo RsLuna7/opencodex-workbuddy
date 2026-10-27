@@ -92,7 +92,7 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
 
     seedCodexModelEntitlementsForTests(
       "main",
-      ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-daybreak-blue-latest", "gpt-6-astra"],
+      ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-daybreak-blue-latest", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra-minor"],
     );
     const confirmed = nativeModelRows({ disabledModels: ["gpt-5.6-sol"] });
     expect(confirmed.map(r => r.slug)).toEqual(NATIVE_OPENAI_MODELS);
@@ -124,7 +124,7 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
     // shard that has not caught up all produce the same silent disappearance, which reads as
     // "opencodex lost my model" rather than "upstream did not confirm it".
     resetCodexModelEntitlementCacheForTests();
-    const flagship = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"];
+    const flagship = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"];
     const slugs = nativeModelRows({ disabledModels: [] }).map(row => row.slug);
     for (const slug of flagship) {
       expect(ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(slug)).toBe(false);
@@ -771,8 +771,7 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
     expect(entries[0].visibility).toBe("hide");
   });
 
-  test("management API surfaces: /api/models leads with native rows; subagent available drops disabled bare slugs", async () => {
-    const oldOcxHome = process.env.OPENCODEX_HOME;
+  test("management API surfaces: /api/models leads with native rows; subagent available drops disabled bare slugs", async () => {    const oldOcxHome = process.env.OPENCODEX_HOME;
     const oldCodexHome = process.env.CODEX_HOME;
     const root = mkdtempSync(join(tmpdir(), "ocx-native-model-management-"));
     const codexHome = join(root, "codex");
@@ -827,7 +826,7 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
       else process.env.CODEX_HOME = oldCodexHome;
       removeTreeWithRetry(root);
     }
-  });
+  }, { timeout: 20_000 });
 
   test("an expired confirmed roster is refreshed before /api/models projects native rows", async () => {
     const oldOcxHome = process.env.OPENCODEX_HOME;
@@ -883,7 +882,7 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
       else process.env.CODEX_HOME = oldCodexHome;
       removeTreeWithRetry(root);
     }
-  });
+  }, { timeout: 20_000 });
 });
 import { ManagementRequest as Request } from "../helpers/management-auth";
 

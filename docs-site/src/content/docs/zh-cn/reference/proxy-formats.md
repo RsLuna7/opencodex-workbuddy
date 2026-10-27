@@ -23,6 +23,23 @@ Responses 表示是这座桥的中心。原生兼容的路由可以跳过部分�
 
 携带凭据的模型、图像、视频和搜索请求不会自动跟随 HTTP 重定向，包括同源重定向。请配置最终上游 API URL，而不是会重定向的别名。服务器不会向重定向目标重新发送凭据或请求正文。各响应处理路径保留原有的错误处理或转发行为；原生 Responses 和 compact 路径仍可向客户端返回原始 3xx 和 `Location`。客户端的重定向行为与此服务器传输策略是不同的边界。
 
+## xAI policy refusals
+
+部分 xAI Chat Completions 拒绝会以 HTTP 403 加上 `I can't help with that request.` 这类拒绝句返回，而不是 HTTP 200 加 `finish_reason: content_filter`。Codex 把 403 当作传输失败，因此用户回合不会被记录，同一请求会被重试。
+
+在非 combo 的 Responses 请求上，OpenCodex 会把该 allowlist 中的 403 改写为 HTTP 200 Responses，`status: "incomplete"`，`incomplete_details.reason: "content_filter"`。openai-chat 适配器路径和 openai-responses passthrough（grok-4.6 / grok-4.5 OAuth）都会改写。流式响应使用同一 incomplete 边界。空正文 403 仍是错误。订阅、额度、权限以及 `not allowed to use this model` 的 403 仍是错误。combo 故障切换仍会看到原始 HTTP 403。
+
+## 未声明的工具调用
+
+在 Responses 端点上，当请求声明了工具目录时，原生直通响应若调用目录之外由客户端执行的工具，本轮会失败而不会转发该调用：流式响应发送带有错误代码 `undeclared_tool_call` 的 `response.failed` 事件，然后发送 `data: [DONE]`；缓冲式 JSON 返回 HTTP 502 和相同错误代码。拒绝发生在响应进入续接状态之前。只有 `authMode: "forward"` 提供方或未声明目录的请求才跳过这一拒绝。
+
+Chat Completions 和 Messages 端点支持延迟提供的工具目录：客户端可先声明部分目录，再通过自己的工具注册表在运行时发现其余工具；完整声明边界由客户端注册表决定，而不是翻译后的目录快照。目录之外的调用会转发给客户端验证；但针对显式空目录 `tools: []` 的调用仍会被拒绝。此类拒绝在每种协议中都保留 `undeclared_tool_call`：
+
+- **Chat Completions：**发送包含带有该错误代码的 OpenAI 风格 `error` 对象的 `data:` 帧，然后关闭流，不发送成功完成标记或 `[DONE]`；缓冲式 JSON 返回 HTTP 502 和该代码。
+- **Messages：**发送 Anthropic `event: error` 帧，正文为 `{ "type": "error", "error": { "type": "api_error", "code": "undeclared_tool_call", ... } }`，不发送成功的 `message_stop` 或 `[DONE]`；缓冲式 JSON 返回 HTTP 502 `api_error` 和该代码。确定性的目录违规不会被报告为可重试的 `overloaded_error`（HTTP 529）。
+
+此外，在所有入站协议中，提供方返回的 `default.` 命名空间调用都会规范化为客户端声明的裸名称，即使延迟目录规则关闭了上述拒绝检查。
+
 ## 端点总览
 
 | 客户端表面 | 端点 | 成功的非流式结果 | 成功的流式或套接字结果 |
@@ -65,6 +82,13 @@ Responses 表示是这座桥的中心。原生兼容的路由可以跳过部分�
 
 当 `stream: false` 或未提供 `stream` 时，同样的适配器事件会被收集为一个 Responses JSON
 对象。两种形式都会保留所选模型、输出项、终止状态和 usage。
+
+canonical ChatGPT Codex 路由的上游只接受 SSE，因此仅对上游请求使用 `stream: true`。
+OpenCodex 会在有界限制内验证终止流，再将其折叠为客户端请求的 JSON 形式；显式 `store` 值不会
+改变。验证失败时会返回错误，而不会以 HTTP 200 返回部分 JSON。限制为：每帧 4 MiB、transcript
+和重建源各 32 MiB、100,000 个 SSE 帧，以及 10,000 个重建输出项。`stallTimeoutSec` 同时控制
+首个 body byte 和后续静默间隔；当其为 `0`，或因本地上游默认禁用时，不会立即超时，只保留独立的
+15 分钟整轮上限。流式客户端的行为不变。
 
 面向客户端的 Responses SSE 帧按 SSE 块分隔符之前的原始字节计算，每帧限制为 4 MiB。对于 HTTP，未终止的上游帧一旦超过该限制，会以合成的 `response.failed` 事件并随后发送 `data: [DONE]` 的方式 fail closed。对于 Responses WebSocket 桥，相同情况会发送 502 `websocket_protocol_error` 并取消上游 reader。已经完整到达的 Responses 终止帧具有优先权；其后的超大或格式错误字节会被丢弃，而不会把已经完成的轮次替换为传输失败。
 
@@ -296,3 +320,9 @@ Anthropic 来源的失败会以 Anthropic 的错误封装呈现，因此该方�
 
 某些 agent hook 历史上会把明文控制文本放进 `encrypted_content` 槽。为兼容起见，代理会把那部分明文拆分为文本片段，同时保持任何结构有效的 Fernet 片段不变。如果一个 `agent_message` 在该修复过程中失去了所有加密部分，它就会变成普通的 user message。如果当前的 v2 task 仍然真的是加密的，但所选路由目标无法读取原生 ChatGPT 密文，opencodex 会以
 `unreadable_encrypted_agent_task` 失败，而不是把不可读字节发送给该提供方。有关 worker task 周边的客户端行为，请参见 [Sub-agent Surface](/guides/sub-agent-surface/)。
+
+### 在已有对话中切换 provider
+
+重放的推理项携带的 `encrypted_content` 只有生成它的 provider 和凭据才能读取。如果 opencodex 知道该对话上一次由另一个 provider 处理，它会在发送前移除这个 blob，并保留该项的摘要。如果那个 provider 还使用了不同的 endpoint 或凭据，该项的 `rs_…` id 也会被移除，因为它指向新目标无法查到的项。如果 opencodex 无从得知，例如代理重启之后，新目标会拒绝这个 blob：OpenAI 和 Azure OpenAI 返回 `400 invalid_encrypted_content`。此时 opencodex 会去掉上一个 provider 的推理状态（blob 和 `rs_…` id）后只重发一次请求；保留 id 会导致 `Item with id 'rs_…' not found`。
+
+这项恢复适用于所有使用 Responses 协议的 adapter，因此 `openai-responses` 和 `azure-openai` 的行为相同。恢复成功后，该对话在同一目标上的后续轮次会在接下来五分钟内于首次发送前移除这些状态。重发计入请求的常规发送预算。普通的 400 和 429 不会以这种方式重发，5xx 也不会，只有一个狭窄的例外：对于携带加密工具输出的请求，响应体恰好是该解密拒绝的 502 会得到同样的一次重发。第二次拒绝会原样返回给客户端。遇到这种情况，请在目标 provider 上开始新的对话。

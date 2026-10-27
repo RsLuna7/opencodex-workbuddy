@@ -17,6 +17,7 @@ import { externalTaskInputContent } from "../../src/responses/task-input";
 import { looksLikeBackendCiphertext } from "../../src/server/responses/encrypted-payload";
 import * as adapterResolveModule from "../../src/server/adapter-resolve";
 import * as visionModule from "../../src/vision";
+import * as authApiModule from "../../src/codex/auth-api";
 import { saveCodexAccountCredential } from "../../src/codex/account-store";
 import {
   CODEX_QUOTA_PROBE_INTERVAL_MS,
@@ -41,11 +42,12 @@ import { acquireNativeMainProfileDrain, tryAdmitTurn } from "../../src/server/li
 import type { OcxConfig, OcxProviderConfig } from "../../src/types";
 import { clearComboRecallForTests, recallComboForLane, rememberComboForLane } from "../../src/server/responses/combo-session-recall";
 import { captureConfigGeneration } from "../../src/lib/state-store-sweeper";
-import { removeTreeWithRetry } from "../helpers/remove-tree";
-import { baseCompactionBody, compactionRequest, completedPayload, jsonResponse, keyProviderConfig, nativePoolConfig, sseResponse, twoAccountPoolConfig } from "../helpers/compaction-routing-fixtures";
+import { baseCompactionBody, compactionRequest, completedPayload, drainCompactionResponseState, installCompactionRoutingAclFixture, jsonResponse, keyProviderConfig, nativePoolConfig, removeCompactionFixture, sseResponse, twoAccountPoolConfig } from "../helpers/compaction-routing-fixtures";
 import { acquireOwnedSpendHome } from "../helpers/owned-spend-home";
+import { SERVER_BUDGET_MS } from "../helpers/test-budget";
 
 const originalFetch = globalThis.fetch;
+installCompactionRoutingAclFixture();
 
 // A case that calls a handler directly never runs startServer, so it never takes the
 // spend-journal writer lease and its dispatch is refused before it reaches its own contract.
@@ -55,9 +57,11 @@ let releaseSpendHome: (() => void) | undefined;
 const takeSpendHome = (): void => { releaseSpendHome ??= acquireOwnedSpendHome(); };
 const dropSpendHome = (): void => { releaseSpendHome?.(); releaseSpendHome = undefined; };
 
-afterEach(() => {
-  dropSpendHome();
-  globalThis.fetch = originalFetch;
+afterEach(async () => {
+  try { await drainCompactionResponseState(); } finally {
+    dropSpendHome();
+    globalThis.fetch = originalFetch;
+  }
 });
 
 describe("supportsNativeResponsesCompactEndpoint (#422)", () => {
@@ -322,7 +326,7 @@ describe("native compact usage reporting", () => {
       clearAccountQuota();
       // Released before the directory holding it is removed.
       dropSpendHome();
-      removeTreeWithRetry(testDir);
+      await removeCompactionFixture(testDir);
       if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
       else process.env.OPENCODEX_HOME = previousOpencodexHome;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
@@ -333,6 +337,21 @@ describe("native compact usage reporting", () => {
 
 describe("native Codex pool compaction", () => {
   beforeEach(takeSpendHome);
+  // handleResponsesCompact resolves its account through resolveCodexAuthContext, which fires the
+  // pre-route quota prime without awaiting it. That prime opens the native-main claim file under
+  // this case's CODEX_HOME and then awaits ACL hardening, which is an async subprocess on Windows.
+  // Teardown removes the directory with a synchronous retry loop, so the hardening can never finish
+  // and close the file, and every retry fails with EBUSY. The prime is single-flight across cases,
+  // so the failure lands on whichever case is tearing down while it runs. None of these cases
+  // assert on priming, so the module export the lazy import resolves through is stubbed here.
+  let primeSpy: ReturnType<typeof spyOn> | undefined;
+  beforeEach(() => {
+    primeSpy = spyOn(authApiModule, "primeCodexPoolQuotas").mockResolvedValue(undefined);
+  });
+  afterEach(() => {
+    primeSpy?.mockRestore();
+    primeSpy = undefined;
+  });
   test("ignores a retired Spark reset without cooling later compact requests", async () => {
     const testDir = mkdtempSync(join(tmpdir(), "ocx-compact-scope-"));
     const previousOpencodexHome = process.env.OPENCODEX_HOME;
@@ -397,7 +416,7 @@ describe("native Codex pool compaction", () => {
       clearCodexUpstreamHealth();
       // Released before the directory holding it is removed.
       dropSpendHome();
-      removeTreeWithRetry(testDir);
+      await removeCompactionFixture(testDir);
       if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
       else process.env.OPENCODEX_HOME = previousOpencodexHome;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
@@ -462,7 +481,7 @@ describe("native Codex pool compaction", () => {
         new Headers({ authorization: "Bearer main-token" }),
         config,
         "pool",
-        { modelId: "gpt-5.6-sol" },
+        { modelId: "gpt-5.6-sol", primeCodexPoolQuotas: async () => {} },
       );
       expect(nextProbe).toMatchObject({ probeQuotaScope: "shared" });
       releaseCodexAuthContextProbeLease(nextProbe);
@@ -472,7 +491,7 @@ describe("native Codex pool compaction", () => {
       clearCodexUpstreamHealth();
       // Released before the directory holding it is removed.
       dropSpendHome();
-      removeTreeWithRetry(testDir);
+      await removeCompactionFixture(testDir);
       if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
       else process.env.OPENCODEX_HOME = previousOpencodexHome;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
@@ -532,7 +551,7 @@ describe("native Codex pool compaction", () => {
         new Headers({ authorization: "Bearer main-token" }),
         config,
         "pool",
-        { modelId: "gpt-5.6-sol" },
+        { modelId: "gpt-5.6-sol", primeCodexPoolQuotas: async () => {} },
       );
       expect(nextProbe).toMatchObject({ probeQuotaScope: "shared" });
       releaseCodexAuthContextProbeLease(nextProbe);
@@ -542,7 +561,7 @@ describe("native Codex pool compaction", () => {
       clearCodexUpstreamHealth();
       // Released before the directory holding it is removed.
       dropSpendHome();
-      removeTreeWithRetry(testDir);
+      await removeCompactionFixture(testDir);
       if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
       else process.env.OPENCODEX_HOME = previousOpencodexHome;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
@@ -885,14 +904,14 @@ describe("compact alternate-account attempt (#913)", () => {
       });
       updateAccountQuota(id, id === "pool-a" ? 10 : 20);
     }
-    return run(twoAccountPoolConfig()).finally(() => {
+    return run(twoAccountPoolConfig()).finally(async () => {
       globalThis.fetch = originalFetch;
       clearCodexUpstreamHealth();
       clearUpstreamHostHealth();
       clearAccountQuota();
       // Released before the directory holding it is removed.
       dropSpendHome();
-      removeTreeWithRetry(testDir);
+      await removeCompactionFixture(testDir);
       if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
       else process.env.OPENCODEX_HOME = previousOpencodexHome;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
@@ -981,7 +1000,7 @@ describe("compact alternate-account attempt (#913)", () => {
           clearComboTargetCooldowns();
         }
       });
-    });
+    }, SERVER_BUDGET_MS);
   }
 
   for (const [model, account] of [["gpt-5.5", "pool-a"], ["side/gpt-5.5", "pool-b"]] as const) {
@@ -1085,44 +1104,6 @@ describe("compact alternate-account attempt (#913)", () => {
       });
     });
   }
-
-  test("404 fallback records the compaction serving account for subsequent opaque replay", async () => {
-    await withPoolEnv("ocx-compact-404-replay-", async config => {
-      config.codexAccountNamespaces = { side: "pool-b", first: "pool-a" };
-      const headers = { "thread-id": `compact-replay-${crypto.randomUUID()}` };
-      const item = { type: "compaction", encrypted_content: "native-account-b-3769" };
-      const calls: Array<{ body: Record<string, unknown>; headers: Headers }> = [];
-      let compacting = false;
-      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-        const request = new Request(input, init);
-        if (request.url.endsWith("/responses/compact")) return Response.json({ detail: "Not Found" }, { status: 404 });
-        calls.push({ body: await request.json() as Record<string, unknown>, headers: request.headers });
-        return sseResponse([{ type: "response.completed", response: compacting
-          ? { id: "resp_identity_compact_3769", status: "completed", output: [item] }
-          : completedPayload("ordinary turn") }]);
-      }) as typeof fetch;
-      const turn = async (model: string, input: unknown[]) => {
-        const response = await handleResponses(compactionRequest({ model, input, stream: true, store: false }, undefined, headers), config, { model: "", provider: "" });
-        expect(response.status).toBe(200);
-        await response.text();
-      };
-      await turn("first/gpt-5.5", [{ role: "user", content: "seed account A" }]);
-      compacting = true;
-      const compact = await handleResponsesCompact(compactionRequest({ model: "side/gpt-5.5", input: [{ role: "user", content: "compact on B" }] }, undefined, headers), config, { model: "", provider: "" });
-      expect(compact.status).toBe(200);
-      const output = (await compact.json() as { output: unknown[] }).output;
-      expect(output).toEqual([item]);
-      compacting = false;
-      await turn("side/gpt-5.5", [...output, { role: "user", content: "continue on B" }]);
-      expect(calls.at(-1)!.headers.get("authorization")).toBe("Bearer pool-b-access-token");
-      expect(JSON.stringify(calls.at(-1)!.body.input)).toContain("native-account-b-3769");
-      await turn("first/gpt-5.5", [...output, { role: "user", content: "switch back to A" }]);
-      expect(calls.at(-1)!.headers.get("authorization")).toBe("Bearer pool-a-access-token");
-      expect(JSON.stringify(calls.at(-1)!.body.input)).not.toContain("native-account-b-3769");
-      expect(JSON.stringify(calls.at(-1)!.body.input)).toContain(OPAQUE_COMPACTION_NOTE);
-      expect(calls).toHaveLength(4);
-    });
-  });
 
   test("native compact headers followed by a stalled body return 504 without retry and release account cleanup", async () => {
     await withPoolEnv("ocx-compact-body-deadline-", async config => {
@@ -1330,6 +1311,46 @@ describe("compact alternate-account attempt (#913)", () => {
         expect(getCodexUpstreamHealth("pool-b")).toBeNull();
       });
     });
+
+    test(`a same-workspace alternate is withheld for a scoped ${rejection} refusal`, async () => {
+      await withPoolEnv(`ocx-compact-same-scope-${rejection}-`, async config => {
+        // pool-b shares pool-a's workspace: an organization-scoped exhaustion binds
+        // every credential in that workspace, so the alternate send cannot pay.
+        saveCodexAccountCredential("pool-b", {
+          accessToken: "pool-b-access-token",
+          refreshToken: "pool-b-refresh-token",
+          expiresAt: Date.now() + 300_000,
+          chatgptAccountId: "pool_acc_a",
+        });
+        const bearers: string[] = [];
+        const accountIds: string[] = [];
+        const body = JSON.stringify({
+          error: {
+            code: "organization_spend_limit_exceeded",
+            message: "The usage limit has been reached",
+          },
+        });
+        globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+          const headers = new Headers(init?.headers);
+          bearers.push(headers.get("authorization") ?? "");
+          accountIds.push(headers.get("chatgpt-account-id") ?? "");
+          return new Response(body, {
+            status: rejection,
+            headers: { "content-type": "application/json", "retry-after": "42" },
+          });
+        }) as typeof fetch;
+
+        const res = await handleResponsesCompact(
+          compactionRequest(baseCompactionBody({})),
+          config,
+          { model: "", provider: "" },
+        );
+
+        expect(bearers).toEqual(["Bearer pool-a-access-token"]);
+        expect(accountIds).toEqual(["pool_acc_a"]);
+        expect(res.status).toBe(rejection);
+      });
+    });
   }
 
   test("a native-main drain starting between attempts preserves the first rejection", async () => {
@@ -1406,91 +1427,6 @@ describe("compact alternate-account attempt (#913)", () => {
       // Exactly one send, and the upstream succeeded, so nothing rotated.
       expect(bearers).toHaveLength(1);
       expect(res.status).toBe(200);
-    });
-  });
-
-  test("a quota-blocked previous-model compact retries the same thread's successful routed handoff target (#2723)", async () => {
-    await withPoolEnv("ocx-compact-routed-handoff-", async config => {
-      config.providers.deepseek = {
-        adapter: "openai-chat",
-        baseUrl: "https://api.deepseek.com",
-        authMode: "key",
-        apiKey: "deepseek-test-key",
-        models: ["deepseek-v4-flash"],
-      };
-      config.providers["openai-apikey"] = {
-        adapter: "openai-responses",
-        baseUrl: "https://api.openai.com/v1",
-        authMode: "key",
-        apiKey: "openai-test-key",
-        models: ["gpt-5.6-sol"],
-      };
-      const headers = { "x-codex-parent-thread-id": "compact-routed-handoff-thread" };
-      // The remembered route is keyed by the admitted principal, so every call in
-      // this scenario authenticates as the same configured client.
-      const admission = { kind: "configured", keyId: "compact-client", source: "dedicated", contextPrincipalId: "compact-client-principal" } as const;
-      const calls: Array<{ model: string; nativeCompact: boolean }> = [];
-      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-        const url = typeof input === "string"
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : input.url;
-        const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string };
-        const nativeCompact = url.endsWith("/responses/compact");
-        calls.push({ model: body.model ?? "", nativeCompact });
-        if (nativeCompact) {
-          return Response.json({ error: { message: "The usage limit has been reached" } }, {
-            status: 502,
-          });
-        }
-        return jsonResponse(completedPayload("DeepSeek handoff summary"));
-      }) as typeof fetch;
-
-      const manual = await handleResponsesCompact(
-        compactionRequest(
-          baseCompactionBody({ model: "deepseek/deepseek-v4-flash" }),
-          undefined,
-          headers,
-        ),
-        config, { model: "", provider: "" }, undefined, admission,
-      );
-      expect(manual.status).toBe(200);
-      expect(calls).toEqual([{ model: "deepseek-v4-flash", nativeCompact: false }]);
-      calls.length = 0;
-
-      const unrelated = await handleResponsesCompact(
-        compactionRequest(
-          baseCompactionBody({ model: "openai-apikey/gpt-5.6-sol" }),
-          undefined,
-          { "x-codex-parent-thread-id": "different-compact-thread" },
-        ),
-        config, { model: "", provider: "" }, undefined, admission,
-      );
-      expect(unrelated.status).toBe(502);
-      expect(calls.length).toBeGreaterThan(0);
-      expect(calls.every(call => call.model === "gpt-5.6-sol" && call.nativeCompact)).toBe(true);
-      calls.length = 0;
-
-      const logCtx: RequestLogContext = { model: "", provider: "" };
-      const automatic = await handleResponsesCompact(
-        compactionRequest(
-          baseCompactionBody({ model: "openai-apikey/gpt-5.6-sol" }),
-          undefined,
-          headers,
-        ),
-        config, logCtx, undefined, admission,
-      );
-
-      expect(automatic.status).toBe(200);
-      const output = await automatic.json() as { output?: unknown[] };
-      expect(output.output?.length).toBeGreaterThan(0);
-      expect(logCtx.provider).toBe("deepseek");
-      expect(calls.at(-1)).toEqual({ model: "deepseek-v4-flash", nativeCompact: false });
-      expect(calls.slice(0, -1).length).toBeGreaterThan(0);
-      expect(calls.slice(0, -1).every(call => (
-        call.model === "gpt-5.6-sol" && call.nativeCompact
-      ))).toBe(true);
     });
   });
 

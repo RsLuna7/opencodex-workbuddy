@@ -7,8 +7,10 @@
  *
  * Design of record: devlog/_fin/260802_client_toggle_api/021 §5-6.
  */
-import { lstatSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { lstatSync, mkdirSync, rmSync, statSync } from "node:fs";
 import type { ConfigFormat } from "../clients/config-export";
+import { readBoundedRegularFileSync } from "../lib/bounded-file-read";
+import { canonicalizeJsonc } from "../lib/jsonc";
 import { MAX_JSON_NESTING } from "./serialize";
 import { atomicWriteFileNoFollow, isMissingPathError } from "../config/atomic-write";
 import type { JournalEntry } from "./journal";
@@ -23,6 +25,10 @@ import type { IntegrationClientId } from "./registry";
  * then overwritten.
  */
 export const PARSE_FAILED = Symbol("parse-failed");
+const MAX_INTEGRATION_CONFIG_FILE_BYTES = 4 * 1024 * 1024;
+
+/** Raised before any target mutation, including pending-marker creation. */
+export class IntegrationWriteSizeError extends Error {}
 
 /**
  * What `JSON.parse` has already discarded by the time we hold the parsed value,
@@ -132,7 +138,11 @@ function jsonTextSafeToRewrite(text: string): boolean {
 }
 
 /** Parse a client config, tolerating absence. PARSE_FAILED on garbage. */
-export function parseConfig(text: string | null, format: ConfigFormat): unknown | typeof PARSE_FAILED {
+export function parseConfig(
+  text: string | null,
+  format: ConfigFormat,
+  options?: { jsonc?: boolean },
+): unknown | typeof PARSE_FAILED {
   if (text === null || text.trim().length === 0) return {};
   try {
     switch (format) {
@@ -143,9 +153,13 @@ export function parseConfig(text: string | null, format: ConfigFormat): unknown 
          * would otherwise cap the rewrite only after JSON.parse had already
          * built the 50k-deep object graph. The outcome is unchanged: invalid
          * JSON still returns PARSE_FAILED, from the catch below.
+         *
+         * Kilo's global file is JSONC. Comments and trailing commas are
+         * stripped first so the rewrite-safety scan sees JSON, not comment text.
          */
-        if (!jsonTextSafeToRewrite(text)) return PARSE_FAILED;
-        return JSON.parse(text);
+        const source = options?.jsonc ? canonicalizeJsonc(text) : text;
+        if (!jsonTextSafeToRewrite(source)) return PARSE_FAILED;
+        return JSON.parse(source);
       }
       case "json5": return Bun.JSON5.parse(text);
       case "yaml": return Bun.YAML.parse(text);
@@ -276,7 +290,7 @@ export function fileIO(): Omit<IntegrationIO, "appendJournal" | "putRecord" | "d
     lstatKind,
     readText: path => {
       try {
-        return { kind: "text", text: readFileSync(path, "utf8") };
+        return { kind: "text", text: readBoundedRegularFileSync(path, MAX_INTEGRATION_CONFIG_FILE_BYTES).toString("utf8") };
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         return code === "ENOENT" ? { kind: "missing" } : { kind: "failed", ...(code ? { code } : {}) };
@@ -291,6 +305,19 @@ export function fileIO(): Omit<IntegrationIO, "appendJournal" | "putRecord" | "d
       }
     },
     writeText: (path, text) => {
+      /*
+       * One bound on both halves of the seam: a file past this size is one
+       * readText refuses, so writing it would strand the integration against
+       * its own configuration — or, for Cline's pending marker, leave a
+       * transaction recovery could never read back.
+       */
+      const bytes = Buffer.byteLength(text, "utf8");
+      if (bytes > MAX_INTEGRATION_CONFIG_FILE_BYTES) {
+        throw new IntegrationWriteSizeError(
+          `refusing oversized integration write to ${path}: `
+          + `${bytes} bytes is past the ${MAX_INTEGRATION_CONFIG_FILE_BYTES}-byte read bound`,
+        );
+      }
       const kind = lstatKind(path);
       if (kind !== "file" && kind !== "missing") {
         throw new Error(`refusing unsafe integration write target: ${path}`);

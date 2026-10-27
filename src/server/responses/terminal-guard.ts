@@ -170,7 +170,8 @@ export function isTerminalGuardPassthroughOnly(event: AdapterEvent): boolean {
   return event.type === "heartbeat" || event.type === "tool_call_delta";
 }
 
-function mergeUsage(first: OcxUsage | undefined, second: OcxUsage | undefined): OcxUsage | undefined {
+/** Merge two reported usages (canonical Responses convention). Shared with the advisor guard. */
+export function mergeUsage(first: OcxUsage | undefined, second: OcxUsage | undefined): OcxUsage | undefined {
   if (!first) return second;
   if (!second) return first;
   const sumOptional = (key: keyof OcxUsage): number | undefined => {
@@ -184,6 +185,7 @@ function mergeUsage(first: OcxUsage | undefined, second: OcxUsage | undefined): 
   const cacheReadInputTokens = sumOptional("cacheReadInputTokens");
   const cacheCreationInputTokens = sumOptional("cacheCreationInputTokens");
   const reasoningOutputTokens = sumOptional("reasoningOutputTokens");
+  const providerCredits = sumOptional("providerCredits");
   const inputTokens = first.inputTokens + second.inputTokens;
   const outputTokens = first.outputTokens + second.outputTokens;
   return {
@@ -194,6 +196,7 @@ function mergeUsage(first: OcxUsage | undefined, second: OcxUsage | undefined): 
     ...(cacheReadInputTokens !== undefined ? { cacheReadInputTokens } : {}),
     ...(cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens } : {}),
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
+    ...(providerCredits !== undefined ? { providerCredits } : {}),
     ...(first.estimated || second.estimated ? { estimated: true } : {}),
   };
 }

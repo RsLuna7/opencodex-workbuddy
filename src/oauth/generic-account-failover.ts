@@ -1,3 +1,4 @@
+import { isBuiltinAnthropicInstanceRow } from "../providers/anthropic-instance";
 /**
  * Generic OAuth multi-account 429 failover (#2568).
  *
@@ -14,16 +15,9 @@
  * (`oauth/anthropic-routing.ts` owns affinity and a fail-closed local-cli credential rule).
  * Both are excluded by `isGenericFailoverProvider`.
  */
-import { getAccountSet } from "./store";
-import { workbuddyAccountsShareRealm } from "./codebuddy-realm";
-import { CODEBUDDY_PROVIDER_ID } from "./codebuddy";
-import {
-  isWorkbuddyPoolCooled,
-  noteWorkbuddyPoolCooldown,
-  pickWorkbuddyAccount,
-  preferredWorkbuddyAccount,
-} from "./workbuddy-pool";
-import { isWorkbuddyWafIpBlocked } from "./workbuddy-waf";
+import { credentialGeneration, getAccountSet } from "./store";
+import { accountInFlight } from "./kiro-account-load";
+import type { ProviderAccount } from "./types";
 import { getValidAccessSnapshotForAccount, type OAuthAccessSnapshot } from "./index";
 import {
   accountHeadroomPercent,
@@ -43,108 +37,58 @@ import {
   seedPoolRotationAccount,
 } from "./pool-kernel";
 import { parseRetryAfterMs } from "../combos/failover";
+import type { KiroRefusalKind } from "../adapters/kiro-refusal";
+import { kiroAccountEvidence } from "../providers/kiro-usage";
+import { kiroEvidenceIdentity } from "../providers/kiro-account-state-disk";
+import { kiroAccountSupportsModel } from "../providers/kiro-model-catalog";
+import { antigravityAccountSupportsModel } from "../providers/antigravity-account-roster";
+import { ACCOUNT_QUOTA_TTL_MS } from "../providers/quota-wire";
 import { sweepExpiredOnWrite } from "../lib/state-store-sweeper";
+import { subscribeOAuthAccountPauseChanges } from "../lib/account-selection-events";
+import { CODEBUDDY_PROVIDER_ID } from "./codebuddy";
+import { isWorkbuddyPoolCooled, noteWorkbuddyPoolCooldown, pickWorkbuddyAccount } from "./workbuddy-pool";
+import { isWorkbuddyWafIpBlocked } from "./workbuddy-waf";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 
 /** Cap same-request rotations so a short Retry-After cannot spin. Mirrors the Anthropic bound. */
 export const GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST = 3;
 
-const DEFAULT_COOLDOWN_MS = 60_000;
-const MAX_COOLDOWN_MS = 15 * 60_000;
-/** WorkBuddy (CodeBuddy CN) 6004/14018 windows are ~24h; keep a small ceiling above that. */
-const QUOTA_RESET_COOLDOWN_DEFAULT_MS = 24 * 60 * 60_000;
-const QUOTA_RESET_COOLDOWN_MAX_MS = 26 * 60 * 60_000;
-
 /**
- * How a cooldown is scoped.
- *
- * `account` (no scope at all) rests the whole stored account; `model:<id>` rests exactly one
- * account × model pair; `family:<family>` rests one model family.
- *
- * WorkBuddy needs the first two. Its `14018` is an account-wide allowance and must rest the
- * whole account, while `6004` is a per-model frequency limit — cooling every model would take a
- * perfectly serviceable account out of rotation for the models it can still serve. The
- * `family` form is upstream's Antigravity dimension ({@link QuotaModelFamily}), kept so a
- * Claude cooldown does not hide an account from a Gemini request.
+ * Most accounts one request may fund and rotate through, whatever the roster size. Each funded
+ * account gets the normal transient ladder, so this fixes the default ingress ceiling at
+ * 6 × TRANSIENT_RETRY_MAX_ATTEMPTS physical sends: enrolling more accounts cannot turn one request
+ * into a pool-wide 429 storm.
  */
-type GenericCooldownScope = `family:${string}` | `model:${string}`;
+export const GENERIC_OAUTH_MAX_ACCOUNTS_PER_REQUEST = 6;
 
-/** The model dimension, for an exact wire id. This is the 6004 dimension. */
-const modelScope = (modelId: string): GenericCooldownScope => `model:${modelId}`;
-
-/**
- * A family token passed as a SCOPE rather than a model id.
- *
- * The pool hypotheses call this module with a bare `"gem"`/`"cla"` — upstream's
- * `eligibleFailoverAccounts(provider, now, "cla")` shape — which is a window label, not a
- * routable model id, so the classifier below would refuse it and the scope would silently
- * become `model:cla`. Recognising the two tokens keeps those callers on the `family:` dimension
- * the classifier produces for a real model id.
- */
-function asQuotaFamily(token?: string | null): QuotaModelFamily | undefined {
-  const value = token?.trim().toLowerCase();
-  return value === "gem" || value === "cla" ? value : undefined;
-}
-
-/**
- * Translate a routed model id (or a family token) into the dimension its cooldown belongs on.
- *
- * The family dimension is tried FIRST so Antigravity keeps the coarse "gem"/"cla" grouping its
- * quota windows are keyed by, whether the caller names the family directly or names a model the
- * classifier can bucket. Everything else falls back to the exact model id: a provider with no
- * families still deserves the narrower dimension rather than an account-wide cooldown it never
- * asked for, which is exactly what WorkBuddy's 6004 requires.
- */
-function classifyCooldownScope(
-  providerName: string,
-  requestedModelId?: string | null,
-): GenericCooldownScope | undefined {
-  const family = asQuotaFamily(requestedModelId) ?? classifyModelFamilyForQuota(providerName, requestedModelId);
-  if (family) return `family:${family}`;
-  const modelId = normalizeGenericFailoverModelId(providerName, requestedModelId ?? undefined);
-  return modelId ? modelScope(modelId) : undefined;
-}
-
-export interface GenericOAuthRotateOptions {
-  /** Default account-wide, matching today's 429 path. */
-  scope?: "account" | "model";
-  /** Required when `scope` is `model`; stripped of `provider/` if present. */
+export type GenericRotateTarget = string | null | {
+  scope: "account" | "model";
   modelId?: string;
-  /** Absolute epoch ms from an upstream reset clock. */
-  cooldownUntilMs?: number;
-  /** Quota exhaustion (6004/14018): 24h default instead of the 15-minute 429 cap. */
   quotaExhausted?: boolean;
+  resetAt?: number;
+};
+
+export function normalizeGenericFailoverModelId(providerName: string, modelId?: string): string | undefined {
+  const trimmed = modelId?.trim();
+  if (!trimmed) return undefined;
+  const prefix = `${providerName}/`;
+  return trimmed.toLowerCase().startsWith(prefix.toLowerCase()) ? trimmed.slice(prefix.length) : trimmed;
 }
 
-/**
- * The sixth parameter of {@link rotateGenericOAuthAccountOn429}, accepted in two shapes.
- *
- * The upstream call sites that predate this fork pass a bare `route.modelId`; the WorkBuddy 402
- * path needs the full {@link GenericOAuthRotateOptions} to say "one model, resting until this
- * instant". Taking the union keeps every upstream-shaped call compiling unchanged, and
- * {@link normalizeRotateTarget} is the single place that reads both.
- */
-export type GenericRotateTarget = string | GenericOAuthRotateOptions | null | undefined;
-
-function normalizeRotateTarget(
-  providerName: string,
-  target: GenericRotateTarget,
-): { modelId?: string; scope?: GenericCooldownScope; options?: GenericOAuthRotateOptions } {
-  if (target === null || target === undefined) return {};
-  // A bare model id is what upstream passes. It goes through the family-first classifier so
-  // Antigravity's "claude-sonnet-4-5" lands on the same key as an explicit "cla" hypothesis.
-  if (typeof target === "string") {
-    const modelId = normalizeGenericFailoverModelId(providerName, target);
-    return { modelId, scope: classifyCooldownScope(providerName, modelId) };
-  }
-  const options = target;
-  if (options.scope !== "model") return { options };
-  const modelId = normalizeGenericFailoverModelId(providerName, options.modelId);
-  // An explicit model scope is EXACT by contract — that is the whole point of 6004. A missing id
-  // leaves no narrow dimension to cool, and widening to the account would punish every other
-  // model on it, so the caller gets no scope rather than a wrong one.
-  return { modelId, scope: modelId ? modelScope(modelId) : undefined, options };
+export function shouldAttemptGenericOAuthFailover(
+  config: OcxConfig, providerName: string, status: number, accountId: string | null | undefined,
+  failovers: number, quotaHint?: { scope: "account" | "model" } | null,
+  maxFailovers = GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST,
+): boolean {
+  if (!accountId || failovers >= maxFailovers
+    || !isGenericOAuthFailoverEnabled(config, providerName)) return false;
+  if (status === 429) return true;
+  if (providerName !== CODEBUDDY_PROVIDER_ID) return false;
+  if (status === 403) return !isWorkbuddyWafIpBlocked();
+  return status === 402 && !!quotaHint;
 }
+
+const DEFAULT_COOLDOWN_MS = 60_000;
 
 /**
  * How long a presence answer may be reused before the store is consulted again.
@@ -172,7 +116,8 @@ const EXCLUDED_PROVIDERS = new Set(["openai", "anthropic"]);
 
 interface AccountHealth {
   cooldownUntil: number;
-  cooldownSource: "retry-after" | "reset-derived" | "default";
+  cooldownSource: "retry-after" | "default" | "kiro-suspension" | "auth";
+  identity?: string;
 }
 
 interface PresenceEntry {
@@ -186,76 +131,46 @@ const health = new Map<string, AccountHealth>();
 /** Provider -> recent eligible-account count. TTL-bounded; never holds credential material. */
 const presence = new Map<string, PresenceEntry>();
 
-const healthKey = (provider: string, accountId: string, scope?: GenericCooldownScope) =>
-  scope ? `${provider}\u0000${accountId}\u0000${scope}` : `${provider}\u0000${accountId}`;
+subscribeOAuthAccountPauseChanges(provider => presence.delete(provider));
 
-function readHealth(key: string, now: number): AccountHealth | undefined {
-  const entry = health.get(key);
-  if (!entry) return undefined;
+const healthKey = (provider: string, accountId: string, family?: QuotaModelFamily) =>
+  family ? `${provider}\u0000${accountId}\u0000${family}` : `${provider}\u0000${accountId}`;
+
+export function quarantineKiroSuspendedAccount(accountId: string, generation?: string, now = Date.now()): void {
+  const live = getAccountSet("kiro")?.accounts.find(row => row.id === accountId);
+  if (!live || (generation && credentialGeneration(live.credential) !== generation)) return;
+  health.set(healthKey("kiro", accountId), {
+    cooldownUntil: now + 24 * 60 * 60_000, cooldownSource: "kiro-suspension",
+    identity: kiroEvidenceIdentity(live),
+  });
+  sweepExpiredOnWrite(now);
+}
+
+function isCooled(provider: string, accountId: string, now: number, family?: QuotaModelFamily): boolean {
+  const entry = health.get(healthKey(provider, accountId, family));
+  if (!entry) return false;
+  if (provider === "google-antigravity" && entry.cooldownSource === "auth") {
+    const live = getAccountSet(provider)?.accounts.find(row => row.id === accountId);
+    if (!live || entry.identity !== credentialGeneration(live.credential)) {
+      health.delete(healthKey(provider, accountId, family));
+      return false;
+    }
+  }
+  if (provider === "kiro" && entry.cooldownSource === "kiro-suspension") {
+    const live = getAccountSet("kiro")?.accounts.find(row => row.id === accountId);
+    if (!live || entry.identity !== kiroEvidenceIdentity(live)) {
+      health.delete(healthKey(provider, accountId, family));
+      return false;
+    }
+  }
   if (entry.cooldownUntil <= now) {
-    health.delete(key);
-    return undefined;
+    health.delete(healthKey(provider, accountId, family));
+    return false;
   }
-  return entry;
+  return true;
 }
 
-/**
- * Is this account resting, either wholly or on the dimension this request needs?
- *
- * An account-wide cooldown always answers yes — it covers every dimension by construction. A
- * scoped cooldown answers only for its own dimension, which is what keeps a 6004 on one model
- * from hiding that account's other models.
- */
-function isCooled(
-  provider: string,
-  accountId: string,
-  now: number,
-  scope?: GenericCooldownScope,
-): boolean {
-  if (provider === CODEBUDDY_PROVIDER_ID) {
-    const modelId = scope?.startsWith("model:") ? scope.slice("model:".length) : undefined;
-    if (isWorkbuddyPoolCooled(accountId, modelId, now)) return true;
-  }
-  if (readHealth(healthKey(provider, accountId), now)) return true;
-  if (!scope) return false;
-  return readHealth(healthKey(provider, accountId, scope), now) !== undefined;
-}
-
-/** Strip `provider/` so catalog ids and wire ids share one cooldown key. */
-export function normalizeGenericFailoverModelId(
-  providerName: string,
-  modelId: string | undefined,
-): string | undefined {
-  const trimmed = modelId?.trim();
-  if (!trimmed) return undefined;
-  const prefix = `${providerName}/`;
-  if (trimmed.length > prefix.length && trimmed.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase()) {
-    return trimmed.slice(prefix.length);
-  }
-  return trimmed;
-}
-
-/**
- * Whether an account is resting right now, for a model when one is given.
- *
- * Exported for the WorkBuddy 6004 contract: the cooldown that ends a model's frequency window is
- * observable before that account is used again.
- */
-export function isGenericFailoverCooled(
-  providerName: string,
-  accountId: string,
-  now = Date.now(),
-  modelId?: string,
-): boolean {
-  return isCooled(providerName, accountId, now, classifyCooldownScope(providerName, modelId));
-}
-
-/**
- * Cool an account on an explicit dimension, without going through a 429.
- *
- * Exported so the WorkBuddy business codes rest an account directly, and so every cooldown
- * dimension has one writer rather than several.
- */
+/** Record an explicit account or model cooldown without rotating a credential. */
 export function applyGenericFailoverCooldown(opts: {
   providerName: string;
   accountId: string;
@@ -265,24 +180,47 @@ export function applyGenericFailoverCooldown(opts: {
   source?: AccountHealth["cooldownSource"];
 }): void {
   const now = opts.now ?? Date.now();
-  const cooldownMs = Math.max(opts.cooldownMs, 1);
-  health.set(healthKey(opts.providerName, opts.accountId, classifyCooldownScope(opts.providerName, opts.modelId)), {
-    cooldownUntil: now + cooldownMs,
+  const until = now + Math.max(opts.cooldownMs, 1);
+  if (opts.providerName === CODEBUDDY_PROVIDER_ID) {
+    noteWorkbuddyPoolCooldown({ accountId: opts.accountId, modelId: opts.modelId, untilMs: until, now });
+    return;
+  }
+  const family = opts.modelId ? classifyModelFamilyForQuota(opts.modelId) : undefined;
+  health.set(healthKey(opts.providerName, opts.accountId, family), {
+    cooldownUntil: until,
     cooldownSource: opts.source ?? "default",
   });
-  if (opts.providerName === CODEBUDDY_PROVIDER_ID) {
-    noteWorkbuddyPoolCooldown({
-      accountId: opts.accountId,
-      modelId: opts.modelId,
-      untilMs: now + cooldownMs,
-      now,
-    });
-  }
+}
+
+export function isGenericFailoverCooled(
+  providerName: string, accountId: string, now = Date.now(), modelId?: string,
+): boolean {
+  if (providerName === CODEBUDDY_PROVIDER_ID) return isWorkbuddyPoolCooled(accountId, modelId, now);
+  return isCooled(providerName, accountId, now, modelId ? classifyModelFamilyForQuota(modelId) : undefined)
+    || isCooled(providerName, accountId, now);
+}
+
+export type KiroSkipReason = "paused" | "needs_reauth" | "suspended" | "cooldown" | "quota_exhausted";
+
+/** Eligibility for automatic alternatives; an active singleton can still send. */
+export function kiroAutoSelection(
+  account: ProviderAccount, now = Date.now(),
+): { autoSelectable: boolean; skipReason?: KiroSkipReason } {
+  if (account.paused === true) return { autoSelectable: false, skipReason: "paused" };
+  if (account.needsReauth === true) return { autoSelectable: false, skipReason: "needs_reauth" };
+  const cooled = isCooled("kiro", account.id, now);
+  if (cooled && health.get(healthKey("kiro", account.id))?.cooldownSource === "kiro-suspension")
+    return { autoSelectable: false, skipReason: "suspended" };
+  if (kiroAccountEvidence(account, now).exhausted === true)
+    return { autoSelectable: false, skipReason: "quota_exhausted" };
+  if (cooled) return { autoSelectable: false, skipReason: "cooldown" };
+  return { autoSelectable: true };
 }
 
 /** True when this provider participates in generic rotation at all. */
 export function isGenericFailoverProvider(providerName: string, provider: OcxProviderConfig): boolean {
-  return provider.authMode === "oauth" && !EXCLUDED_PROVIDERS.has(providerName);
+  return provider.authMode === "oauth" && !EXCLUDED_PROVIDERS.has(providerName)
+    && !isBuiltinAnthropicInstanceRow(providerName, provider);
 }
 
 /**
@@ -297,7 +235,12 @@ function eligibleAccountCount(providerName: string, now: number): number {
   const cached = presence.get(providerName);
   if (cached && now >= cached.readAt && now - cached.readAt < PRESENCE_CACHE_TTL_MS) return cached.eligible;
   const set = getAccountSet(providerName);
-  const eligible = set ? set.accounts.filter(account => account.needsReauth !== true).length : 0;
+  // Kiro terminal refresh marks the just-refused account needsReauth before the alternate
+  // selector runs. Both stored logins still express consent to recover through the survivor.
+  const eligible = set
+    ? set.accounts.filter(account => account.paused !== true
+      && (providerName === "kiro" || account.needsReauth !== true)).length
+    : 0;
   presence.set(providerName, { eligible, readAt: now });
   return eligible;
 }
@@ -348,7 +291,7 @@ export function isGenericOAuthFailoverEnabled(
  * turns it off only when the provider has no override. A malformed value falls through rather
  * than taking a provider out of service.
  */
-function isProactivePreferenceEnabled(config: OcxConfig, providerName: string, now: number): boolean {
+export function isProactivePreferenceEnabled(config: OcxConfig, providerName: string, now: number): boolean {
   const provider = config.providers?.[providerName];
   if (!provider || !isGenericFailoverProvider(providerName, provider)) return false;
   const perProvider = provider.oauthAccountFailover?.enabled;
@@ -361,51 +304,114 @@ function isProactivePreferenceEnabled(config: OcxConfig, providerName: string, n
   return config.oauthAccountFailover?.enabled === true && hasFailoverAccountQuorum(providerName, now);
 }
 
-/**
- * The eligible set for an ALREADY-RESOLVED scope.
- *
- * Internal callers hold a scope, not a model id, so they must not travel back through
- * {@link normalizeRotateTarget}: a resolved `family:gem` would be re-classified as the model
- * `family:gem` and the filter would quietly match nothing.
- */
-function workbuddySameRealmIds(providerName: string, pivotId: string | undefined): Set<string> | undefined {
-  if (providerName !== CODEBUDDY_PROVIDER_ID || !pivotId) return undefined;
-  const set = getAccountSet(providerName);
-  const pivot = set?.accounts.find(account => account.id === pivotId);
-  if (!pivot || !set) return undefined;
-  return new Set(
-    set.accounts
-      .filter(account => workbuddyAccountsShareRealm(pivot.credential, account.credential))
-      .map(account => account.id),
-  );
+/** Accounts that may serve traffic right now: not cooled, not flagged for reauth. */
+export function eligibleFailoverAccounts(providerName: string, now = Date.now(), family?: QuotaModelFamily): string[] {
+  return eligibleIdsIn(getAccountSet(providerName), providerName, now, family);
 }
 
-function eligibleAccountsForScope(
+/** Whether an account's own model listing includes `model`; undefined when unknown. */
+function accountListsModel(providerName: string, accountId: string, model: string): boolean | undefined {
+  if (providerName === "kiro") return kiroAccountSupportsModel(accountId, model);
+  if (providerName === "google-antigravity") return antigravityAccountSupportsModel(providerName, accountId, model);
+  return undefined;
+}
+
+/**
+ * Model evidence only ranks accounts already eligible and below any configured cap.
+ *
+ * Kiro and Antigravity both gate models per account. For Antigravity (Claude 4.6 vs 5.5, Argon)
+ * an account whose discovered roster lists the model wins; an account whose roster omits it is
+ * skipped while any other remains; an account with no roster yet is unknown and stays usable.
+ */
+export function preferKiroModelSupport(
+  providerName: string, ids: string[], model?: string | null, config?: OcxConfig,
+): string[] {
+  if (!model) return ids;
+  if (providerName === "google-antigravity") {
+    const positive = ids.filter(id => accountListsModel(providerName, id, model) === true);
+    if (positive.length) return positive;
+    const notListedAgainst = ids.filter(id => accountListsModel(providerName, id, model) !== false);
+    return notListedAgainst.length ? notListedAgainst : ids;
+  }
+  if (providerName !== "kiro") return ids;
+  const cap = config?.providers?.kiro?.oauthAccountFailover?.maxConcurrentPerAccount;
+  const withRoom = typeof cap === "number" && Number.isInteger(cap) && cap >= 1 && cap <= 100
+    ? ids.filter(id => accountInFlight("kiro", id) < cap) : ids;
+  const positive = withRoom.filter(id => kiroAccountSupportsModel(id, model) === true);
+  return positive.length ? positive : ids;
+}
+
+function kiroModelListingHasRoom(config: OcxConfig, accountId: string, model: string): boolean {
+  if (kiroAccountSupportsModel(accountId, model) !== true) return false;
+  const cap = config.providers?.kiro?.oauthAccountFailover?.maxConcurrentPerAccount;
+  return !(typeof cap === "number" && Number.isInteger(cap) && cap >= 1 && cap <= 100)
+    || accountInFlight("kiro", accountId) < cap;
+}
+
+function eligibleIdsIn(
+  set: ReturnType<typeof getAccountSet>,
   providerName: string,
   now: number,
-  scope?: GenericCooldownScope,
-  realmPeerAccountId?: string,
+  family?: QuotaModelFamily,
 ): string[] {
-  const set = getAccountSet(providerName);
   if (!set) return [];
-  const realmIds = workbuddySameRealmIds(providerName, realmPeerAccountId);
   return set.accounts
-    .filter(account => account.needsReauth !== true && !isCooled(providerName, account.id, now, scope))
-    .filter(account => !realmIds || realmIds.has(account.id))
+    .filter(account => account.paused !== true
+      && (providerName === "kiro" ? kiroAutoSelection(account, now).autoSelectable
+        : account.needsReauth !== true && !isCooled(providerName, account.id, now, family)))
     .map(account => account.id);
 }
 
-/** Accounts that may serve traffic right now: not cooled, not flagged for reauth. */
-export function eligibleFailoverAccounts(
+/**
+ * Whether reactive rotation has an alternate account it could select right now.
+ *
+ * Answers from the same live roster read and the same guards `rotateGenericOAuthAccountOn429`
+ * applies: a roster of fewer than two accounts has nowhere to go, even when a cached quorum
+ * count or a stale failed id would suggest otherwise. It applies no cooldown and advances no
+ * rotation state; like every eligibility read, it may prune an already-expired cooldown entry.
+ */
+export function hasEligibleGenericOAuthFailoverTarget(
   providerName: string,
+  failedAccountId: string,
   now = Date.now(),
-  target?: GenericRotateTarget,
-): string[] {
-  return eligibleAccountsForScope(providerName, now, normalizeRotateTarget(providerName, target).scope);
+  requestedModelId?: string | null,
+): boolean {
+  const set = getAccountSet(providerName);
+  if (!set || set.accounts.length < 2) return false;
+  const family = classifyModelFamilyForQuota(providerName, requestedModelId);
+  return eligibleIdsIn(set, providerName, now, family).some(id => id !== failedAccountId);
+}
+
+/** Select a live Antigravity sibling using activation captured before the refused send. */
+export function rotateAntigravityAccountOnAuthRefusal(
+  poolActivated: boolean,
+  failedAccountId: string,
+  sentGeneration: string,
+  requestedModelId: string | null | undefined,
+  now = Date.now(),
+): string | null {
+  if (!poolActivated) return null;
+  const set = getAccountSet("google-antigravity");
+  if (!set || set.accounts.length < 2) return null;
+  const family = classifyModelFamilyForQuota("google-antigravity", requestedModelId);
+  const failed = set.accounts.find(row => row.id === failedAccountId);
+  if (failed && credentialGeneration(failed.credential) === sentGeneration) {
+    health.set(healthKey("google-antigravity", failedAccountId, family), {
+      cooldownUntil: now + DEFAULT_COOLDOWN_MS,
+      cooldownSource: "auth",
+      identity: sentGeneration,
+    });
+    sweepExpiredOnWrite(now);
+  }
+  const eligible = new Set(eligibleIdsIn(set, "google-antigravity", now, family));
+  const order = set.accounts.map(row => row.id);
+  const start = order.indexOf(failedAccountId);
+  const ring = start >= 0 ? [...order.slice(start + 1), ...order.slice(0, start)] : order;
+  return ring.find(id => id !== failedAccountId && eligible.has(id)) ?? null;
 }
 
 /** Generic pool strategies the kernel can actually run. `quota` IS the pre-kernel path. */
-type ActiveGenericStrategy = "round-robin" | "fill-first";
+type ActiveGenericStrategy = "round-robin" | "fill-first" | "least-loaded";
 
 /** Matches the Codex and Anthropic pools; the DTO still reports `null` for "not stored". */
 const DEFAULT_GENERIC_AUTO_SWITCH_THRESHOLD = 80;
@@ -421,6 +427,7 @@ const DEFAULT_GENERIC_AUTO_SWITCH_THRESHOLD = 80;
 function activeGenericStrategy(config: OcxConfig, providerName: string): ActiveGenericStrategy | null {
   if (config.pool?.kernel !== true) return null;
   const raw = config.providers?.[providerName]?.oauthAccountFailover?.strategy;
+  if (providerName === "kiro" && raw === "least-loaded") return raw;
   return raw === "round-robin" || raw === "fill-first" ? raw : null;
 }
 
@@ -451,9 +458,9 @@ function stableGenericRoster(providerName: string): string[] {
  * statement about observed usage, and treating "no observation" as "spent" would evacuate every
  * quota-less provider off its active account on the very first request.
  */
-function isOverAutoSwitchThreshold(providerName: string, accountId: string, threshold: number, requestedModelId?: string | null): boolean {
+function isOverAutoSwitchThreshold(providerName: string, accountId: string, threshold: number, requestedModelId?: string | null, account?: ProviderAccount): boolean {
   if (threshold <= 0) return false;
-  const headroom = accountHeadroomPercent(providerName, accountId, requestedModelId);
+  const headroom = accountHeadroomPercent(providerName, accountId, requestedModelId, account);
   if (headroom === null) return false;
   return 100 - headroom >= threshold;
 }
@@ -468,20 +475,18 @@ function pickFillFirstGenericAccount(
   activeId: string | undefined,
   now: number,
   requestedModelId?: string | null,
+  accountRows?: ReadonlyMap<string, ProviderAccount>,
 ): string | null {
   const stableAll = stableGenericRoster(providerName);
   if (stableAll.length < 2) return null;
-  const eligible = new Set(eligibleAccountsForScope(
-    providerName,
-    now,
-    classifyCooldownScope(providerName, requestedModelId),
-    activeId,
-  ));
+  const family = classifyModelFamilyForQuota(providerName, requestedModelId);
+  const eligible = new Set(preferKiroModelSupport(providerName,
+    eligibleFailoverAccounts(providerName, now, family), requestedModelId, config));
   const stored = config.providers?.[providerName]?.oauthAccountFailover?.autoSwitchThreshold;
   const threshold = typeof stored === "number" && Number.isInteger(stored) && stored >= 0 && stored <= 100
     ? stored
     : DEFAULT_GENERIC_AUTO_SWITCH_THRESHOLD;
-  if (activeId && eligible.has(activeId) && !isOverAutoSwitchThreshold(providerName, activeId, threshold, requestedModelId)) {
+  if (activeId && eligible.has(activeId) && !isOverAutoSwitchThreshold(providerName, activeId, threshold, requestedModelId, accountRows?.get(activeId))) {
     return null;
   }
   const start = activeId ? stableAll.indexOf(activeId) : -1;
@@ -514,16 +519,8 @@ export function noteGenericPoolSelection(
   if (activeGenericStrategy(config, providerName) !== "round-robin") return;
   const poolKey = genericPoolKey(providerName);
   const limit = genericStickyLimit(config, providerName);
-  const picked = pickRoundRobinAccount(
-    poolKey,
-    eligibleAccountsForScope(
-      providerName,
-      Date.now(),
-      classifyCooldownScope(providerName, requestedModelId),
-      accountId,
-    ),
-    limit,
-  );
+  const family = classifyModelFamilyForQuota(providerName, requestedModelId);
+  const picked = pickRoundRobinAccount(poolKey, eligibleFailoverAccounts(providerName, Date.now(), family), limit);
   // The resolver may have admitted a different account than the ring proposed: a removal, a
   // reauth verdict or a manual selection can land during credential resolution. Realign the
   // cursor onto what actually served rather than leaving it on a road not taken.
@@ -531,48 +528,12 @@ export function noteGenericPoolSelection(
   notePoolRotationSuccess(poolKey, accountId, limit);
 }
 
-/**
- * How long the failed account should rest, and what that length is attributed to.
- *
- * Precedence is deliberate and load-bearing for WorkBuddy: an upstream reset clock beats
- * everything, because it is the exact instant the provider itself will serve this model again.
- * A quota verdict the caller supplied beats a Retry-After, because the provider's own business
- * code is more specific than the header sent alongside it.
- */
-function resolveGenericCooldown(
-  providerName: string,
-  failedAccountId: string,
-  retryAfterHeader: string | null | undefined,
-  now: number,
-  options?: GenericOAuthRotateOptions,
-): { cooldownMs: number; source: AccountHealth["cooldownSource"] } {
-  if (typeof options?.cooldownUntilMs === "number" && Number.isFinite(options.cooldownUntilMs)) {
-    const ms = Math.min(Math.max(options.cooldownUntilMs - now, 1), QUOTA_RESET_COOLDOWN_MAX_MS);
-    return { cooldownMs: ms, source: "reset-derived" };
-  }
-  if (options?.quotaExhausted === true || options?.scope === "model") {
-    return { cooldownMs: QUOTA_RESET_COOLDOWN_DEFAULT_MS, source: "default" };
-  }
-  const parsed = parseRetryAfterMs(retryAfterHeader, now, { preserveImmediate: true });
-  // An account whose allowance is provably spent gets a reset-aligned cooldown instead of
-  // the default minute: retrying it every 60s until the window rolls over is pure waste.
-  // A Retry-After from upstream still wins — it is the server's own instruction.
-  const exhausted = parsed === undefined ? exhaustedCooldownMs(providerName, failedAccountId, now) : null;
-  return {
-    cooldownMs: exhausted ?? Math.min(parsed ?? DEFAULT_COOLDOWN_MS, MAX_COOLDOWN_MS),
-    source: parsed ? "retry-after" : "default",
-  };
-}
 
 /**
- * Cool the account that actually 429'd (or quota-exhausted) and name the next eligible one, or null.
+ * Cool the account that actually 429'd and name the next eligible one, or null.
  *
  * Returns the id only; the caller mints the credential so a failed refresh does not leave the
  * cooldown applied to an account we then could not use.
- *
- * The sixth parameter accepts either a bare model id — the shape every upstream call site uses —
- * or {@link GenericOAuthRotateOptions}, which is what the WorkBuddy 402 path needs to say "one
- * model, resting until this instant".
  */
 export function rotateGenericOAuthAccountOn429(
   config: OcxConfig,
@@ -580,33 +541,72 @@ export function rotateGenericOAuthAccountOn429(
   failedAccountId: string,
   retryAfterHeader: string | null | undefined,
   now = Date.now(),
-  target?: GenericRotateTarget,
+  requestedModelId?: GenericRotateTarget,
 ): string | null {
+  if (providerName === CODEBUDDY_PROVIDER_ID) {
+    if (!isGenericOAuthFailoverEnabled(config, providerName)) return null;
+    const set = getAccountSet(providerName);
+    if (!set || set.accounts.length < 2) return null;
+    const target = typeof requestedModelId === "object" && requestedModelId !== null ? requestedModelId : null;
+    const modelId = target?.modelId ?? (typeof requestedModelId === "string" ? requestedModelId : undefined);
+    const parsed = parseRetryAfterMs(retryAfterHeader, now, { preserveImmediate: true, preserveServerDelay: true });
+    const untilMs = target?.resetAt ?? now + (parsed ?? (target?.quotaExhausted ? 24 * 60 * 60_000 : DEFAULT_COOLDOWN_MS));
+    noteWorkbuddyPoolCooldown({
+      accountId: failedAccountId,
+      modelId: target?.scope === "account" ? undefined : modelId,
+      untilMs,
+      now,
+      reason: target?.quotaExhausted ? "quota" : "rate-limit",
+    });
+    presence.delete(providerName);
+    return pickWorkbuddyAccount({ modelId, exclude: [failedAccountId], realmPeerAccountId: failedAccountId, now });
+  }
+  return rotateGenericOAuthAccountOnRefusal(config, providerName, failedAccountId, "rate",
+    retryAfterHeader, now, typeof requestedModelId === "string" ? requestedModelId : undefined);
+}
+
+/** Kiro adds account-scoped refusal classes; all other providers retain their 429 policy. */
+export function rotateGenericOAuthAccountOnRefusal(
+  config: OcxConfig,
+  providerName: string,
+  failedAccountId: string,
+  kind: KiroRefusalKind,
+  retryAfterHeader: string | null | undefined,
+  now = Date.now(),
+  requestedModelId?: string | null,
+  monthlyCooldownMs?: number,
+): string | null {
+  if (kind === "other" || (providerName !== "kiro" && kind !== "rate")) return null;
   if (!isGenericOAuthFailoverEnabled(config, providerName)) return null;
   const set = getAccountSet(providerName);
   // A single stored account has nowhere to go; rotating to itself would just replay the 429.
   if (!set || set.accounts.length < 2) return null;
 
-  const { modelId, scope, options } = normalizeRotateTarget(providerName, target);
-  const { cooldownMs, source } = resolveGenericCooldown(
-    providerName, failedAccountId, retryAfterHeader, now, options,
-  );
-  health.set(healthKey(providerName, failedAccountId, scope), {
+  // `preserveServerDelay` keeps the delay the server actually stated, bounded by the parser's
+  // one-day ceiling, exactly as the combo path does. Truncating it locally only guarantees a
+  // second 429 on an account we were told to leave alone.
+  const parsed = kind === "rate"
+    ? parseRetryAfterMs(retryAfterHeader, now, { preserveImmediate: true, preserveServerDelay: true })
+    : undefined;
+  // An account whose allowance is provably spent gets a reset-aligned cooldown instead of
+  // the default minute: retrying it every 60s until the window rolls over is pure waste.
+  // A Retry-After from upstream still wins — it is the server's own instruction.
+  const exhausted = parsed === undefined && providerName !== "kiro"
+    ? exhaustedCooldownMs(providerName, failedAccountId, now, set.accounts.find(account => account.id === failedAccountId)) : null;
+  const cooldownMs = kind === "suspended" ? 24 * 60 * 60_000
+    : kind === "monthly_quota" ? (monthlyCooldownMs ?? ACCOUNT_QUOTA_TTL_MS)
+    : providerName === "kiro" ? (parsed ?? 10_000)
+    : (exhausted ?? parsed ?? DEFAULT_COOLDOWN_MS);
+  const family = classifyModelFamilyForQuota(providerName, requestedModelId);
+  // Suspension is recorded by the caller with the sent generation before the quorum check.
+  // Rewriting it here would lose its login-identity fence.
+  if (kind !== "suspended") health.set(healthKey(providerName, failedAccountId, providerName === "kiro" ? undefined : family), {
     cooldownUntil: now + cooldownMs,
-    cooldownSource: source,
+    cooldownSource: parsed ? "retry-after" : "default",
   });
-  if (providerName === CODEBUDDY_PROVIDER_ID) {
-    noteWorkbuddyPoolCooldown({
-      accountId: failedAccountId,
-      modelId: scope?.startsWith("model:") ? modelId : undefined,
-      untilMs: now + cooldownMs,
-      now,
-      reason: options?.quotaExhausted ? "quota" : "rate-limit",
-    });
-  }
   sweepExpiredOnWrite(now);
 
-  const eligible = eligibleAccountsForScope(providerName, now, scope, failedAccountId).filter(id => id !== failedAccountId);
+  const eligible = eligibleFailoverAccounts(providerName, now, family).filter(id => id !== failedAccountId);
   if (eligible.length === 0) return null;
   // A rotation means the roster in use just changed; do not answer the next activation question
   // from a count read before the failure.
@@ -617,20 +617,21 @@ export function rotateGenericOAuthAccountOn429(
   const order = set.accounts.map(account => account.id);
   const start = order.indexOf(failedAccountId);
   const ring = start >= 0 ? [...order.slice(start + 1), ...order.slice(0, start)] : order;
-  const candidates = ring.filter(id => id !== failedAccountId && eligible.includes(id));
+  let candidates = ring.filter(id => id !== failedAccountId && eligible.includes(id));
   if (candidates.length === 0) return null;
-  if (providerName === CODEBUDDY_PROVIDER_ID) {
-    return pickWorkbuddyAccount({
-      modelId,
-      exclude: [failedAccountId],
-      realmPeerAccountId: failedAccountId,
-      now,
-    });
+  const cap = providerName === "kiro" ? config.providers?.kiro?.oauthAccountFailover?.maxConcurrentPerAccount : undefined;
+  if (typeof cap === "number" && Number.isInteger(cap) && cap >= 1 && cap <= 100) {
+    const withRoom = candidates.filter(id => accountInFlight("kiro", id) < cap);
+    if (withRoom.length > 0) candidates = withRoom;
   }
+  candidates = preferKiroModelSupport(providerName, candidates, requestedModelId, config);
   // The 429 path branches too. Leaving it on the quota ranking would make a configured
   // strategy inert in practice the moment anything actually failed, which is the case the
   // operator chose the strategy for.
   const strategy = activeGenericStrategy(config, providerName);
+  if (strategy === "least-loaded" && isProactivePreferenceEnabled(config, "kiro", now)) {
+    return candidates.sort((a, b) => accountInFlight("kiro", a) - accountInFlight("kiro", b))[0] ?? null;
+  }
   if (strategy === "round-robin") {
     // PICK here, not peek: the failure already happened and this answer is the one being used,
     // so the ring genuinely advances.
@@ -653,28 +654,31 @@ export function rotateGenericOAuthAccountOn429(
   }
   // With no quota evidence this returns the ring untouched, so providers without
   // per-account quota keep exactly the traversal they have today.
-  return rankAccountsByHeadroom(providerName, candidates, modelId)[0] ?? null;
+  return rankAccountsByHeadroom(providerName, candidates, requestedModelId,
+    new Map(set.accounts.map(account => [account.id, account])))[0] ?? null;
 }
 
-/** True when this response should enter the generic OAuth rotation loop. */
-export function shouldAttemptGenericOAuthFailover(
-  config: OcxConfig,
-  providerName: string,
-  status: number,
-  accountId: string | null | undefined,
-  failovers: number,
-  quotaHint?: { scope: "account" | "model" } | null,
-): boolean {
-  if (!accountId || failovers >= GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST) return false;
-  if (!isGenericOAuthFailoverEnabled(config, providerName)) return false;
-  if (providerName === CODEBUDDY_PROVIDER_ID && status === 403) {
-    return !isWorkbuddyWafIpBlocked();
+/** Known dead-account exclusion is a proactive choice with narrow-over-broad precedence. */
+export function refusalAwareInitialKiroAccount(
+  config: OcxConfig, activeId: string, now = Date.now(), requestedModelId?: string | null,
+): string | null {
+  if (!isProactivePreferenceEnabled(config, "kiro", now)) return null;
+  const set = getAccountSet("kiro");
+  if (!set || set.accounts.length < 2) return null;
+  const active = set.accounts.find(account => account.id === activeId);
+  if (!active) return null;
+  const eligibleIds = eligibleIdsIn(set, "kiro", now, classifyModelFamilyForQuota("kiro", requestedModelId));
+  const preferred = preferKiroModelSupport("kiro", eligibleIds, requestedModelId, config);
+  const activeLacks = requestedModelId && kiroAccountSupportsModel(activeId, requestedModelId) === false
+    && preferred.some(id => id !== activeId && kiroModelListingHasRoom(config, id, requestedModelId));
+  if (!activeLacks && !isCooled("kiro", activeId, now)
+    && kiroAccountEvidence(active, now).exhausted !== true) return null;
+  const eligible = new Set(preferred);
+  const start = set.accounts.findIndex(account => account.id === activeId);
+  for (const account of [...set.accounts.slice(start + 1), ...set.accounts.slice(0, start)]) {
+    if (eligible.has(account.id)) return account.id;
   }
-  if (status === 429) return true;
-  // WorkBuddy rewrites its 14018/6004 business codes to HTTP 402. That status alone is not a
-  // rotation signal — an ordinary billing 402 must pass through — so the adapter leaves a hint
-  // naming the scope, and only its presence turns this into a retryable refusal.
-  return quotaHint != null && status === 402;
+  return null;
 }
 
 /**
@@ -698,41 +702,76 @@ export async function failoverAccountSnapshot(
  * to be active — including one a previous probe already measured as spent. That costs a
  * full upstream round trip and one of three rotations to rediscover what the cache knew.
  *
- * Returns null whenever the ordinary active-account path should be used unchanged. A configured
- * strategy answers the question itself; otherwise proactive ranking still needs quota evidence.
- * Cooldown avoidance does not: an account already cooled for this model (or the whole account)
- * is skipped even when the proactive knob is off. An empty answer means "carry on", not "refuse".
+ * Returns null whenever the ordinary active-account path should be used unchanged: no
+ * quorum, rotation disabled, a single account, or no quota evidence to act on. This is a
+ * preference, never a gate — a cooled or unmeasured account is still perfectly usable, so
+ * an empty answer means "carry on", not "refuse".
  */
 export function preferredInitialAccount(
   config: OcxConfig,
   providerName: string,
   now = Date.now(),
   requestedModelId?: string | null,
-  sessionKey?: string,
 ): string | null {
-  const provider = config.providers?.[providerName];
-  if (!provider || !isGenericFailoverProvider(providerName, provider)) return null;
   if (providerName === CODEBUDDY_PROVIDER_ID) {
-    return preferredWorkbuddyAccount(config, now, requestedModelId, sessionKey);
+    const active = getAccountSet(providerName)?.activeAccountId;
+    if (active && isWorkbuddyPoolCooled(active, requestedModelId, now)) {
+      return pickWorkbuddyAccount({
+        modelId: requestedModelId,
+        exclude: [active],
+        realmPeerAccountId: active,
+        now,
+      });
+    }
   }
+  // The PROACTIVE predicate, not the reactive one: this steers a request upstream has not
+  // refused, so `oauthAccountFailover.enabled: false` must still be able to refuse it.
+  if (!isProactivePreferenceEnabled(config, providerName, now)) return null;
   // Read the same authoritative selection the management writer commits. Caching the
   // active id separately would delay manual selection and account removal.
   const selected = getAccountSet(providerName);
   if (!selected) return null;
   const active = selected.activeAccountId;
-  const order = selected.accounts.filter(account => account.needsReauth !== true).map(account => account.id);
+  const accountRows = new Map(selected.accounts.map(account => [account.id, account]));
+  const order = selected.accounts
+    .filter(account => account.paused !== true && account.needsReauth !== true)
+    .map(account => account.id);
   if (order.length < 2) return null;
-  const scope = classifyCooldownScope(providerName, requestedModelId);
 
-  // A configured strategy answers this question itself. Both guards in the quota arm below
-  // exist to protect the QUOTA answer, and both are fatal to the other two:
-  // hasHeadroomEvidence refuses every provider with no quota data, which is exactly where
-  // round-robin is the point, and the healthy-active return fires before autoSwitchThreshold
-  // can ever be read, so fill-first would never reach its own test. Cooldowns and reauth are
-  // still honoured inside each pick.
+  const modelEligible = preferKiroModelSupport(providerName,
+    eligibleFailoverAccounts(providerName, now, classifyModelFamilyForQuota(providerName, requestedModelId)),
+    requestedModelId, config);
+  const activeLacks = (providerName === "kiro" || providerName === "google-antigravity")
+    && !!active && !!requestedModelId
+    && accountListsModel(providerName, active, requestedModelId) === false;
+  const listingSibling = activeLacks
+    ? modelEligible.find(id => id !== active && (providerName === "kiro"
+      ? kiroModelListingHasRoom(config, id, requestedModelId!)
+      : accountListsModel(providerName, id, requestedModelId!) === true))
+    : undefined;
+  if (listingSibling) return listingSibling;
+
+  // A configured strategy answers this question itself. Both guards below exist to protect the
+  // QUOTA answer, and both are fatal to the other two: hasHeadroomEvidence refuses every
+  // provider with no quota data, which is exactly where round-robin is the point, and the
+  // healthy-active return fires before autoSwitchThreshold can ever be read, so fill-first
+  // would never reach its own test. Cooldowns and reauth are still honoured inside each pick.
   const strategy = activeGenericStrategy(config, providerName);
+  if (strategy === "least-loaded" && providerName === "kiro") {
+    const family = classifyModelFamilyForQuota(providerName, requestedModelId);
+    let candidates = eligibleFailoverAccounts(providerName, now, family);
+    const cap = config.providers?.kiro?.oauthAccountFailover?.maxConcurrentPerAccount;
+    if (typeof cap === "number" && Number.isInteger(cap) && cap >= 1 && cap <= 100) {
+      candidates = candidates.filter(id => accountInFlight("kiro", id) < cap);
+    }
+    candidates = preferKiroModelSupport(providerName, candidates, requestedModelId, config);
+    const picked = candidates.sort((a, b) => accountInFlight("kiro", a) - accountInFlight("kiro", b))[0];
+    return picked && picked !== active ? picked : null;
+  }
   if (strategy === "round-robin") {
-    const eligibleNow = eligibleAccountsForScope(providerName, now, scope, active);
+    const family = classifyModelFamilyForQuota(providerName, requestedModelId);
+    const eligibleNow = preferKiroModelSupport(providerName,
+      eligibleFailoverAccounts(providerName, now, family), requestedModelId, config);
     if (eligibleNow.length === 0) return null;
     // PEEK, not pick: this proposal is discardable, and advancing the ring for an account the
     // resolver then rejects would skip a turn for nothing. noteGenericPoolSelection commits.
@@ -744,81 +783,51 @@ export function preferredInitialAccount(
     return picked && picked !== active ? picked : null;
   }
   if (strategy === "fill-first") {
-    const picked = pickFillFirstGenericAccount(config, providerName, active, now, requestedModelId);
+    const picked = pickFillFirstGenericAccount(config, providerName, active, now, requestedModelId, accountRows);
     return picked && picked !== active ? picked : null;
   }
 
-  // The PROACTIVE predicate, not the reactive one: this steers a request upstream has not
-  // refused, so `oauthAccountFailover.enabled: false` must still be able to refuse it.
-  if (isProactivePreferenceEnabled(config, providerName, now)) {
-    const activeRow = selected.accounts.find(account => account.id === active);
-    if (activeRow && activeRow.needsReauth !== true
-      && !isCooled(providerName, activeRow.id, now, scope)
-      && !isAccountQuotaExhausted(providerName, activeRow.id, requestedModelId)) return null;
-
-    // Evidence is required BEFORE eligibility narrows the field. Without this, a provider
-    // with no quota data at all could still be redirected: cool the active account with a
-    // 429 and the eligible list collapses to one candidate, which any ranking returns
-    // unchanged — an answer that looks ranked but was never measured. The no-op guarantee
-    // for quota-less providers has to be checked on the full roster.
-    if (!hasHeadroomEvidence(providerName, order, requestedModelId)) return null;
-
-    return pickSurvivor(providerName, order, active, now, scope, requestedModelId, true);
-  }
-
-  // Cooldown avoidance is not proactive ranking: we already refused this account×model
-  // (or the whole account) on a previous request. Presence is still required, and this half
-  // deliberately does NOT consult the knob — it only moves a request off an account we hold
-  // positive evidence against.
-  if (!hasFailoverAccountQuorum(providerName, now)) return null;
   const activeRow = selected.accounts.find(account => account.id === active);
-  if (activeRow && activeRow.needsReauth !== true
-    && !isCooled(providerName, activeRow.id, now, scope)
-    && !isAccountQuotaExhausted(providerName, activeRow.id, requestedModelId)) return null;
-  return pickSurvivor(providerName, order, active, now, scope, requestedModelId, false);
-}
+  if (activeRow && activeRow.paused !== true && activeRow.needsReauth !== true
+    && !isCooled(providerName, activeRow.id, now, classifyModelFamilyForQuota(providerName, requestedModelId))
+    && !isAccountQuotaExhausted(providerName, activeRow.id, requestedModelId, activeRow)) return null;
 
-/**
- * Walk the ring from the active account and name the account to use instead, or null.
- *
- * Ranking only applies when the caller established evidence: with nothing measured the roster
- * order wins, which is what keeps a quota-less provider's traversal byte-identical to the
- * pre-ranking one. Cooldowns are respected here, unlike in the presence count: this picks the
- * account to send to right now, and one inside its window is the single candidate we hold
- * positive evidence against.
- */
-function pickSurvivor(
-  providerName: string,
-  order: string[],
-  active: string | undefined,
-  now: number,
-  scope: GenericCooldownScope | undefined,
-  requestedModelId: string | null | undefined,
-  rank: boolean,
-): string | null {
-  const realmIds = workbuddySameRealmIds(providerName, active);
-  const eligible = order
-    .filter(id => !isCooled(providerName, id, now, scope))
-    .filter(id => !realmIds || realmIds.has(id));
+  // Evidence is required BEFORE eligibility narrows the field. Without this, a provider
+  // with no quota data at all could still be redirected: cool the active account with a
+  // 429 and the eligible list collapses to one candidate, which any ranking returns
+  // unchanged — an answer that looks ranked but was never measured. The no-op guarantee
+  // for quota-less providers has to be checked on the full roster.
+  if (!hasHeadroomEvidence(providerName, order, requestedModelId, accountRows)) return null;
+
+  // Cooldowns are respected here, unlike in the presence count: this picks the account to
+  // send to right now, and one inside its 429 window is the single candidate we hold
+  // positive evidence against.
+  const eligible = preferKiroModelSupport(providerName,
+    order.filter(id => !isCooled(providerName, id, now, classifyModelFamilyForQuota(providerName, requestedModelId))),
+    requestedModelId, config);
   if (eligible.length === 0) return null;
+
   // Start the ring at the active account so an unranked outcome reproduces today's choice.
   const start = active ? order.indexOf(active) : -1;
   const ring = start >= 0 ? [...order.slice(start), ...order.slice(0, start)] : order;
   const candidates = ring.filter(id => eligible.includes(id));
   if (candidates.length === 0) return null;
-  const best = rank
-    ? rankAccountsByHeadroom(providerName, candidates, requestedModelId)[0] ?? null
-    : candidates[0] ?? null;
+
+  const best = rankAccountsByHeadroom(providerName, candidates, requestedModelId, accountRows)[0] ?? null;
   // Nothing to do when the ranking agrees with the account we would have used anyway.
+  //
+  // A proposal still needs guarded selection commit after credential resolution: a
+  // removal, reauth verdict, or manual choice can arrive during that await.
   return best && best !== active ? best : null;
 }
 
 /** Earliest remaining cooldown, for a client-facing Retry-After when every account is cooled. */
-export function genericFailoverRetryAfterSeconds(providerName: string, now = Date.now()): number | null {
+export function genericFailoverRetryAfterSeconds(providerName: string, now = Date.now(), accountId?: string): number | null {
   const prefix = `${providerName}\u0000`;
   let earliest: number | null = null;
   for (const [key, entry] of health) {
     if (!key.startsWith(prefix) || entry.cooldownUntil <= now) continue;
+    if (accountId && key !== `${prefix}${accountId}` && !key.startsWith(`${prefix}${accountId}\u0000`)) continue;
     if (earliest === null || entry.cooldownUntil < earliest) earliest = entry.cooldownUntil;
   }
   return earliest === null ? null : Math.max(1, Math.ceil((earliest - now) / 1000));
@@ -839,5 +848,26 @@ export function clearGenericFailoverHealth(providerName?: string): void {
   presence.delete(providerName);
   for (const key of [...health.keys()]) {
     if (key.startsWith(`${providerName}\u0000`)) health.delete(key);
+  }
+}
+
+/**
+ * Retire one account's superseded auth evidence after an explicit (re-)login. An
+ * auth cooldown recorded against the old grant must not hold out the fresh
+ * credential, so it leaves with the login rather than lingering until its
+ * deadline. Rate, quota, and suspension evidence is preserved: a re-login says
+ * nothing about those verdicts, and dropping them would make a throttled account
+ * eligible early. Entries bound to the still-current generation stay as well.
+ */
+export function clearGenericFailoverHealthForAccount(providerName: string, accountId: string): void {
+  const live = getAccountSet(providerName)?.accounts.find(row => row.id === accountId);
+  const current = live ? credentialGeneration(live.credential) : undefined;
+  const bare = `${providerName}\u0000${accountId}`;
+  for (const key of [...health.keys()]) {
+    if (key !== bare && !key.startsWith(`${bare}\u0000`)) continue;
+    const entry = health.get(key);
+    if (!entry || entry.cooldownSource !== "auth") continue;
+    if (current !== undefined && entry.identity === current) continue;
+    health.delete(key);
   }
 }

@@ -45,7 +45,7 @@ Go 包、Python 成长脚本、`workbuddy2api` 的 Redis/Web 面板：**接不�
 
 ## 2. 双域同一池（调度，不是协议）
 
-来源：`workbuddy2api` `internal/pool/*` + `internal/session/session.go`。  
+来源：`workbuddy2api` `internal/pool/*` + `internal/session/session.go`。
 ocx 已有：≥2 号才换、6004 模型级冷却（内存）、14018 整号、单请求最多 3 次、6004 **不改**你手动当前号。
 
 | ID | 功能 | 现状 | 复用 | 建议 | 裁决 |
@@ -67,7 +67,7 @@ ocx 已有：≥2 号才换、6004 模型级冷却（内存）、14018 整号、
 
 ## 3. 成长任务（和推理热路径分开）
 
-来源：`workbuddy2api` `internal/scheduler/*` + `internal/upstream/{travel,growth_*,report,trial}.go`。  
+来源：`workbuddy2api` `internal/scheduler/*` + `internal/upstream/{travel,growth_*,report,trial}.go`。
 现有：CN 每日 09:10 签到；**Global 账号跳过签到**（两边一致：国际站没有日常签到）。
 
 ### 3a 国际站积分
@@ -125,13 +125,13 @@ ocx 已有：≥2 号才换、6004 模型级冷却（内存）、14018 整号、
 
 ## 6. 建议施工切块（你勾完再排）
 
-**块 0 — 国际站能登录、能打通（P1–P9, P11, R1, R8）**  
+**块 0 — 国际站能登录、能打通（P1–P9, P11, R1, R8）**
 没有这块，后面的池都是 CN 加强。
 
-**块 1 — 双域同一池最小集（A1, A2, A4, Q1, Q9, P7）**  
+**块 1 — 双域同一池最小集（A1, A2, A4, Q1, Q9, P7）**
 realm 过滤 + 冷却落盘 + 英文 6004。行为接近「现在的 CN 多号，加上国际站账号能进同一 store」。
 
-**块 2 — 池变聪明（Q2–Q8, R3, R5）**  
+**块 2 — 池变聪明（Q2–Q8, R3, R5）**
 加权、分层、粘性、熔断、租约、防惊群。这是 wb2api 的产品差异，不是通站前提。
 
 **块 3 — 积分运营（G1 必做于国际站；G5–G10 全是 CN 农场，逐项勾）**

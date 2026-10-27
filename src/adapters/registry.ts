@@ -1,7 +1,10 @@
 import { createAnthropicAdapter } from "./anthropic";
 import { createAzureAdapter } from "./azure";
 import type { ProviderAdapter } from "./base";
+import { createClaudeCliAdapter } from "./claude-cli/adapter";
 import { withClinePassDeepSeekV4ToolReplayCompatibility } from "./cline-pass-deepseek-v4-tool-replay";
+import { withUniqueToolCallIds } from "./unique-tool-call-ids";
+import { createCodeBuddyAdapter } from "./codebuddy/adapter";
 import { createQoderAdapter } from "./qoder/adapter";
 import { createCommandCodeAdapter } from "./command-code";
 import { createCursorAdapter } from "./cursor";
@@ -9,11 +12,12 @@ import { createDevinAdapter } from "./devin";
 import { createGoogleAdapter } from "./google";
 import { createKiroAdapter } from "./kiro";
 import { createMimoFreeAdapter } from "./mimo-free";
-import { createCodebuddyAdapter } from "./codebuddy";
+import { createCodebuddyAdapter as createWorkbuddyAdapter } from "./codebuddy";
 import { createZaiPlanAdapter } from "./zai-plan";
 import { createOpenAIChatAdapter } from "./openai-chat";
 import { createOllamaNativeAdapter } from "./ollama-native";
 import { createResponsesPassthroughAdapter } from "./openai-responses";
+import { createZedAdapter } from "./zed";
 import type { OcxProviderConfig } from "../types";
 import { createAdapterTierMetadata } from "../providers/fastwire";
 import { withInputMediaGuard } from "./input-media-guard";
@@ -44,7 +48,8 @@ export type AdapterWire =
   | "google"
   | "kiro"
   | "cursor"
-  | "devin";
+  | "devin"
+  | "zed";
 
 export type AdapterMutationContract =
   | "codex-owned"
@@ -79,7 +84,7 @@ export const ADAPTER_REGISTRY = {
     wire: "openai-chat",
     mutation: "codex-owned",
     create: (provider: OcxProviderConfig, _context: AdapterFactoryContext) =>
-      withClinePassDeepSeekV4ToolReplayCompatibility(createOpenAIChatAdapter(provider)),
+      withUniqueToolCallIds(withClinePassDeepSeekV4ToolReplayCompatibility(createOpenAIChatAdapter(provider))),
   },
   "ollama-native": {
     wire: "ollama-native",
@@ -126,13 +131,23 @@ export const ADAPTER_REGISTRY = {
     mutation: "codex-owned",
     create: (provider: OcxProviderConfig, context: AdapterFactoryContext) => createDevinAdapter(provider, context),
   },
+  zed: {
+    wire: "zed",
+    mutation: "codex-owned",
+    create: (provider: OcxProviderConfig, _context: AdapterFactoryContext) => createZedAdapter(provider),
+  },
   "mimo-free": {
     contractParent: "openai-chat",
     create: (provider: OcxProviderConfig, _context: AdapterFactoryContext) => createMimoFreeAdapter(provider),
   },
   codebuddy: {
+    wire: "codebuddy",
+    mutation: "codex-owned",
+    create: (provider: OcxProviderConfig, _context: AdapterFactoryContext) => createCodeBuddyAdapter(provider),
+  },
+  workbuddy: {
     contractParent: "openai-chat",
-    create: (provider: OcxProviderConfig, _context: AdapterFactoryContext) => createCodebuddyAdapter(provider),
+    create: (provider: OcxProviderConfig, _context: AdapterFactoryContext) => createWorkbuddyAdapter(provider),
   },
   "zai-plan": {
     contractParent: "anthropic",
@@ -143,6 +158,13 @@ export const ADAPTER_REGISTRY = {
     wire: "codebuddy",
     mutation: "codex-owned",
     create: (provider: OcxProviderConfig, _context: AdapterFactoryContext) => createQoderAdapter(provider),
+  },
+  "claude-cli": {
+    // Claude Code speaks the same stream-json contract this repo already parses for CodeBuddy and
+    // Qoder, so the contract is inherited rather than restated. The family owns its args and env,
+    // and the CLI owns the credential: the adapter stores and injects none.
+    contractParent: "codebuddy",
+    create: (provider: OcxProviderConfig, _context: AdapterFactoryContext) => createClaudeCliAdapter(provider),
   },
 } as const satisfies Record<string, AdapterDefinition>;
 

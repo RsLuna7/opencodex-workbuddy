@@ -37,6 +37,29 @@ function randomHex(bytes: number): string {
   return Array.from(buf, b => b.toString(16).padStart(2, "0")).join("");
 }
 
+/**
+ * Shape a 32-hex id as a UUIDv4-looking string.
+ *
+ * The WorkBuddy desktop client's `X-Conversation-ID` is its session id, a dashed
+ * UUID; `X-Request-ID` / `X-Conversation-Message-ID` are 32-hex without dashes.
+ * Probed 2026-10-23 on the global site: the dash shape is what the capture shows,
+ * and a bare 32-hex value was also accepted, so this matches the observed client
+ * without depending on the leniency.
+ */
+function uuidShaped(hex32: string): string {
+  const h = (hex32 + randomHex(16)).slice(0, 32);
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+
+/**
+ * Stable `X-Conversation-ID` for one client conversation, without putting the client's own
+ * thread id on the wire. A hashed seed keeps multi-turn requests inside one desktop-shaped
+ * session while the raw identifier stays local.
+ */
+export function workbuddyConversationIdFrom(seed: string): string {
+  return uuidShaped(createHash("sha256").update(`wbconv:${seed}`).digest("hex").slice(0, 32));
+}
+
 export function workbuddyDesktopUserAgent(realm: WorkbuddyRealm): string {
   const platform = realm === "global" ? "WorkBuddy AI" : "WorkBuddy";
   return `WorkBuddy/${WORKBUDDY_CLIENT_VERSION} ${platform}/${WORKBUDDY_CLIENT_VERSION} CLI/${WORKBUDDY_CLI_VERSION}`;
@@ -92,9 +115,26 @@ export function applyWorkbuddyChatHeaders(
     ?? resolveWorkbuddyDeviceToken();
   if (deviceToken) headers["X-Device-Token"] = deviceToken;
 
-  const conversationRequestId = meta?.conversationRequestId?.trim() || randomHex(16);
   const messageId = randomHex(16);
-  if (meta?.conversationId?.trim()) headers["X-Conversation-ID"] = meta.conversationId.trim();
+  /**
+   * All three conversation headers are mandatory on the global site.
+   *
+   * Probed 2026-10-23 against www.workbuddy.ai with a live global account and the rest
+   * of this table held constant: omitting `X-Conversation-ID` answers HTTP 400
+   * `{"code":"11-128","msg":"request illegal"}`; adding it answers 200. A missing id was
+   * the normal case for every caller without `prompt_cache_key` (Codex, DSH, plain Chat
+   * clients), which is why all global traffic looked like a channel-verification failure.
+   *
+   * The value is the desktop client's session id: stable inside one conversation, distinct
+   * across conversations. A supplied seed is hashed so the client's own thread identifier
+   * never reaches the wire; without a seed each request mints its own id.
+   */
+  const seed = meta?.conversationId?.trim();
+  const conversationId = seed ? workbuddyConversationIdFrom(seed) : uuidShaped(randomHex(16));
+  const conversationRequestId = seed && meta?.conversationRequestId?.trim()
+    ? conversationId.replace(/-/g, "")
+    : randomHex(16);
+  headers["X-Conversation-ID"] = conversationId;
   headers["X-Conversation-Request-ID"] = conversationRequestId;
   headers["X-Conversation-Message-ID"] = messageId;
   headers["X-Request-ID"] = messageId;

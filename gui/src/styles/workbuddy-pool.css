@@ -1,0 +1,39 @@
+/* WorkBuddy pool cooldown panel (dashboard + provider overview).
+
+   The panel is a read-only projection of the server's pool state. Colour carries the one
+   distinction an operator is scanning for — still cooling vs. breaker-only — so it stays
+   on the amber/muted pair the rest of the quota surfaces already use, never a gradient. */
+
+.wb-pool { display: flex; flex-direction: column; gap: 10px; }
+
+.wb-pool-head { display: flex; flex-direction: column; gap: 2px; }
+
+.wb-pool-subtitle { margin: 0; font-size: var(--text-label); }
+
+.wb-pool-table { font-variant-numeric: tabular-nums; }
+
+.wb-pool-table th { white-space: nowrap; }
+
+.wb-pool-table td { vertical-align: top; }
+
+.wb-pool-account { display: block; font-weight: 600; }
+
+.wb-pool-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--text-label);
+  color: var(--muted);
+  font-variant-numeric: normal;
+}
+
+.wb-pool-credits { font-weight: 600; }
+
+/* The countdown is the number the operator is waiting on, so it gets the emphasised tone
+   rather than the same muted weight as the timestamp beside it. */
+.wb-pool-countdown { display: block; font-weight: 600; color: var(--amber); }
+
+/* Available rows are data, not decoration: they carry the credit balance, which is the
+   other half of what this panel answers. The badge stays quiet so cooling rows read first. */
+.wb-pool-ready { white-space: nowrap; }
+
+.wb-pool-hint { margin: 0; font-size: var(--text-label); }

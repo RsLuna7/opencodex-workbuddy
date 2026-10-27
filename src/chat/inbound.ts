@@ -36,7 +36,7 @@ export function assertChatCompletionsRoutingBody(raw: unknown): asserts raw is C
 const OUTPUT_CONFIG_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 const OUTPUT_CONFIG_SUMMARIES = new Set(["auto", "concise", "detailed", "none"]);
 
-function contentToText(content: unknown): string {
+export function contentToText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   const parts: string[] = [];
@@ -57,11 +57,21 @@ function contentToText(content: unknown): string {
 // route-eligibility predicate and this translator cannot drift apart again.
 const imageUrlFromPart = chatImageUrlFromPart;
 
-function videoUrlFromPart(part: Rec): string | null {
+/**
+ * A caller's video part, with the `processing` mode Gemini's agentic video
+ * understanding is requested by (#3271). The object form is the only one that
+ * can carry it — `video_url` as a bare string has nowhere to put it.
+ */
+export function videoFromPart(part: Rec): { url: string; processing?: string } | null {
   if (part.type !== "video_url") return null;
   const videoUrl = part.video_url;
-  if (typeof videoUrl === "string" && videoUrl.length > 0) return videoUrl;
-  if (isRec(videoUrl) && typeof videoUrl.url === "string" && videoUrl.url.length > 0) return videoUrl.url;
+  if (typeof videoUrl === "string" && videoUrl.length > 0) return { url: videoUrl };
+  if (isRec(videoUrl) && typeof videoUrl.url === "string" && videoUrl.url.length > 0) {
+    const processing = typeof videoUrl.processing === "string" && videoUrl.processing.length > 0
+      ? videoUrl.processing
+      : undefined;
+    return { url: videoUrl.url, ...(processing ? { processing } : {}) };
+  }
   return null;
 }
 
@@ -91,9 +101,13 @@ function userContentToBlocks(content: unknown): Rec[] {
       });
       continue;
     }
-    const videoUrl = videoUrlFromPart(raw);
-    if (videoUrl) {
-      blocks.push({ type: "input_video", video_url: videoUrl });
+    const video = videoFromPart(raw);
+    if (video) {
+      blocks.push({
+        type: "input_video",
+        video_url: video.url,
+        ...(video.processing ? { processing: video.processing } : {}),
+      });
       continue;
     }
     const file = fileFromPart(raw);
@@ -109,7 +123,7 @@ function userContentToBlocks(content: unknown): Rec[] {
  * was dropped in silence (#5212). A part with no inline bytes is still not translatable and is
  * left to the untranslated-media refusal, which runs before this loop.
  */
-function fileFromPart(part: Rec): Rec | null {
+export function fileFromPart(part: Rec): Rec | null {
   if (part.type !== "file" && part.type !== "input_file") return null;
   const file = isRec(part.file) ? part.file : part;
   const fileData = file.file_data;
@@ -129,7 +143,7 @@ function fileFromPart(part: Rec): Rec | null {
  * Only representable plaintext is read. No signature, encrypted payload or
  * provider-issued item id is reconstructed — see the reasoning item built below.
  */
-function assistantReasoningText(msg: Rec): string | undefined {
+export function assistantReasoningText(msg: Rec): string | undefined {
   if (typeof msg.reasoning_content === "string" && msg.reasoning_content.length > 0) {
     return msg.reasoning_content;
   }
@@ -167,7 +181,27 @@ function pushSystemText(parts: string[], content: unknown): void {
   if (text) parts.push(text);
 }
 
-function toolCallsToItems(toolCalls: unknown, input: Rec[], knownNameByCallId: Map<string, string>): void {
+/**
+ * A mid-conversation instruction, as the input item the rest of the pipeline already reads.
+ *
+ * The role is `developer` rather than `system` for two reasons that both bite. The native
+ * ChatGPT backend refuses a `role:"system"` item inside `input`, and canonical forwarding
+ * folds every message-shaped `system` item back onto `instructions`
+ * (src/adapters/openai-responses/canonical-forward.ts), which would undo the placement one hop
+ * later. `developer` is first-class in responsesRequestSchema, survives parseRequest as a
+ * chronological conversation message, and is exactly what src/claude/inbound.ts already emits
+ * for the same shape.
+ */
+function developerInstructionItem(text: string): Rec {
+  return { type: "message", role: "developer", content: [{ type: "input_text", text }] };
+}
+
+function toolCallsToItems(
+  toolCalls: unknown,
+  input: Rec[],
+  knownNameByCallId: Map<string, string>,
+  awaitingToolResult: Set<string>,
+): void {
   if (!Array.isArray(toolCalls)) return;
   for (const raw of toolCalls) {
     if (!isRec(raw)) continue;
@@ -187,7 +221,29 @@ function toolCallsToItems(toolCalls: unknown, input: Rec[], knownNameByCallId: M
     if (!name) throw new ChatCompletionsRequestError("tool_calls entries require function.name");
     knownNameByCallId.set(callId, name);
     input.push({ type: "function_call", call_id: callId, name, arguments: args });
+    awaitingToolResult.add(callId);
   }
+}
+
+function legacyFunctionCallToItem(
+  value: unknown,
+  input: Rec[],
+  knownNameByCallId: Map<string, string>,
+  awaitingToolResult: Set<string>,
+  sequence: number,
+): { callId: string; name: string } | null {
+  if (value === undefined) return null;
+  if (!isRec(value) || typeof value.name !== "string" || value.name.length === 0) {
+    throw new ChatCompletionsRequestError("assistant function_call requires a name");
+  }
+  const args = typeof value.arguments === "string"
+    ? value.arguments
+    : JSON.stringify(value.arguments ?? {});
+  const callId = `call_legacy_${String(sequence).padStart(4, "0")}`;
+  knownNameByCallId.set(callId, value.name);
+  awaitingToolResult.add(callId);
+  input.push({ type: "function_call", call_id: callId, name: value.name, arguments: args });
+  return { callId, name: value.name };
 }
 
 function toolsToResponses(tools: unknown): Rec[] | undefined {
@@ -222,6 +278,24 @@ function toolsToResponses(tools: unknown): Rec[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
+function legacyFunctionsToResponses(functions: unknown): Rec[] | undefined {
+  if (functions === undefined) return undefined;
+  if (!Array.isArray(functions)) throw new ChatCompletionsRequestError("functions must be an array");
+  const out: Rec[] = [];
+  for (const raw of functions) {
+    if (!isRec(raw) || typeof raw.name !== "string" || raw.name.length === 0) {
+      throw new ChatCompletionsRequestError("functions entries require a name");
+    }
+    out.push({
+      type: "function",
+      name: raw.name,
+      ...(typeof raw.description === "string" ? { description: raw.description } : {}),
+      ...(isRec(raw.parameters) ? { parameters: raw.parameters } : {}),
+    });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 function toolChoiceToResponses(choice: unknown, body: Rec): void {
   if (choice === undefined || choice === null) return;
   if (choice === "auto" || choice === "none" || choice === "required") {
@@ -246,6 +320,18 @@ function toolChoiceToResponses(choice: unknown, body: Rec): void {
   if (isRec(choice.function) && typeof choice.function.name === "string") {
     body.tool_choice = { type: "function", name: choice.function.name };
   }
+}
+
+function legacyFunctionChoiceToResponses(choice: unknown, body: Rec): void {
+  if (choice === undefined || choice === null) return;
+  if (choice === "auto" || choice === "none") {
+    body.tool_choice = choice;
+    return;
+  }
+  if (!isRec(choice) || typeof choice.name !== "string" || choice.name.length === 0) {
+    throw new ChatCompletionsRequestError("function_call requires auto, none, or a function name");
+  }
+  body.tool_choice = { type: "function", name: choice.name };
 }
 
 /**
@@ -368,21 +454,57 @@ export function chatCompletionsToResponsesBody(raw: unknown): Rec {
   // Recover replace-style tool calls incrementally instead of rebuilding the
   // call-id index from the entire translated transcript for every message.
   const knownNameByCallId = new Map<string, string>();
+  const legacyAwaiting: Array<{ callId: string; name: string }> = [];
+  let legacyCallSequence = 0;
+  // Tool calls whose result has not arrived yet. Several adapters need a call and its output
+  // to stay adjacent — Kiro refuses an interrupted pair (src/adapters/kiro/payload.ts) and the
+  // Anthropic and Google mappers synthesize a missing result — so an instruction that arrives
+  // inside an open batch waits for the batch to drain instead of splitting it.
+  const awaitingToolResult = new Set<string>();
+  const heldInstructions: string[] = [];
+  const releaseHeldInstructions = (): void => {
+    if (heldInstructions.length === 0) return;
+    input.push(developerInstructionItem(heldInstructions.join("\n\n")));
+    heldInstructions.length = 0;
+  };
+  // A user or assistant turn ends any open tool batch, so held text rejoins the timeline
+  // before that turn rather than drifting past it.
+  const beginConversationTurn = (): void => {
+    releaseHeldInstructions();
+    awaitingToolResult.clear();
+    legacyAwaiting.length = 0;
+  };
 
   for (const msg of raw.messages) {
     if (!isRec(msg)) continue;
     const role = typeof msg.role === "string" ? msg.role : "";
     switch (role) {
       case "system":
-      case "developer":
-        pushSystemText(systemParts, msg.content);
+      case "developer": {
+        // A leading block is this request's instructions and keeps that treatment: it is the
+        // prompt head, and hoisting it is what the upstream prefix cache wants.
+        if (input.length === 0) {
+          pushSystemText(systemParts, msg.content);
+          break;
+        }
+        // Past the first turn the slot carries meaning. `U1 -> A1 -> D2 -> U2` says D2 applies
+        // to U2 and not to U1, and folding it into `instructions` moved it ahead of both while
+        // rewriting the prompt head on every turn that carried one. The outbound adapter has
+        // preserved this slot since #4161; the position was already gone by the time it ran.
+        const text = contentToText(msg.content).trim();
+        if (!text) break;
+        if (awaitingToolResult.size > 0) heldInstructions.push(text);
+        else input.push(developerInstructionItem(text));
         break;
+      }
       case "user": {
+        beginConversationTurn();
         const blocks = userContentToBlocks(msg.content);
         if (blocks.length > 0) input.push({ type: "message", role: "user", content: blocks });
         break;
       }
       case "assistant": {
+        beginConversationTurn();
         // A reasoning item precedes the assistant message it belongs to: the
         // Responses assistant item schema admits only output content blocks, so there
         // is no attachment point on the message itself, and the parser buffers a
@@ -405,7 +527,19 @@ export function chatCompletionsToResponsesBody(raw: unknown): Rec {
         }
         const blocks = assistantContentToBlocks(msg.content);
         if (blocks.length > 0) input.push({ type: "message", role: "assistant", content: blocks });
-        if (msg.tool_calls !== undefined) toolCallsToItems(msg.tool_calls, input, knownNameByCallId);
+        if (msg.tool_calls !== undefined) {
+          toolCallsToItems(msg.tool_calls, input, knownNameByCallId, awaitingToolResult);
+        }
+        if (msg.function_call !== undefined && msg.function_call !== null) {
+          const call = legacyFunctionCallToItem(
+            msg.function_call,
+            input,
+            knownNameByCallId,
+            awaitingToolResult,
+            ++legacyCallSequence,
+          );
+          if (call) legacyAwaiting.push(call);
+        }
         break;
       }
       case "function": {
@@ -416,6 +550,17 @@ export function chatCompletionsToResponsesBody(raw: unknown): Rec {
             "Legacy function-result image translation is not implemented. Use tool_calls and role:tool with tool_call_id.",
           );
         }
+        const name = typeof msg.name === "string" ? msg.name : "";
+        if (!name) throw new ChatCompletionsRequestError("function messages require a name");
+        const pendingIndex = legacyAwaiting.findIndex(call => call.name === name);
+        if (pendingIndex < 0) {
+          throw new ChatCompletionsRequestError(`function result has no pending call named ${name}`);
+        }
+        const [call] = legacyAwaiting.splice(pendingIndex, 1);
+        const output = contentToText(msg.content);
+        input.push({ type: "function_call_output", call_id: call!.callId, output });
+        awaitingToolResult.delete(call!.callId);
+        if (awaitingToolResult.size === 0) releaseHeldInstructions();
         break;
       }
       case "tool": {
@@ -428,12 +573,15 @@ export function chatCompletionsToResponsesBody(raw: unknown): Rec {
           ? blocks.filter(part => part.type === "input_text" || part.type === "input_image")
           : contentToText(msg.content);
         input.push({ type: "function_call_output", call_id: callId, output });
+        awaitingToolResult.delete(callId);
+        if (awaitingToolResult.size === 0) releaseHeldInstructions();
         break;
       }
       default:
         break;
     }
   }
+  releaseHeldInstructions();
 
   if (input.length === 0 && systemParts.length === 0) {
     throw new ChatCompletionsRequestError("messages must include at least one user/assistant/tool turn");
@@ -448,9 +596,39 @@ export function chatCompletionsToResponsesBody(raw: unknown): Rec {
 
   if (systemParts.length > 0) body.instructions = systemParts.join("\n\n");
 
-  const tools = toolsToResponses(raw.tools);
-  if (tools) body.tools = tools;
-  toolChoiceToResponses(raw.tool_choice, body);
+  const tools = [
+    ...(toolsToResponses(raw.tools) ?? []),
+    ...(legacyFunctionsToResponses(raw.functions) ?? []),
+  ];
+  if (tools.length > 0) body.tools = tools;
+  applyChatSettings(raw, body);
+  return body;
+}
+
+/**
+ * The request settings of a Chat body as a Responses body with no conversation: `input` is
+ * empty and there are no `instructions` or `tools`. The Antigravity direct lane hands this to
+ * the Responses core so routing, effort policy, tier and logging keep reading the fields they
+ * read today, while the conversation is decoded straight into the IR
+ * (`src/protocols/codecs/chat-ir.ts`). Field order and validation are the bridge body's own:
+ * both are built by `applyChatSettings`.
+ */
+export function chatSettingsToResponsesBody(raw: unknown): Rec {
+  assertChatCompletionsRoutingBody(raw);
+  const body: Rec = {
+    model: raw.model,
+    input: [],
+    stream: raw.stream === true,
+    store: false,
+  };
+  applyChatSettings(raw, body);
+  return body;
+}
+
+/** Everything after the conversation and tool catalog: choice, limits, sampling, reasoning, format. */
+function applyChatSettings(raw: ChatCompletionsRoutingBody, body: Rec): void {
+  if (raw.tool_choice !== undefined) toolChoiceToResponses(raw.tool_choice, body);
+  else legacyFunctionChoiceToResponses(raw.function_call, body);
 
   const maxTokens = typeof raw.max_completion_tokens === "number"
     ? raw.max_completion_tokens
@@ -485,6 +663,4 @@ export function chatCompletionsToResponsesBody(raw: unknown): Rec {
 
   const text = responseFormatToText(raw.response_format);
   if (text) body.text = text;
-
-  return body;
 }

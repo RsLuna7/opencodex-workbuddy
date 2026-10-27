@@ -382,6 +382,35 @@ describe("provider outbound GET transport", () => {
     }
   });
 
+  test("a SOCKS scheme-matched variable admits and binds the proxy instead of pin-connecting to fake-IP", async () => {
+    for (const key of proxyKeys) delete process.env[key];
+    process.env.HTTPS_PROXY = "socks5://127.0.0.1:9";
+    const { providerOutboundGet } = await import("../../src/lib/provider-outbound");
+    const { dependencies, captured } = directDependencies(new Response(null, { status: 204 }));
+    const resolveOptions: { allowMihomoIpv6FakeIp?: boolean }[] = [];
+    dependencies.resolveAddresses = mock(async (_url: string, options?: { allowMihomoIpv6FakeIp?: boolean }) => {
+      resolveOptions.push({ allowMihomoIpv6FakeIp: options?.allowMihomoIpv6FakeIp });
+      return {
+        hostname: "provider.example",
+        addresses: [{ address: "fdfe:dcba:9876::1", family: 6 }],
+        privateNetwork: false,
+      };
+    }) as ProviderOutboundDependencies["resolveAddresses"];
+
+    // Admission and transport must name the same proxy: the request rides the
+    // SOCKS binding the admission assumed, so the unreachable proxy rejects
+    // here. Pin-connecting to the fake-IP instead would be the inconsistency.
+    await expect(providerOutboundGet(
+      "custom",
+      { baseUrl: "https://provider.example/v1" },
+      "https://provider.example/v1/models",
+      {},
+      dependencies,
+    )).rejects.toThrow();
+    expect(resolveOptions).toEqual([{ allowMihomoIpv6FakeIp: true }]);
+    expect(captured.address).toBeUndefined();
+  });
+
   test("built-in ollama admits loopback discovery without an explicit allowPrivateNetwork flag (#758)", async () => {
     for (const key of proxyKeys) delete process.env[key];
     const { providerOutboundGet } = await import("../../src/lib/provider-outbound");
@@ -464,7 +493,11 @@ describe("provider outbound GET transport", () => {
     expect(override).toHaveBeenCalledTimes(1);
   });
 
+  // A cold Bun start plus the fixture's imports can exceed 12s on slow Windows runners. The child
+  // stays bounded and SIGKILLed below the case deadline, so a real hang still fails with its timing.
+  const PROXY_E2E_CHILD_MS = process.platform === "win32" ? 45_000 : 12_000;
   test("proxy mode reaches one real proxy across outbound, connection-test, and model-discovery paths", async () => {
+    const startedAt = performance.now();
     const childHome = mkdtempSync(join(tmpdir(), "ocx-provider-proxy-e2e-"));
     const child = Bun.spawn([
       process.execPath,
@@ -477,6 +510,9 @@ describe("provider outbound GET transport", () => {
       },
       stdout: "pipe",
       stderr: "pipe",
+      // Terminate and reap the fixture before the case deadline.
+      timeout: PROXY_E2E_CHILD_MS,
+      killSignal: "SIGKILL",
     });
 
     try {
@@ -486,9 +522,11 @@ describe("provider outbound GET transport", () => {
         child.exited,
       ]);
       if (exitCode !== 0) {
-        throw new Error(`provider outbound fixture exited ${exitCode}: ${stderr.trim()}`);
+        const bound = child.signalCode ? ` (${child.signalCode} after ${Math.round(performance.now() - startedAt)} ms; bound ${PROXY_E2E_CHILD_MS} ms)` : "";
+        throw new Error(`provider outbound fixture exited ${exitCode}${bound}: ${stderr.trim()}`);
       }
       const result = JSON.parse(stdout.trim()) as {
+        dnsLookups: string[];
         outbound: { status: number; body: string };
         allProxy: { status: number; body: string };
         managementProxy: Record<string, unknown>;
@@ -500,6 +538,12 @@ describe("provider outbound GET transport", () => {
         providerRequests: string[];
       };
 
+      expect(result.dnsLookups).toEqual([
+        "proxy-only.invalid",
+        "connection-proxy.invalid",
+        "proxy-models.invalid",
+        "all-proxy-only.invalid",
+      ]);
       expect(result.outbound).toEqual({
           status: 200,
           body: '{"data":[{"id":"proxied-model"}]}',
@@ -526,9 +570,11 @@ describe("provider outbound GET transport", () => {
       expect(result.providerRequests).toEqual(["/v1/models", "/v1/models", "/v1/models"]);
       expect(stderr).toContain("cannot be pinned locally");
     } finally {
+      if (child.exitCode === null) child.kill("SIGKILL");
+      await child.exited;
       removeTreeWithRetry(childHome);
     }
-  }, 15_000);
+  }, PROXY_E2E_CHILD_MS + 3_000);
 });
 
 describe("provider outbound POST transport", () => {
@@ -596,6 +642,153 @@ describe("provider outbound POST transport", () => {
       { headers: { authorization: "Bearer test-token" }, body: '{"project":"test-project"}' },
     )).rejects.toThrow(ProviderOutboundPolicyError);
     expect(calls).toBe(0);
+  });
+
+  test("admits a cleartext POST only for an opted-in local destination the row allows", async () => {
+    for (const key of proxyKeys) delete process.env[key];
+    const { providerOutboundPost, ProviderOutboundPolicyError } = await import("../../src/lib/provider-outbound");
+    const body = JSON.stringify({ model: "tev1:4b" });
+    // The real resolver classifies literals without DNS, so an admitted literal proves itself.
+    const pinnedOnly = () => {
+      const captured: { address?: string; body?: string } = {};
+      const dependencies: ProviderOutboundDependencies = {
+        allowLocalCleartextPost: true,
+        pinnedPost: mock(async (_url, pinned, sent) => {
+          captured.address = pinned.address;
+          captured.body = sent;
+          return new Response('{"answers":{}}', { status: 200 });
+        }),
+      };
+      return { captured, dependencies };
+    };
+    const provider = (url: string, allowPrivateNetwork = true) => ({ baseUrl: url, allowPrivateNetwork });
+
+    for (const [url, address] of [
+      ["http://127.0.0.1:11434/v1/systemone", "127.0.0.1"],
+      ["http://10.2.3.4:11434/v1/systemone", "10.2.3.4"],
+      ["http://172.20.0.5/v1/systemone", "172.20.0.5"],
+      ["http://192.168.1.10/v1/systemone", "192.168.1.10"],
+      ["http://[::1]:11434/v1/systemone", "::1"],
+      ["http://[::ffff:127.0.0.1]:11434/v1/systemone", "::ffff:7f00:1"],
+      ["http://[fd12:3456::7]/v1/systemone", "fd12:3456::7"],
+    ] as const) {
+      const admitted = pinnedOnly();
+      const response = await providerOutboundPost("ollama-tev1", provider(url), url, { body }, admitted.dependencies);
+      expect(await response.json()).toEqual({ answers: {} });
+      expect(admitted.captured).toEqual({ address, body });
+    }
+
+    // `localhost` must resolve inside the allowlist; a resolver answer outside it is refused.
+    const localhostUrl = "http://localhost:11434/v1/systemone";
+    const viaResolver = (address: string) => {
+      const direct = pinnedOnly();
+      return {
+        ...direct,
+        dependencies: {
+          ...direct.dependencies,
+          resolveAddresses: mock(async (target: string) => {
+            expect(target).toBe(localhostUrl);
+            return { hostname: "localhost", addresses: [{ address, family: address.includes(":") ? 6 : 4 }], privateNetwork: true };
+          }),
+        },
+      };
+    };
+    const localhost = viaResolver("127.0.0.1");
+    await providerOutboundPost("ollama-tev1", provider(localhostUrl), localhostUrl, { body }, localhost.dependencies);
+    expect(localhost.captured.address).toBe("127.0.0.1");
+    for (const address of ["93.184.216.34", "100.64.0.1"]) {
+      const escaped = viaResolver(address);
+      await expect(providerOutboundPost(
+        "ollama-tev1", provider(localhostUrl), localhostUrl, { body }, escaped.dependencies,
+      )).rejects.toThrow(ProviderOutboundPolicyError);
+      expect(escaped.captured.body).toBeUndefined();
+    }
+
+    const refusals: Array<{ name?: string; url: string; allowPrivateNetwork?: boolean; optedIn?: boolean }> = [
+      // No caller opt-in: the HTTPS-only POST gate is unchanged.
+      { url: "http://127.0.0.1:11434/v1/systemone", optedIn: false },
+      // The row's own explicit flag is required; a local-by-default registry name does not grant it.
+      { url: "http://127.0.0.1:11434/v1/systemone", allowPrivateNetwork: false },
+      { name: "ollama", url: "http://127.0.0.1:11434/v1/systemone", allowPrivateNetwork: false },
+      // Outside the narrow allowlist, even with every opt-in.
+      { url: "http://tev1.localhost:11434/v1/systemone" },
+      { url: "http://localhost.:11434/v1/systemone" },
+      { url: "http://decider.example/v1/systemone" },
+      { url: "http://93.184.216.34/v1/systemone" },
+      { url: "http://0.0.0.0:11434/v1/systemone" },
+      { url: "http://169.254.169.254/v1/systemone" },
+      { url: "http://100.64.1.2/v1/systemone" },
+      { url: "http://198.18.0.9/v1/systemone" },
+      { url: "http://172.32.0.1/v1/systemone" },
+      { url: "http://[64:ff9b:1::a00:1]/v1/systemone" },
+      { url: "http://[fe80::1]/v1/systemone" },
+      { url: "http://[::ffff:10.0.0.1]/v1/systemone" },
+      { url: "http://[::]/v1/systemone" },
+    ];
+    for (const refusal of refusals) {
+      const direct = pinnedOnly();
+      await expect(providerOutboundPost(
+        refusal.name ?? "ollama-tev1",
+        provider(refusal.url, refusal.allowPrivateNetwork ?? true),
+        refusal.url,
+        { body },
+        { ...direct.dependencies, ...(refusal.optedIn === false ? { allowLocalCleartextPost: false } : {}) },
+      )).rejects.toThrow(ProviderOutboundPolicyError);
+      expect(direct.captured.body).toBeUndefined();
+    }
+  });
+
+  test("never sends a cleartext POST through a proxy or its DNS-failure degradation", async () => {
+    const { providerOutboundPost, ProviderOutboundPolicyError } = await import("../../src/lib/provider-outbound");
+    const { DestinationDnsResolutionError } = await import("../../src/lib/destination-policy");
+    const url = "http://localhost:11434/v1/systemone";
+    const body = JSON.stringify({ model: "tev1:4b" });
+    let sends = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => { sends += 1; return new Response("{}"); }) as unknown as typeof fetch;
+    try {
+      const dependencies = (resolve: () => Promise<never> | Promise<unknown>): ProviderOutboundDependencies => ({
+        allowLocalCleartextPost: true,
+        resolveAddresses: mock(resolve) as unknown as ProviderOutboundDependencies["resolveAddresses"],
+        pinnedPost: mock(async () => { sends += 1; return new Response("{}"); }),
+      });
+      for (const key of proxyKeys) delete process.env[key];
+      process.env.HTTP_PROXY = "http://127.0.0.1:9";
+      // A global proxy applies (localhost is not in NO_PROXY), including when DNS then fails.
+      for (const resolve of [
+        async () => ({ hostname: "localhost", addresses: [{ address: "127.0.0.1", family: 4 }], privateNetwork: true }),
+        async () => { throw new DestinationDnsResolutionError("provider URL hostname localhost could not be resolved"); },
+      ]) {
+        await expect(providerOutboundPost(
+          "ollama-tev1", { baseUrl: url, allowPrivateNetwork: true }, url, { body }, dependencies(resolve),
+        )).rejects.toThrow(ProviderOutboundPolicyError);
+      }
+      // A provider-owned proxy route is refused the same way.
+      delete process.env.HTTP_PROXY;
+      await expect(providerOutboundPost(
+        "ollama-tev1",
+        { baseUrl: url, allowPrivateNetwork: true, proxy: "http://127.0.0.1:9" },
+        url,
+        { body },
+        dependencies(async () => ({ hostname: "localhost", addresses: [{ address: "127.0.0.1", family: 4 }], privateNetwork: true })),
+      )).rejects.toThrow(ProviderOutboundPolicyError);
+      // Without a proxy, a DNS failure is a refusal rather than a degraded send.
+      await expect(providerOutboundPost(
+        "ollama-tev1",
+        { baseUrl: url, allowPrivateNetwork: true },
+        url,
+        { body },
+        dependencies(async () => { throw new DestinationDnsResolutionError("provider URL hostname localhost could not be resolved"); }),
+      )).rejects.toThrow("could not be resolved");
+      // An injected executor must be given an address literal, not a name it resolves itself.
+      const executorProvider = { baseUrl: url, allowPrivateNetwork: true, fetch: globalThis.fetch };
+      await expect(providerOutboundPost(
+        "ollama-tev1", executorProvider, url, { body }, { allowLocalCleartextPost: true },
+      )).rejects.toThrow(ProviderOutboundPolicyError);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(sends).toBe(0);
   });
 });
 
@@ -737,12 +930,15 @@ describe("effectiveProxyFor picks the variable Bun fetch actually honours", () =
     expect(effectiveProxyFor(http, { all_proxy: "http://p:13" })).toBe("http://p:13");
     expect(effectiveProxyFor(http, { ALL_PROXY: "ftp://p:8" })).toBeNull();
     expect(effectiveProxyFor(http, { ALL_PROXY: "http://" })).toBeNull();
-    // A malformed or non-http(s) scheme-matched variable is not a proxy Bun fetch
-    // can use either: it must not count as "the proxy that applies".
+    // A SOCKS URL in a scheme-matched variable is a usable proxy: admission
+    // binds it explicitly and the transport follows, so it counts as applying.
+    expect(effectiveProxyFor(https, { HTTPS_PROXY: "socks5://p:9" })).toBe("socks5://p:9");
+    expect(effectiveProxyFor(http, { HTTP_PROXY: "socks5h://p:14" })).toBe("socks5h://p:14");
+    // A malformed or non-proxy-scheme scheme-matched variable is not a proxy
+    // Bun fetch can use either: it must not count as "the proxy that applies".
     expect(effectiveProxyFor(http, { HTTP_PROXY: "http://" })).toBeNull();
     expect(effectiveProxyFor(http, { HTTP_PROXY: "not a url" })).toBeNull();
     expect(effectiveProxyFor(https, { HTTPS_PROXY: "http://" })).toBeNull();
-    expect(effectiveProxyFor(https, { HTTPS_PROXY: "socks5://p:9" })).toBeNull();
     expect(effectiveProxyFor(https, { HTTPS_PROXY: "   " })).toBeNull();
     // A present-but-unusable scheme-matched variable fails closed rather than
     // falling through to ALL_PROXY: no usable proxy is guaranteed either way,

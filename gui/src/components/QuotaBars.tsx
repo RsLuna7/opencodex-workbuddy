@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import { Fragment, type CSSProperties, type ReactNode } from "react";
 import type { Locale, TFn } from "../i18n/shared";
 import { useI18n } from "../i18n/shared";
 import { IconAlert } from "../icons";
@@ -183,6 +183,8 @@ function bcp47(locale: Locale): string {
       return "tr-TR";
     case "vi":
       return "vi-VN";
+    case "pt":
+      return "pt-BR";
     default: {
       const _exhaustive: never = locale;
       return _exhaustive;
@@ -242,6 +244,7 @@ export default function QuotaBars({
   incompleteWindowKeys,
   incompleteCustomWindowLabels,
   observedAt,
+  afterWeekly,
 }: {
   quota: AccountQuota | null;
   plan?: string | null;
@@ -267,6 +270,8 @@ export default function QuotaBars({
    * look live.
    */
   observedAt?: number;
+  /** Compact-only slot after Week, or after the last row when Week is absent. */
+  afterWeekly?: ReactNode;
 }) {
   const { locale } = useI18n();
   const rows = buildQuotaRows(quota, plan, t);
@@ -279,7 +284,9 @@ export default function QuotaBars({
     </p>
   );
   if (rows.length === 0) {
-    if (!pending) return null;
+    if (!pending) return layout === "compact" && afterWeekly ? (
+      <div className={`codex-account-quota-slot quota-compact${className ? ` ${className}` : ""}`}>{afterWeekly}</div>
+    ) : null;
     if (layout === "stacked") {
       return (
         <div className={`quota-stacked quota-stacked--pending${className ? ` ${className}` : ""}`} aria-busy="true" role="status">
@@ -342,17 +349,20 @@ export default function QuotaBars({
     <div className={`codex-account-quota-slot quota-compact${className ? ` ${className}` : ""}`}>
       {observedLine}
       {rows.map(row => (
-        <QuotaRow
-          key={row.label}
-          credits={row.customLabel === SUBSCRIPTION_CREDITS_LABEL}
-          label={row.label}
-          percent={row.percent}
-          resetAt={row.resetAt}
-          threshold={threshold}
-          t={t}
-          locale={locale}
-        />
+        <Fragment key={row.label}>
+          <QuotaRow
+            credits={row.customLabel === SUBSCRIPTION_CREDITS_LABEL}
+            label={row.label}
+            percent={row.percent}
+            resetAt={row.resetAt}
+            threshold={threshold}
+            t={t}
+            locale={locale}
+          />
+          {row.windowKey === "weekly" && afterWeekly}
+        </Fragment>
       ))}
+      {!rows.some(row => row.windowKey === "weekly") && afterWeekly}
     </div>
   );
 }

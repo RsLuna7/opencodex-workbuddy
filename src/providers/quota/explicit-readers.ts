@@ -58,6 +58,8 @@ export async function readExplicitAccountQuota(
     case "cursor": result = await fetchCursorQuota(provider, accessToken); break;
     case "kimi": result = await fetchKimiQuota(provider, config, accessToken); break;
     case "command-code": result = await fetchCommandCodeQuota(provider, config, accessToken); break;
+    case "devin": result = await (await import("./devin")).fetchDevinQuota(provider, accessToken, credential.apiBaseUrl, config.baseUrl); break;
+    case "zai-plan": result = await (await import("./zai-plan")).fetchZaiPlanQuota(provider, credential); break;
     case "workbuddy": {
       const { fetchWorkbuddyQuotaReport } = await import("./workbuddy");
       const probed = await fetchWorkbuddyQuotaReport(provider, credential, accountId);

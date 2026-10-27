@@ -1,4 +1,4 @@
-import { parseRetryAfterFromMessage } from "./retry-delay";
+import { formatRetryAfterAdvice, parseRetryAfterFromMessage } from "./retry-delay";
 
 export interface OcxErrorPayload {
   message: string;
@@ -17,8 +17,16 @@ export const ENCRYPTED_FUNCTION_OUTPUT_REJECTION =
  * string for a client to be able to tell this apart from a provider rate limit.
  */
 export const SEND_BUDGET_EXHAUSTED_CODE = "request_send_budget_exhausted";
+export const SPEND_LEDGER_STORAGE_UNAVAILABLE_CODE = "spend_ledger_storage_unavailable";
+/**
+ * Wire code for the undeclared-tool guard's deterministic refusal. Endpoint translators
+ * read it to keep the refusal non-retryable instead of folding it into the transient
+ * upstream-error class. Declared here rather than in the guard module because the shared
+ * envelope formatter decides whether the identity survives serialization.
+ */
+export const UNDECLARED_TOOL_CALL_ERROR_CODE = "undeclared_tool_call";
 
-/** Canonical human-readable message paths used by Responses upstream failures. */
+/** First nonblank string across the canonical upstream error paths, in priority order. */
 export function upstreamErrorMessageFromPayload(payload: unknown): string | undefined {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
   const json = payload as {
@@ -31,14 +39,14 @@ export function upstreamErrorMessageFromPayload(payload: unknown): string | unde
       incomplete_details?: { message?: unknown };
     };
   };
-  const message = json.error?.message
-    ?? json.last_error?.message
-    ?? json.response?.error?.message
-    ?? json.response?.incomplete_details?.message
+  const messages = [json.error?.message,
+    json.last_error?.message,
+    json.response?.error?.message,
+    json.response?.incomplete_details?.message,
     // The Responses stream error event carries a flat message (type/code/message),
     // unlike the response.failed envelope the branches above already cover.
-    ?? (json.type === "error" ? json.message : undefined);
-  return typeof message === "string" ? message : undefined;
+    json.type === "error" ? json.message : undefined];
+  return messages.find((message): message is string => typeof message === "string" && message.trim().length > 0);
 }
 
 /** OpenAI / Codex hard block for high-risk cybersecurity activity (HTTP 400 or mid-stream). */
@@ -156,6 +164,93 @@ function isSubscriptionGateMessage(text: string): boolean {
   );
 }
 
+/**
+ * xAI (and similar Chat Completions gateways) sometimes refuse a turn with HTTP 403
+ * and a model-refusal sentence instead of 200 + finish_reason=content_filter.
+ * Codex treats that 403 as a transport failure, so the user message is never
+ * recorded as a completed turn and retries loop. Keep this allowlist narrow:
+ * entitlement / plan / model-access 403s must stay errors.
+ */
+const POLICY_REFUSAL_PHRASES = [
+  "i can't help with that request",
+  "i cannot help with that request",
+  "i'm unable to help with that request",
+  "i am unable to help with that request",
+] as const;
+
+function hasModelAccessCue(text: string): boolean {
+  return (
+    text.includes("not allowed to use this model")
+    || text.includes("not allowed to use this operation")
+  );
+}
+
+/**
+ * xAI plan and credit 403 wording. Checked only by the refusal matcher below: adding these to
+ * the global subscription classifier would also change status and error-code inference for
+ * every message-only error that happens to mention credits.
+ */
+function hasEntitlementCue(text: string): boolean {
+  return (
+    isSubscriptionGateMessage(text)
+    || text.includes("need a grok subscription")
+    || text.includes("run out of credits")
+  );
+}
+
+/** Lowercase, collapse whitespace, and strip trailing .!? so an exact phrase match is stable. */
+function normalizePolicyRefusalSentence(text: string): string {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[.!?]+$/g, "")
+    .trim();
+}
+
+/**
+ * True only when the extracted error sentence is exactly a known model-refusal
+ * phrase. JSON / "Provider error 403:" wrappers are unwrapped first. Extra
+ * plan, credit, entitlement, or model-access wording keeps the error path.
+ */
+export function isUpstreamPolicyRefusalMessage(text: string): boolean {
+  const extracted = extractPolicyRefusalText(text);
+  const originalLower = text.toLowerCase();
+  const extractedLower = extracted.toLowerCase();
+  if (hasEntitlementCue(originalLower) || hasEntitlementCue(extractedLower)) return false;
+  if (hasModelAccessCue(originalLower) || hasModelAccessCue(extractedLower)) return false;
+  const normalized = normalizePolicyRefusalSentence(extracted);
+  return (POLICY_REFUSAL_PHRASES as readonly string[]).includes(normalized);
+}
+
+/** HTTP 403 plus {@link isUpstreamPolicyRefusalMessage}; other statuses never rewrite. */
+export function isUpstreamPolicyRefusal(status: number, text: string): boolean {
+  return status === 403 && isUpstreamPolicyRefusalMessage(text);
+}
+
+/** Pull the human-readable refusal sentence out of a JSON or prefixed error body. */
+export function extractPolicyRefusalText(raw: string): string {
+  const trimmed = raw.trim();
+  try {
+    const parsed = JSON.parse(trimmed) as { error?: unknown; message?: unknown };
+    const nested = parsed.error;
+    if (typeof nested === "string" && nested.trim()) return nested.trim();
+    if (nested && typeof nested === "object") {
+      const msg = (nested as { message?: unknown; error?: unknown }).message
+        ?? (nested as { error?: unknown }).error;
+      if (typeof msg === "string" && msg.trim()) return msg.trim();
+    }
+    if (typeof parsed.message === "string" && parsed.message.trim()) return parsed.message.trim();
+  } catch {
+    /* not JSON */
+  }
+  // The proxy's own error text wraps the upstream JSON (`Provider error 403: {"error": ...}`),
+  // so the remainder after the prefix gets the same unwrapping.
+  const prefixed = trimmed.match(/^Provider error 403:\s*([\s\S]+)$/i);
+  if (prefixed?.[1]?.trim()) return extractPolicyRefusalText(prefixed[1]);
+  return trimmed;
+}
+
 function isLocalAclHardeningMessage(text: string): boolean {
   const secretPathHardening = text.includes("secret path") && (
     text.includes("acl") ||
@@ -258,16 +353,21 @@ export function isClientClosedMessage(text: string): boolean {
 
 /**
  * Ambiguous-reset refusal wording owned by this proxy (src/lib/upstream-retry.ts):
- * the upstream connection closed before any response arrived, so the request may
- * already have been processed and automatic replay was stopped. Matched narrowly
- * so a provider-sent message is never relabeled by it.
+ * the upstream exchange did not complete reliably, so the request may already have
+ * been processed and automatic replay was stopped. Matched narrowly so a
+ * provider-sent message is never relabeled by it.
  */
 export function isUpstreamResetReplayRefusedMessage(text: string): boolean {
-  return text.toLowerCase().includes("connection closed before a response was received");
+  return text.toLowerCase().includes(
+    "the upstream exchange did not complete reliably. the request may already have been processed",
+  );
 }
 
 export function classifyError(status: number, type: string, message: string): OcxErrorPayload {
   const text = message.toLowerCase();
+  if (type === SPEND_LEDGER_STORAGE_UNAVAILABLE_CODE) {
+    return { message, type: "server_error", code: SPEND_LEDGER_STORAGE_UNAVAILABLE_CODE };
+  }
   if (type === "previous_response_not_found") {
     return { message, type: "invalid_request_error", code: "previous_response_not_found" };
   }
@@ -312,7 +412,8 @@ export function classifyError(status: number, type: string, message: string): Oc
     text.includes("context window") ||
     text.includes("context length") ||
     text.includes("maximum context") ||
-    text.includes("too many tokens")
+    text.includes("too many tokens") ||
+    (status === 400 && /\binput token count(?:\s*\([\d,]+\))?\s+exceeds\s+the maximum number of tokens allowed\b/.test(text))
   ) {
     return { message, type: "invalid_request_error", code: "context_length_exceeded" };
   }
@@ -541,10 +642,30 @@ export function adapterFailureFromMessage(message: string): { httpStatus: number
             : httpStatus === 400
               ? "invalid_request_error"
               : "upstream_error";
-  return {
-    httpStatus,
-    error: classifyError(httpStatus, errorType, finalMessage),
-  };
+  const error = classifyError(httpStatus, errorType, finalMessage);
+  if (httpStatus === 429 && error.type === "rate_limit_error"
+    && ["rate_limit_exceeded", "slow_down"].includes(error.code ?? "")) {
+    error.message = formatRetryAfterAdvice(message) ?? error.message;
+  }
+  return { httpStatus, error };
+}
+
+/** Narrow structured classes carried through a synthesized bare-error terminal. */
+export function recognizedUpstreamError(error: { type?: unknown; code?: unknown }):
+  { type: string; code: string; httpStatus: 429 | 503 } | undefined {
+  const code = typeof error.code === "string" ? error.code : undefined;
+  // An explicit unknown code must not gain a recognized class from its type or copy.
+  if (code !== undefined && !["rate_limit_exceeded", "rate_limit_error", "server_is_overloaded", "overloaded_error"].includes(code)) return undefined;
+  if (code === "rate_limit_exceeded" || code === "rate_limit_error"
+    || (code === undefined && error.type === "rate_limit_error")) {
+    return { type: "rate_limit_error", code: code ?? "rate_limit_exceeded", httpStatus: 429 };
+  }
+  if (code === "server_is_overloaded" || code === "overloaded_error"
+    || (code === undefined && error.type === "overloaded_error")) {
+    return { type: error.type === "overloaded_error" ? "overloaded_error" : "server_error",
+      code: code ?? "server_is_overloaded", httpStatus: 503 };
+  }
+  return undefined;
 }
 
 /** Map a terminal Responses error object to the HTTP status we record in /api/logs. */
@@ -554,10 +675,13 @@ export function httpStatusFromTerminalError(error: {
   message?: string;
 } | undefined): number {
   if (!error) return 502;
+  if (error.code === SPEND_LEDGER_STORAGE_UNAVAILABLE_CODE) return 503;
   if (error.code === "client_closed_request" || error.code === "client_cancelled") return 499;
   if (isCyberPolicyCode(error.code) || (error.message ? isCyberPolicyMessage(error.message) : false)) {
     return 400;
   }
+  const recognized = recognizedUpstreamError(error);
+  if (recognized) return recognized.httpStatus;
   if (error.type === "rate_limit_error" || error.code === "rate_limit_exceeded") return 429;
   if (error.type === "authentication_error" || error.code === "invalid_api_key") return 401;
   if (

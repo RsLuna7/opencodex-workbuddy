@@ -407,8 +407,9 @@ export async function getZaiPlanVerifyParam(signal?: AbortSignal): Promise<strin
   if (!solving) {
     solving = (async () => {
       const { wait, release } = holdExclusive();
-      await wait;
       try {
+        await withAbort(wait, signal);
+        signal?.throwIfAborted();
         logOAuthEvent("ZCode Plan captcha solve starting", { provider: ZAI_PLAN_PROVIDER_LOG });
         await ensureChrome({ reveal: true });
         const expression = `new Promise((resolve, reject) => {
@@ -622,8 +623,9 @@ export async function zaiPlanBrowserFetch(input: {
   signal?: AbortSignal;
 }): Promise<ZaiPlanChromeResponse> {
   const { wait, release } = holdExclusive();
-  await wait;
   try {
+    await withAbort(wait, input.signal);
+    input.signal?.throwIfAborted();
     return await zaiPlanBrowserFetchLocked({ ...input, release });
   } catch (err) {
     release();

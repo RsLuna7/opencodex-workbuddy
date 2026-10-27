@@ -13,6 +13,8 @@ import type { AccountQuotaReading, ProviderUsageTotals } from "./types";
 import { authModeLabel } from "./ProviderRail";
 import type { ProviderUpdatePatch, ProviderUpdateResult } from "./types";
 import ProviderCurrentQuota from "./ProviderCurrentQuota";
+import WorkbuddyCooldownPanel from "./WorkbuddyCooldownPanel";
+import type { WorkbuddyCooldownAccount } from "./workbuddy-cooldown-model";
 import type { CatalogPreset } from "../provider-catalog/provider-presets";
 import ProviderSponsor from "./ProviderSponsor";
 
@@ -35,7 +37,9 @@ export default function ProviderOverview({
   item, preset, usageTotals, quotaReport, currentQuotaReading, onRefreshQuota, oauthEmail, oauth,
   apiBase, connectionIdentity,
   onEditSettings, onViewUsage, onUpdateProvider,
+  onCreateJevAuto,
   onReauthenticate, onCancelLogin, reauthBusy = false,
+  workbuddyAccounts,
 }: {
   item: WorkspaceItem;
   preset?: CatalogPreset;
@@ -51,10 +55,13 @@ export default function ProviderOverview({
   connectionIdentity?: string;
   onEditSettings?: () => void;
   onViewUsage?: () => void;
+  onCreateJevAuto?: () => void;
   onUpdateProvider?: (name: string, patch: ProviderUpdatePatch) => Promise<ProviderUpdateResult>;
   onReauthenticate?: () => void;
   onCancelLogin?: () => void;
   reauthBusy?: boolean;
+  /** WorkBuddy only: the pool roster that feeds the cooldown/credits panel. */
+  workbuddyAccounts?: readonly WorkbuddyCooldownAccount[];
 }) {
   const t = useT();
   const { locale } = useI18n();
@@ -200,6 +207,16 @@ export default function ProviderOverview({
         )}
       </section>
 
+      {item.adapter === "jev-decision" && onCreateJevAuto && (
+        <section className="pws-section" aria-label={t("cws.jev.create")}>
+          <h3 className="pws-section-title">{t("cws.jev.create")}</h3>
+          <p className="muted" style={{ marginTop: 0 }}>{t("cws.jev.setupHint")}</p>
+          <button type="button" className="btn btn-primary btn-sm" onClick={onCreateJevAuto}>
+            {t("cws.jev.create")}
+          </button>
+        </section>
+      )}
+
       <section className="pws-section" aria-label={t("pws.authSummary")}>
         <h3 className="pws-section-title">{t("pws.authSummary")}</h3>
         {needsAttention ? (
@@ -249,6 +266,9 @@ export default function ProviderOverview({
           </div>
         )}
       </section>
+      {item.name === "workbuddy" && workbuddyAccounts && (
+        <WorkbuddyCooldownPanel accounts={workbuddyAccounts} locale={locale} />
+      )}
       <NotesSection item={item} onUpdateProvider={onUpdateProvider} />
       </div>
 

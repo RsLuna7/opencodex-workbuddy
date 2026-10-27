@@ -12,6 +12,13 @@ import { COMMAND_CODE_MODEL_REASONING_EFFORTS } from "../command-code-efforts";
 import { QODER_CN_MODELS, QODER_GLOBAL_MODELS, QODER_REASONING_EFFORTS } from "../qoder-models";
 import type { ProviderRegistryEntry } from "./types";
 import {
+  WORKBUDDY_MODELS,
+  WORKBUDDY_MODEL_CONTEXT_WINDOWS,
+  WORKBUDDY_MODEL_INPUT_MODALITIES,
+  WORKBUDDY_MODEL_MAX_OUTPUT_TOKENS,
+  WORKBUDDY_NO_VISION_MODELS,
+} from "./workbuddy-seeds";
+import {
   ZAI_GLM_53_MODELS,
   ZAI_GLM_5X_MODELS,
   ZAI_GLM_5X_SIDECAR_VISION_MODELS,
@@ -21,8 +28,13 @@ import {
   ZAI_GLM_5X_REASONING_EFFORTS,
   MINIMAX_MODELS,
   MINIMAX_MODEL_CONTEXT_WINDOWS,
+  MINIMAX_MODEL_INPUT_MODALITIES,
   MINIMAX_M3_REASONING_EFFORTS,
   MINIMAX_M3_REASONING_EFFORT_MAP,
+  MINIMAX_M31_FLASH_PREVIEW,
+  MINIMAX_M31_REASONING_EFFORTS,
+  MINIMAX_M31_DEFAULT_REASONING_EFFORT,
+  MINIMAX_REASONING_SPLIT_MODELS,
   THINKING_TOGGLE_EFFORTS,
   THINKING_TOGGLE_MAP,
   ZHIPU_BIGMODEL_MODELS,
@@ -33,6 +45,7 @@ import {
   DEEPSEEK_V4_LEGACY_MODELS,
   DEEPSEEK_GATEWAY_THINKING_MODELS,
   DEEPSEEK_VISION_PREVIEW_MODEL,
+  COMMAND_CODE_MIMO_CONTEXT_WINDOWS,
   COMMAND_CODE_MODEL_INPUT_MODALITIES,
   OPENCODE_FREE_DEEPSEEK_MODELS,
   OPENCODE_ZEN_TEXT_ONLY_MODELS,
@@ -58,10 +71,10 @@ import {
   VOLCENGINE_PLAN_TEXT_ONLY_MODELS,
   ALIBABA_INTL_TOKEN_PLAN_INPUT_MODALITIES,
   KIMI_API_MODELS,
-  KIMI_CODING_MODELS,
   KIMI_THINKING_MODELS,
   KIMI_CODING_NO_REASONING_MODELS,
   KIMI_API_NO_REASONING_MODELS,
+  KIMI_CODING_LIVE_MODELS,
   KIMI_CODING_REASONING_EFFORTS,
   KIMI_CODING_DEFAULT_REASONING_EFFORTS,
   KIMI_CODING_REASONING_EFFORT_MAPS,
@@ -93,9 +106,30 @@ import {
   STEPFUN_MODEL_INPUT_MODALITIES,
   STEPFUN_NO_VISION_MODELS,
   STEPFUN_REASONING_EFFORTS,
+  ANTHROPIC_MODELS,
+  ANTHROPIC_MODEL_CONTEXT_WINDOWS,
+  ANTHROPIC_MODEL_INPUT_MODALITIES,
+  ANTHROPIC_MODEL_REASONING_EFFORTS,
+  ANTHROPIC_REASONING_EFFORTS,
+  ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS,
 } from "./model-seeds";
 
 export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
+  {
+    // Verified 2026-09-21: docs.typesafe.ai/introduction/quickstart and /api document the fixed
+    // endpoint, Bearer auth, jev-latest, and TYPESAFE_API_KEY; typesafe.ai/legal/mca permits API integration.
+    id: "jev",
+    label: "TypeSafe JEV",
+    baseUrl: "https://api.typesafe.ai/v1/systemone",
+    adapter: "jev-decision",
+    authKind: "key",
+    credentialOnly: true,
+    dashboardUrl: "https://console.typesafe.ai",
+    liveModels: false,
+    apiKeyValidation: "unknown",
+    preserveCustomDestination: true,
+    note: "TypeSafe JEV decision service for the optional JEV Combo strategy. This credential-only preset does not publish a directly routable model.",
+  },
   {
     id: "baseten",
     label: "Baseten Model APIs",
@@ -156,6 +190,7 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     // (merges into v4-flash later).
     modelContextWindows: {
       [`deepseek/${DEEPSEEK_VISION_PREVIEW_MODEL}`]: 1_048_576,
+      ...COMMAND_CODE_MIMO_CONTEXT_WINDOWS,
     },
     modelInputModalities: COMMAND_CODE_MODEL_INPUT_MODALITIES,
     modelDiscovery: {
@@ -808,15 +843,30 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     // glm-5.3 carry live end-to-end evidence there (custom tools, reasoning replay, streaming,
     // multi-turn continuation).
     //
-    // That is deliberately NOT expressed as a modelWireDefaults pin. Pinning would move every
-    // existing Codex user of those models onto a different upstream with no config change, and
-    // one delta is unresolved: preserveReasoningContentModels below is read by the CHAT adapter,
-    // while the Responses serializer reads preserveResponsesReasoningContent, which this entry
-    // does not set. On the Responses wire those models would replay with blanked reasoning
-    // content -- less state than they carry today. Z.AI and DeepSeek set both flags together for
-    // exactly this reason. Until that flag is justified against this gateway, Responses stays a
-    // documented per-model modelAdapters opt-in;
-    // tests/providers/alibaba-token-plan-responses-optin.test.ts holds both halves.
+    // That evidence is now expressed as a modelWireDefaults pin scoped to Responses inbound
+    // only: Codex clients ride the native wire with zero translation hops, while chat and
+    // anthropic inbound keep the provider-wide chat wire and its measured prefix-cache
+    // behavior. The pin was held back until the one open delta was closed with its own live
+    // evidence: the Responses serializer replays reasoning content through the separate
+    // preserveResponsesReasoningContent flag, which the Chat-side preserveReasoningContentModels
+    // list does not cover. Measured 260922 on this gateway (#5188): a two-turn replay that
+    // round-trips a reasoning item WITH its plaintext content array is accepted (HTTP 200) and
+    // the model continues from it, so the flag is set beside the pins — the same pairing Z.AI
+    // and DeepSeek use. qwen3.7-plus is the one pinned model in thinkingBudgetModels, and its
+    // full low/medium/high/xhigh/max effort ladder is accepted as reasoning.effort strings on
+    // this wire (measured same day), so the Responses path does not need the numeric
+    // thinking_budget translation the Chat wire applies. The rest of the family stays a
+    // documented per-model modelAdapters opt-in; modelAdapters always wins over the pin in
+    // both directions.
+    // tests/providers/alibaba-token-plan-responses-optin.test.ts holds the opt-in half and the
+    // flag guard; tests/providers/alibaba-token-plan-wire-defaults.test.ts holds the pins.
+    // The intl sibling stays unpinned until the same four-axis verification runs against its
+    // gateway (its /responses route is registered, #5097).
+    modelWireDefaults: {
+      "qwen3.8-flash": { wire: "openai-responses", inbound: ["responses"] },
+      "qwen3.7-plus": { wire: "openai-responses", inbound: ["responses"] },
+      "glm-5.3": { wire: "openai-responses", inbound: ["responses"] },
+    },
     note: "Token Plan Personal Edition · China (Beijing)",
     modelInputModalities: ALIBABA_TOKEN_PLAN_INPUT_MODALITIES,
     modelContextWindows: ALIBABA_TOKEN_PLAN_CONTEXT_WINDOWS,
@@ -846,6 +896,10 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     directReasoningEffortModels: QWEN38_FAMILY,
     thinkingBudgetModels: ALIBABA_TOKEN_PLAN_QWEN_MODELS.filter(id => !QWEN38_FAMILY.includes(id)),
     preserveReasoningContentModels: ALIBABA_TOKEN_PLAN_PRESERVE_REASONING,
+    // Responses replay uses this provider-level flag, not the Chat-path model list above;
+    // measured live on this gateway (see the pin comment). The model list still covers a
+    // caller who opts back into Chat.
+    preserveResponsesReasoningContent: true,
     noVisionModels: ALIBABA_TOKEN_PLAN_NO_VISION,
     // The gateway accepts prompt_cache_key on every Token Plan chat model (probed 260902).
     promptCacheKey: true,
@@ -964,22 +1018,25 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     id: "minimax", label: "MiniMax — Coding Plan", baseUrl: "https://api.minimax.io/v1", adapter: "openai-chat", authKind: "key",
     dashboardUrl: "https://platform.minimax.io", defaultModel: "MiniMax-M3", models: MINIMAX_MODELS,
     modelContextWindows: MINIMAX_MODEL_CONTEXT_WINDOWS,
-    modelReasoningEfforts: { "MiniMax-M3": MINIMAX_M3_REASONING_EFFORTS },
-    modelDefaultReasoningEfforts: { "MiniMax-M3": "medium" },
+    modelInputModalities: MINIMAX_MODEL_INPUT_MODALITIES,
+    modelReasoningEfforts: { "MiniMax-M3": MINIMAX_M3_REASONING_EFFORTS, [MINIMAX_M31_FLASH_PREVIEW]: MINIMAX_M31_REASONING_EFFORTS },
+    modelDefaultReasoningEfforts: { "MiniMax-M3": "medium", [MINIMAX_M31_FLASH_PREVIEW]: MINIMAX_M31_DEFAULT_REASONING_EFFORT },
     modelReasoningEffortMap: { "MiniMax-M3": MINIMAX_M3_REASONING_EFFORT_MAP },
     preserveReasoningContentModels: MINIMAX_MODELS,
     // MiniMax-M3 low effort maps to thinking disabled, so a legitimate tool
     // round can carry no reasoning at all; only replay real recorded text,
     // never a fabricated placeholder (chatgpt-codex-connector P2 on #1205).
     requiresReasoningPlaceholderModels: [],
-    reasoningSplitModels: MINIMAX_MODELS,
+    // M3.1-Flash-Preview ignores reasoning_split and always answers with reasoning_content,
+    // so it stays off the split/details lists and replays as a reasoning_content string.
+    reasoningSplitModels: MINIMAX_REASONING_SPLIT_MODELS,
     // With reasoning_split the upstream returns thinking as a structured
     // reasoning_details array (cumulative text snapshots per stream chunk) and
     // requires that array back verbatim on the next turn — a reasoning_content
     // string replay is the native-format pass-back the docs say is unsupported.
     // Evidence: platform.minimax.io/docs/guides/text-m3-function-call and
     // /docs/api-reference/text-openai-api (verified 2026-09-01).
-    reasoningDetailsModels: MINIMAX_MODELS,
+    reasoningDetailsModels: MINIMAX_REASONING_SPLIT_MODELS,
     thinkingToggleModels: ["MiniMax-M3"],
     jawcodeBundle: "minimax", metadataModelIdNormalize: "case-insensitive", note: "Subscription Key or API Key",
   },
@@ -987,25 +1044,30 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     id: "minimax-cn", label: "MiniMax — Coding Plan (CN)", baseUrl: "https://api.minimaxi.com/v1", adapter: "openai-chat", authKind: "key",
     dashboardUrl: "https://platform.minimaxi.com", defaultModel: "MiniMax-M3", models: MINIMAX_MODELS,
     modelContextWindows: MINIMAX_MODEL_CONTEXT_WINDOWS,
-    modelReasoningEfforts: { "MiniMax-M3": MINIMAX_M3_REASONING_EFFORTS },
-    modelDefaultReasoningEfforts: { "MiniMax-M3": "medium" },
+    modelInputModalities: MINIMAX_MODEL_INPUT_MODALITIES,
+    modelReasoningEfforts: { "MiniMax-M3": MINIMAX_M3_REASONING_EFFORTS, [MINIMAX_M31_FLASH_PREVIEW]: MINIMAX_M31_REASONING_EFFORTS },
+    modelDefaultReasoningEfforts: { "MiniMax-M3": "medium", [MINIMAX_M31_FLASH_PREVIEW]: MINIMAX_M31_DEFAULT_REASONING_EFFORT },
     modelReasoningEffortMap: { "MiniMax-M3": MINIMAX_M3_REASONING_EFFORT_MAP },
     preserveReasoningContentModels: MINIMAX_MODELS,
     requiresReasoningPlaceholderModels: [],
-    reasoningSplitModels: MINIMAX_MODELS,
-    reasoningDetailsModels: MINIMAX_MODELS,
+    reasoningSplitModels: MINIMAX_REASONING_SPLIT_MODELS,
+    reasoningDetailsModels: MINIMAX_REASONING_SPLIT_MODELS,
     thinkingToggleModels: ["MiniMax-M3"],
     jawcodeBundle: "minimax", metadataModelIdNormalize: "case-insensitive", note: "中国区 Subscription Key",
   },
   {
     id: "kimi-code", label: "Kimi (coding)", baseUrl: "https://api.kimi.com/coding/v1", adapter: "openai-chat", authKind: "key",
-    dashboardUrl: "https://platform.moonshot.cn/console/api-keys", defaultModel: "kimi-k2.7-code",
+    // 260921: kimi-k2.7-code was retired from the coding endpoint; the kimi-for-coding alias
+    // is the stable ID and currently routes to K2.8 Preview (same as the OAuth preset).
+    dashboardUrl: "https://platform.moonshot.cn/console/api-keys", defaultModel: "kimi-for-coding",
     modelSuffixBracketStrip: true,
     // API-key form of the same Kimi Code Plan transport; keep cache affinity identical to OAuth.
     promptCacheKey: true,
     // Keep Responses tool-result adjacency aligned with the OAuth preset (#4726).
     requiresAdjacentResponsesToolResults: true,
-    models: KIMI_CODING_MODELS,
+    // 260921: same live-id picker as the OAuth preset — the retired k2.x ids are repaired
+    // in saved configs by MODEL_RENAMES, not offered on fresh installs.
+    models: KIMI_CODING_LIVE_MODELS,
     modelContextWindows: KIMI_CODING_MODEL_CONTEXT_WINDOWS,
     modelInputModalities: KIMI_CODING_MODEL_INPUT_MODALITIES,
     noReasoningModels: KIMI_CODING_NO_REASONING_MODELS,
@@ -1078,6 +1140,126 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     note: "EU-hosted AI gateway: one OpenAI-compatible endpoint and one key in front of 30+ providers. Bare model ids are pools (claude-sonnet-4-6, gpt-5.5) and Opper picks the route per request; vendor/model ids (anthropic/claude-sonnet-4-6) pin one provider. The catalogue is discovered live from /v3/compat/models with your key; the public list is at opper.ai/models. Token rates are the model providers' rates with no markup; Opper charges a 3% fee when you buy credits.",
   },
   {
+    // Sionic AI public contract and live streams/tools/images checked 2026-10-02:
+    // https://opengateway.ai/docs/reference/endpoints/models
+    // https://opengateway.ai/docs/reference/endpoints/responses
+    id: "opengateway",
+    label: "OpenGateway",
+    adapter: "openai-chat",
+    baseUrl: "https://apis.opengateway.ai/v1",
+    authKind: "key",
+    dashboardUrl: "https://opengateway.ai/api-keys",
+    liveModels: true,
+    // GET /v1/models is public and answers 200 for any Bearer value, so it cannot verify a key.
+    apiKeyValidation: "unknown",
+    preserveCustomDestination: true,
+    // Both cold-start seeds are active Sionic-served vision models with 1M context.
+    // GLM is the default, not a quality ranking: a verified, large-output coding seed.
+    defaultModel: "z-ai/glm-5.3-flash-ultrafast",
+    models: ["z-ai/glm-5.3-flash-ultrafast", "deepseek/deepseek-v4.1-flash-ultrafast", "openai/o3-pro"],
+    modelContextWindows: {
+      "z-ai/glm-5.3-flash-ultrafast": 1_000_000,
+      "deepseek/deepseek-v4.1-flash-ultrafast": 1_000_000,
+      "openai/o3-pro": 200_000,
+    },
+    modelMaxOutputTokens: { "z-ai/glm-5.3-flash-ultrafast": 131_072 },
+    modelInputModalities: {
+      "z-ai/glm-5.3-flash-ultrafast": ["text", "image"],
+      "deepseek/deepseek-v4.1-flash-ultrafast": ["text", "image"],
+      "openai/o3-pro": ["text"],
+    },
+    noVisionModels: ["openai/o3-pro"],
+    // #6877: on the Responses wire OpenGateway answers 400 once history replays native
+    // custom_tool_call/custom_tool_call_output items (Codex code-mode exec), and accepts the
+    // same request after the custom tool is lowered to a function. Same contract as xAI.
+    supportsResponsesCustomTools: false,
+    // Chat is the broad wire (77/80 active rows). o3-pro is Responses-only, on all
+    // inbounds. Only the two live-verified Sionic models bypass translation for Codex.
+    // Other OpenAI/Anthropic/Gemini rows stay on Chat until their Responses tool replay
+    // is independently verified; endpoint availability alone is not conformance evidence.
+    modelWireDefaults: {
+      "openai/o3-pro": "openai-responses",
+      "z-ai/glm-5.3-flash-ultrafast": { wire: "openai-responses", inbound: ["responses"] },
+      "deepseek/deepseek-v4.1-flash-ultrafast": { wire: "openai-responses", inbound: ["responses"] },
+    },
+    modelDiscovery: {
+      path: "models", // Public GET; lower-case ?status=active returns 400, so filter locally.
+      // Admit a row only on a wire it is served on: the Chat default needs chat_completions,
+      // and Responses-only rows are admitted only when pinned to Responses above. A future
+      // Responses-only row stays hidden until it is pinned, rather than 404ing on Chat.
+      filter: {
+        allOf: [{ path: ["status"], equalsAny: ["active"] }],
+        anyOf: [
+          { path: ["endpoints"], containsAny: ["chat_completions"] },
+          { path: ["id"], equalsAny: ["openai/o3-pro"] },
+        ],
+      },
+      preferFirst: [{ path: ["providers", "*", "id"], containsAny: ["sionic-ai"] }],
+    },
+    note: "Sionic AI's OpenAI-compatible gateway. Public live discovery lists active models served on Chat Completions (plus pinned Responses-only rows), with Sionic-served ultrafast models first. The public catalog cannot validate keys.",
+  },
+  {
+    // Public contract checked 2026-09-29: https://docs.tokenlab.sh/api-reference/models/list-models
+    // A supplied key is validated and scopes the catalog; anonymous discovery is also public.
+    id: "tokenlab",
+    label: "TokenLab",
+    adapter: "openai-chat",
+    baseUrl: "https://api.tokenlab.sh/v1",
+    authKind: "key",
+    dashboardUrl: "https://tokenlab.sh/dashboard/api?tab=keys",
+    // Standard sponsor under SPONSORS.md (agreement dated 2026-09-29). Pins the row in the
+    // picker and adds the chip; nothing about routing, discovery or defaults changes.
+    sponsor: { tier: "standard", url: "https://tokenlab.sh/r/OPENCODEX" },
+    liveModels: true,
+    preserveCustomDestination: true,
+    defaultModel: "gpt-5.6-terra",
+    models: ["gpt-5.6-terra"],
+    modelContextWindows: { "gpt-5.6-terra": 1_050_000 },
+    modelMaxOutputTokens: { "gpt-5.6-terra": 128_000 },
+    modelInputModalities: { "gpt-5.6-terra": ["text", "image"] },
+    // Per-model wires from `tokenlab.accepted_request_formats` (GET /v1/models/{id}, 2026-09-30).
+    // The provider stays on Chat, the released and end-to-end verified path, and every model
+    // accepts it. Models that also declare Responses use it for Codex (Responses inbound) only,
+    // so Chat and Anthropic clients skip a translation hop; an explicit modelAdapters entry wins.
+    // Claude ids ride Anthropic Messages through the endpoint-bound pin in src/types/wire.ts.
+    // gemini-3.8-flash declares Chat + Gemini native and stays on Chat. No delivery-policy
+    // header is sent: the API key's own policy stays authoritative.
+    modelWireDefaults: Object.fromEntries([
+      "gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "grok-4.7",
+      "deepseek-v4.1-flash", "deepseek-v4-pro", "kimi-k3", "glm-5.3",
+    ].map(id => [id, { wire: "openai-responses", inbound: ["responses"] }])),
+    modelDiscovery: {
+      path: "models",
+      query: { category: "chat" },
+      filter: {
+        allOf: [
+          { path: ["tokenlab", "category"], equalsAny: ["chat"] },
+          { path: ["tokenlab", "capabilities"], containsAny: ["tool-use"] },
+        ],
+      },
+    },
+    note: "OpenAI-compatible API gateway. Create a workspace API key at tokenlab.sh. Live discovery lists tool-capable chat models available to your key and delivery policy.",
+  },
+  {
+    // Modelflare: OpenAI-compatible relay at https://modelflare.dev/v1 (an Anthropic Messages
+    // surface also answers at https://modelflare.dev/v1/messages). Live-checked 2026-10-13 through
+    // the proxy: chat, streaming and tool calls succeed on Chat for all four seeded models, and a
+    // real `codex exec` turn completed on glm-5.3-flash. GET /v1/models lists ~77 rows mixing chat,
+    // image and video models, and includes deepseek-v4.1-flash, which answers 503 on every call,
+    // so the preset seeds the verified chat models statically instead of trusting live discovery.
+    // The conventional env reference derived from the id is ${MODELFLARE_API_KEY}.
+    id: "modelflare",
+    label: "Modelflare",
+    adapter: "openai-chat",
+    baseUrl: "https://modelflare.dev/v1",
+    authKind: "key",
+    dashboardUrl: "https://modelflare.dev",
+    preserveCustomDestination: true,
+    defaultModel: "glm-5.3-flash",
+    models: ["glm-5.3-flash", "claude-sonnet-5-5", "gpt-6.1-sol", "deepseek-v4-flash"],
+    note: "OpenAI-compatible relay for Claude, GPT, GLM and DeepSeek chat models. The seeded models were verified with chat, streaming and tool calls; deepseek-v4.1-flash is listed upstream but currently answers 503 and is left out. An ordinary key only reaches its own routing group's models; a Smart key reaches all seeded models. Image and video models are not served through this Chat preset. Upstream latency varies widely (a few seconds to about 30 s) with occasional transient 503s.",
+  },
+  {
     id: "opencode-free",
     label: "OpenCode Free",
     adapter: "openai-chat",
@@ -1121,7 +1303,11 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     // narrower table that silently falls behind whenever the keyed one is updated.
     noJsonSchemaModels: [...DEEPSEEK_GATEWAY_THINKING_MODELS, ...OPENCODE_FREE_DEEPSEEK_MODELS],
   },
-  { id: "xiaomi", label: "Xiaomi MiMo", baseUrl: "https://api.xiaomimimo.com/anthropic", adapter: "anthropic", authKind: "key", dashboardUrl: "https://xiaomimimo.com", defaultModel: "mimo-v2.5-pro" },
+  // Xiaomi retires mimo-v2.5 and mimo-v2.5-pro on 2026-10-21 with no redirect
+  // (https://mimo.mi.com/docs/en-US/updates/deprecate), so the first-party presets default to V2.6.
+  // Saved defaults are not rewritten; V2.5 stays listed until it stops answering.
+  // Both first-party presets read the xiaomi metadata bundle for window, output, modalities and price.
+  { id: "xiaomi", label: "Xiaomi MiMo", baseUrl: "https://api.xiaomimimo.com/anthropic", adapter: "anthropic", authKind: "key", dashboardUrl: "https://xiaomimimo.com", defaultModel: "mimo-v2.6-pro", models: ["mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.6-pro-ultraspeed", "mimo-v2.5-pro", "mimo-v2.5"], jawcodeBundle: "xiaomi" },
   // Xiaomi's public OpenAI-compatible endpoint is a distinct transport from both the Anthropic
   // preset above and the paid token-plan host below. Keep a separate fixed-destination contract
   // so existing custom providers are never retargeted while the official route receives the
@@ -1133,8 +1319,9 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     adapter: "openai-chat",
     authKind: "key",
     dashboardUrl: "https://platform.xiaomimimo.com/console/balance",
-    defaultModel: "mimo-v2.5",
-    models: ["mimo-v2.5"],
+    defaultModel: "mimo-v2.6-flash",
+    models: ["mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed", "mimo-v2.5"],
+    jawcodeBundle: "xiaomi",
     reasoningEfforts: ["low", "medium", "high"],
     reasoningEffortMap: { xhigh: "high", max: "high", ultra: "high" },
     preserveCustomDestination: true,
@@ -1174,8 +1361,23 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     adapter: "openai-chat",
     authKind: "key",
     dashboardUrl: "https://xiaomimimo.com",
-    defaultModel: "mimo-v2.5-pro",
-    models: ["mimo-v2.5-pro", "mimo-v2.5"],
+    // Token-plan roster per Xiaomi's token-plan model list (V2.6 Pro and Flash). Model-level facts
+    // come from Xiaomi's model pages (mimo.mi.com/models/en-US/<id>, fetched 2026-09-24): 1M context,
+    // 128K max output; V2.6 Pro/Flash and V2.5 take text/image/video/audio, V2.5 Pro text only. The
+    // catalog vocabulary has no video or audio, so only text/image are claimed. The token plan speaks
+    // the same API format as pay-as-you-go, so these are model facts rather than plan facts. No
+    // jawcodeBundle: pricing and entitlement stay unclaimed, and usage estimates still come from the
+    // model-level vendor price fallback, exactly as they did for V2.5.
+    defaultModel: "mimo-v2.6-pro",
+    models: ["mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.5-pro", "mimo-v2.5"],
+    modelContextWindows: { "mimo-v2.6-pro": 1_048_576, "mimo-v2.6-flash": 1_048_576, "mimo-v2.5-pro": 1_048_576, "mimo-v2.5": 1_048_576 },
+    modelMaxOutputTokens: { "mimo-v2.6-pro": 131_072, "mimo-v2.6-flash": 131_072, "mimo-v2.5-pro": 131_072, "mimo-v2.5": 131_072 },
+    modelInputModalities: {
+      "mimo-v2.6-pro": ["text", "image"],
+      "mimo-v2.6-flash": ["text", "image"],
+      "mimo-v2.5": ["text", "image"],
+      "mimo-v2.5-pro": ["text"],
+    },
     // The gateway validates the ladder strictly and rejects anything above `high`.
     reasoningEfforts: ["low", "medium", "high"],
     reasoningEffortMap: { xhigh: "high", max: "high", ultra: "high" },
@@ -1231,7 +1433,7 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     featured: false,
     dashboardUrl: "https://github.com/settings/copilot",
     liveModels: true,
-    models: ["gpt-4o", "gpt-4.1", "gpt-4.1-mini", "claude-sonnet-4", "gemini-2.5-pro", "gpt-5-mini", "gpt-5.3-codex", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"],
+    models: ["gpt-4o", "gpt-4.1", "gpt-4.1-mini", "claude-sonnet-4", "gemini-2.5-pro", "gpt-5-mini", "gpt-5.3-codex", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"],
     defaultModel: "gpt-4o",
     // Copilot fronts a mixed-wire catalog: these models reject /chat/completions for
     // real Codex-agent traffic (function tools + reasoning), so every inbound wire
@@ -1248,6 +1450,11 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
       "gpt-5.6-sol": "openai-responses",
       "gpt-5.6-terra": "openai-responses",
       "gpt-6-astra": "openai-responses",
+      // 260923 preemptive: GPT-6 Sol/Luna ride Responses like every GPT-5.6/6 row above.
+      "gpt-6-sol": "openai-responses",
+      "gpt-6-luna": "openai-responses",
+      // GPT-6.1 Sol: GA in Copilot 2026-09-29 (github.blog changelog); rides Responses like GPT-6 Sol.
+      "gpt-6.1-sol": "openai-responses",
       "grok-4.5": "openai-responses",
       "grok-4.6": "openai-responses",
       "mai-code-1.1-flash": "openai-responses",
@@ -1273,7 +1480,6 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     models: [...QODER_GLOBAL_MODELS],
     liveModels: true,
     reasoningEfforts: [...QODER_REASONING_EFFORTS],
-    noVisionModels: [...QODER_GLOBAL_MODELS],
     note: "Official Qoder Global CLI using QODER_PERSONAL_ACCESS_TOKEN. Models are discovered per account with `qoder --list-models`; the documented roster is a degraded fallback. The CLI runs single-turn with tools, MCP, settings hooks, and session persistence disabled. Requires `npm install -g @qoder-ai/qodercli`.",
   },
   {
@@ -1298,25 +1504,18 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     id: "workbuddy",
     alias: "codebuddy",
     label: "WorkBuddy",
-    adapter: "codebuddy",
+    adapter: "workbuddy",
     baseUrl: "https://copilot.tencent.com/v2",
     authKind: "oauth",
     oauthId: "workbuddy",
     featured: true,
     dashboardUrl: "https://www.codebuddy.cn",
     defaultModel: "auto",
-    models: [
-      "auto",
-      "hy4-preview",
-      "hy3",
-      "deepseek-v4.1-flash",
-      "glm-5.3",
-      "glm-5.3-flash",
-      "glm-5.2",
-      "glm-5v-turbo",
-      "minimax-m2.5",
-      "kimi-k2.5",
-    ],
+    models: [...WORKBUDDY_MODELS],
+    modelContextWindows: { ...WORKBUDDY_MODEL_CONTEXT_WINDOWS },
+    modelMaxOutputTokens: { ...WORKBUDDY_MODEL_MAX_OUTPUT_TOKENS },
+    modelInputModalities: { ...WORKBUDDY_MODEL_INPUT_MODALITIES },
+    noVisionModels: [...WORKBUDDY_NO_VISION_MODELS],
     liveModels: true,
     modelDiscovery: {
       path: "enterprises/personal/models",
@@ -1342,13 +1541,16 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     baseUrl: "https://zcode.z.ai/api/v1/zcode-plan/anthropic",
     authKind: "oauth",
     oauthId: "zai-plan",
+    liveModels: true,
     featured: true,
     dashboardUrl: "https://zcode.z.ai",
     defaultModel: "GLM-5.3-Flash",
     models: ["GLM-5.3-Flash", "GLM-5.3"],
+    modelInputModalities: { "GLM-5.3-Flash": ["text", "image"], "GLM-5.3": ["text"] },
+    noVisionModels: ["GLM-5.3"],
     defaultMaxOutputTokens: 131_072,
     extraMetadataAliases: ["zcode-plan"],
-    note: "Z.AI ZCode Start/Coding Plan via desktop login. Unofficial Plan JWT + captcha. Do not send confidential material.",
+    note: "Z.AI ZCode Start Plan via desktop login. Account-entitled models and bounded CAPTCHA recovery. Do not send confidential material.",
   },
   {
     id: "stepfun",
@@ -1366,5 +1568,55 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     noVisionModels: STEPFUN_NO_VISION_MODELS,
     reasoningEfforts: STEPFUN_REASONING_EFFORTS,
     note: "StepFun (阶跃星辰) official OpenAI-compatible API.",
+  },
+  {
+    // Official Claude Code CLI as the transport for a Claude subscription (§三十一). The CLI owns
+    // the account: this row stores no token and the adapter reads and injects none, so the request
+    // path is Anthropic's own harness rather than a replayed Claude Code identity against the
+    // Messages API. `baseUrl` is the destination the subscription's traffic reaches; OpenCodex
+    // never sends it. Fails closed if the row's base URL is overridden.
+    // v1 runs tools-disabled (`--tools ""`, no `--mcp-config`) so the client keeps tool ownership:
+    // text/reasoning only until the shared capture-only tool bridge lands. Requires the CLI:
+    // `npm i -g @anthropic-ai/claude-code`, plus a signed-in session (`claude` -> /login).
+    // GOVERNANCE: whether a subscription login may be driven through a proxy for a third-party
+    // agent is Anthropic's call rather than OpenCodex's — flagged for maintainer review, as with
+    // the CodeBuddy rows above.
+    id: "claude-cli",
+    label: "Claude Code CLI (subscription)",
+    adapter: "claude-cli",
+    baseUrl: "https://api.anthropic.com",
+    // `key` + `keyOptional`, deliberately not `local`. "local" (Ollama, vLLM, LM Studio) means the
+    // traffic never leaves the machine and there is no credential to classify; this row reaches
+    // api.anthropic.com, so `local` misreported it wherever auth is classified — the account
+    // surface answered "local provider ... has no credentials" (`classifyAccount`,
+    // src/cli/account-api.ts) and the dashboard filed the row as a local runtime. What IS true is
+    // keyless: the CLI reads the operator's own sign-in, so `keyOptional` is the existing flag that
+    // exempts a row from key enforcement without claiming a key exists. Key rows are also what
+    // `deriveProviderPresets` lists, so this entry needs no `dashboardPreset` flag to stay
+    // reachable from the Providers page.
+    authKind: "key",
+    keyOptional: true,
+    // There is no key console for a keyless row: the link that helps an operator is the one that
+    // documents the install and sign-in this provider requires.
+    dashboardUrl: "https://docs.claude.com/en/docs/claude-code/setup",
+    defaultModel: "claude-sonnet-5",
+    models: [...ANTHROPIC_MODELS],
+    // Static roster, exactly like the CodeBuddy rows. Without this the catalog treats the row as a
+    // live-discovery candidate and requests a model list the CLI route never serves: a real start
+    // logged `Provider model discovery for "claude-cli" failed with HTTP 404` and then fell back to
+    // these ids anyway. `liveModels: false` makes the configured roster authoritative and skips the
+    // request entirely (src/codex/catalog/provider-models.ts).
+    liveModels: false,
+    modelContextWindows: { ...ANTHROPIC_MODEL_CONTEXT_WINDOWS },
+    // Text-only for v1, not the image modality the Messages API rows publish. The CLI parses an
+    // image frame (verified against 2.1.270), but a headless turn has no verified contract that the
+    // harness hands those bytes to the model, and advertising a modality the route cannot honour
+    // makes a route selection pick this row for a picture it then answers blind. The adapter refuses
+    // direct image input for the same reason; the vision sidecar still captions images into text.
+    noVisionModels: [...ANTHROPIC_MODELS],
+    reasoningEfforts: ANTHROPIC_REASONING_EFFORTS,
+    modelReasoningEfforts: { ...ANTHROPIC_MODEL_REASONING_EFFORTS },
+    defaultMaxOutputTokens: ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS,
+    note: "Runs Claude subscription traffic through Anthropic's own harness: the official Claude Code CLI headlessly (`claude -p`), one turn per request. OpenCodex stores no Claude token, reads none and injects none — the CLI signs in and bills the account itself, which is why this row is keyless and an API key saved here never reaches the harness (use `anthropic-apikey` for key billing). The sign-in is the one of the user this proxy runs as, so every request served through this row — by any client of this proxy — spends that same account; OpenCodex neither pools nor multiplexes Claude sign-ins. Requires the CLI (`npm i -g @anthropic-ai/claude-code`) and a signed-in session (`claude` -> /login). v1 disables CLI tools (--tools \"\", --strict-mcp-config) so the client retains tool ownership: text/reasoning only for now. Subscription routing authorization flagged for maintainer review.",
   },
 ];

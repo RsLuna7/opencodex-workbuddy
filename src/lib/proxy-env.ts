@@ -29,6 +29,7 @@ export function noProxyMatches(
     if (!entry) continue;
     if (entry === "*") return true;
     entry = entry.replace(/^(?:https?|wss?):\/\//, "").split("/", 1)[0]!;
+    const domainForm = /^\*?\./.test(entry);
 
     let entryHost = entry;
     let entryPort = "";
@@ -46,9 +47,18 @@ export function noProxyMatches(
     }
     if (entryPort && entryPort !== port) continue;
     entryHost = normalizeProxyHostname(entryHost.replace(/^\*?\./, ""));
-    if (entryHost && (hostname === entryHost || hostname.endsWith(`.${entryHost}`))) return true;
+    if (!entryHost) continue;
+    if (hostname === entryHost) return true;
+    // A bare loopback name or an IP literal names one host: "localhost" must not send
+    // "anything.localhost" direct, which need not resolve to loopback. ".localhost" still does.
+    if (!domainForm && isExactOnlyNoProxyHost(entryHost)) continue;
+    if (hostname.endsWith(`.${entryHost}`)) return true;
   }
   return false;
+}
+
+function isExactOnlyNoProxyHost(host: string): boolean {
+  return host === "localhost" || host.includes(":") || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
 }
 
 export function resolveProxyRoute(
@@ -85,6 +95,9 @@ export function outboundProxyConfigured(
 ): boolean {
   return OUTBOUND_PROXY_ENV_KEYS.some(key => proxyEnvPresent(key, env));
 }
+
+// Captured before config/proxy-env applies runtime changes; Bun retains startup proxy env.
+export const startupOutboundProxyConfigured = outboundProxyConfigured();
 
 /**
  * The value when `raw` is a proxy URL Bun fetch can actually use, else null.
@@ -127,6 +140,9 @@ export function effectiveProxyFor(
   if (socksProxy) return socksProxy;
   const schemeValue = env[key]?.trim() || env[key.toLowerCase()]?.trim();
   if (schemeValue) {
+    // A SOCKS URL in a scheme-matched variable is a usable proxy: admission
+    // binds it explicitly and the transport follows, so it applies here too.
+    if (isSocks5ProxyUrl(schemeValue)) return schemeValue;
     // A present but unusable scheme-matched variable fails closed: it is not a
     // proxy Bun fetch can use, and it must not fall through to ALL_PROXY either.
     // If Bun would have used ALL_PROXY here, keeping the DNS-pinned transport is
@@ -207,6 +223,13 @@ export function configuredOutboundFetch(
     url = new URL(input instanceof Request ? input.url : String(input));
   } catch {
     return base!(input, init);
+  }
+  // A mixed inherited SOCKS/HTTP ALL_PROXY environment cannot put bare "localhost" in
+  // NO_PROXY: Bun would also bypass its HTTP proxy for app.localhost. Keep the name exact
+  // here and force native fetch direct so the opposite-case HTTP proxy cannot take over.
+  if (proxy && explicitProxy === undefined && (url.protocol === "http:" || url.protocol === "https:")
+    && normalizeProxyHostname(url.hostname) === "localhost") {
+    return base!(input, { ...init, proxy: false } as ProxyCapableRequestInit);
   }
   if (proxy && (url.protocol === "http:" || url.protocol === "https:") && (explicitProxy !== undefined || !noProxyMatches(url))) {
     return socks5Fetch(input, init, proxy);

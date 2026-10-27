@@ -22,6 +22,9 @@ export function accountSelectionStream(request: Request, validate: () => boolean
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
       let closed = false;
+      // Whether a non-heartbeat frame may still sit in the queue. A backlog of heartbeats alone
+      // (an idle or throttled consumer) carries nothing private, so revoking it can close quietly.
+      let eventQueued = false;
       let unsubscribe = () => {};
       let heartbeat: ReturnType<typeof setInterval> | undefined;
       const close = () => {
@@ -42,7 +45,7 @@ export function accountSelectionStream(request: Request, validate: () => boolean
           // path, including the heartbeat — close() alone terminates quietly, so an expired
           // dashboard session does not dump an expected DOMException into the server console.
           // desiredSize equals the high water mark exactly when the queue is empty.
-          if (controller.desiredSize !== null && controller.desiredSize < STREAM_QUEUE_HIGH_WATER_MARK) {
+          if (eventQueued && controller.desiredSize !== null && controller.desiredSize < STREAM_QUEUE_HIGH_WATER_MARK) {
             try { controller.error(new DOMException("Management session is no longer authorized", "NotAllowedError")); }
             finally { close(); }
           } else {
@@ -53,6 +56,8 @@ export function accountSelectionStream(request: Request, validate: () => boolean
         // Reconnection sends a ready event, so a slow reader can reconcile without an
         // unbounded queue or silently dropping a provider's latest invalidation.
         if (controller.desiredSize !== null && controller.desiredSize <= 0) { close(); return; }
+        if (controller.desiredSize === STREAM_QUEUE_HIGH_WATER_MARK) eventQueued = false;
+        if (!frame.startsWith(":")) eventQueued = true;
         try { controller.enqueue(encoder.encode(frame)); } catch { close(); }
       };
       connections.add(close);

@@ -140,6 +140,9 @@ describe("Cline journaled pair", () => {
     expect(readFileSync(catalog, "utf8")).toBe(originalCatalog);
   });
 
+  // Skipped on Windows with the other symlink regressions: link creation needs
+  // a privilege the hosted runners do not grant, and the boundary under test is
+  // the platform-independent lstat-plus-rename path in the shared writer.
   test.skipIf(process.platform === "win32")("a member exchanged for a symlink at the write boundary cannot redirect replacement", () => {
     seed();
     const victim = join(root, "victim.json");
@@ -350,5 +353,31 @@ describe("Cline journaled pair", () => {
     if (result.kind !== "text") throw new Error("pair missing");
     expect(decodeClinePair(result.text)).toEqual({ settings: originalSettings, catalog: originalCatalog });
     expect(adapter.statKind(dirname(settings))).toBe("dir");
+  });
+
+  test("a transaction journal past the read bound refuses before either file moves", () => {
+    /*
+     * The pending marker embeds the before-and-after pair, so a pair near the
+     * bound serializes past it. beginTransaction must refuse: writing the
+     * marker would leave a pending file recovery itself could never read
+     * back, stranding every later Cline operation behind an unreadable
+     * transaction.
+     */
+    const pad = "x".repeat(3 * 1024 * 1024);
+    const seeded = `{"pad":"${pad}","version":1,"providers":{"mine":{"settings":{"provider":"mine"},"updatedAt":"2026-01-01T00:00:00.000Z","tokenSource":"manual"}}}\n`;
+    writeFileSync(settings, seeded);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = applyIntegration(input);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe("write_failed");
+        expect(result.snapshotPath).toBeUndefined();
+      }
+      expect(input.store!.countSnapshots("cline")).toBe(0);
+      expect(input.store!.listOperations("cline")).toEqual([]);
+    }
+    expect(readFileSync(settings, "utf8")).toBe(seeded);
+    expect(existsSync(catalog)).toBe(false);
+    expect(existsSync(clinePendingPath(input.store!, settings))).toBe(false);
   });
 });

@@ -3,12 +3,19 @@ import type { TranslatorBudget } from "../lib/translator-budget";
 import type { RequestExecutionBudget } from "../lib/request-execution-budget";
 import type { AttemptRecoveryKind, AttemptRecoveryWithheld } from "../usage/log";
 import type { AdapterTierMetadata } from "../providers/fastwire";
+import type { ProviderRequestSlot } from "../providers/request-pacing";
 
 /** Metadata about the caller's incoming request, for auth-forwarding adapters. */
 export interface IncomingMeta {
   headers: Headers;
+  /** Canonical routed provider identity for provider-specific wire fields. */
+  providerName?: string;
   translatorBudget: TranslatorBudget;
   abortSignal?: AbortSignal;
+  /** Lease acquired before the response is committed; the physical send transfers it to its body. */
+  pacingSlot?: ProviderRequestSlot;
+  /** Combo children must surface a pre-output refusal so the selector can try the next target. */
+  comboAttempt?: boolean;
   /**
    * Provider-scoped fetch prepared by the Responses router. Stateful transports that emit more
    * than one physical HTTP request per logical turn must reuse it so every request participates in
@@ -134,6 +141,15 @@ export interface AdapterRequest {
     convertedMuseToolNameAliases?: ReadonlyMap<string, string>;
     /** Releases observation of a serialized request body after its final fetch attempt settles. */
     releaseBodyObservation?: () => void;
+    /**
+     * Client conversation this request belongs to, when the inbound request named one.
+     *
+     * Distinct from the wire `X-Conversation-ID`: the WorkBuddy/CodeBuddy adapter always sends
+     * that header (the global site refuses a request without it), and mints a fresh one when the
+     * caller named no conversation. Binding account stickiness on a per-request minted id would
+     * create one session entry per request, so the adapter reports the real seed here instead.
+     */
+    workbuddySessionKey?: string;
     /** Exact reasoning parameter emitted by the adapter, for request-log diagnostics only. */
     reasoningLog?:
       | {
@@ -164,6 +180,8 @@ export interface AdapterRequest {
 }
 
 export interface AdapterFetchContext {
+  /** Kiro may hand a pooled refusal to the outer account rotator before same-account retry. */
+  kiroPreferAccountFailover?: boolean;
   /** Remains attached to the returned response body after the response headers arrive. */
   abortSignal?: AbortSignal;
   /** Deadline for receiving response headers on each attempt, not for consuming the response body. */

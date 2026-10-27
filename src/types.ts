@@ -8,6 +8,7 @@ export {
   dottedToolName,
   namespacedToolName,
   normalizeDeclaredToolName,
+  isCodeModeMcpDirectName,
   toolChoiceAliases,
   createToolChoiceResolver,
   toolChoiceCandidates,
@@ -15,6 +16,7 @@ export {
   resolveToolChoiceWireName,
   modelInList,
   isAllowedToolChoice,
+  requiresToolCall,
   toolChoiceToolPredicate,
   declaresCodeModeExec,
   toolRestrictsCallers,
@@ -22,12 +24,16 @@ export {
 } from "./types/tools";
 
 export type { UpstreamHttpVersion, ReasoningSummaryDelivery, CodexAccountMode } from "./types/wire";
+export type { AnthropicInstanceId } from "./providers/anthropic-instance-id";
+export { ANTHROPIC_INSTANCE_IDS, ANTHROPIC_PRIMARY_INSTANCE, ANTHROPIC_POOL2_INSTANCE, isAnthropicInstanceId } from "./providers/anthropic-instance-id";
+export type { AnthropicAccountPoolConfig, AnthropicModelRoute } from "./types/anthropic-account-pool";
 export {
   UPSTREAM_HTTP_VERSION_VALUES,
   REASONING_SUMMARY_DELIVERY_VALUES,
   OPENAI_PROVIDER_TIER_VERSION,
   MODEL_ADAPTER_OVERRIDE_ALLOWED,
   captureWireAdapterHardPins,
+  captureWireAdapterHardPinPrefixes,
   isWirePinnedModel,
   pinnedWireAdapter,
 } from "./types/wire";
@@ -60,6 +66,8 @@ export type {
 } from "./types/request";
 
 export type {
+  OcxApiSurfacesConfig,
+  OcxProtocolsConfig,
   OcxClaudeCodeConfig,
   OcxClaudeDesktopFamily,
   OcxClaudeDesktopAssignment,
@@ -74,8 +82,12 @@ export type {
   OcxConnectedClientId,
   OcxClientConnectionConfig,
   OcxConfig,
+  SkillsCatalogRefresh,
+  OcxSkillsConfig,
+  CodexLowQuotaProtectionConfig,
   OcxAccountPoolRotationStrategy,
   OcxAccountPoolQuotaWindow,
+  OcxComboCooldownWaitPolicy,
   OcxComboStrategy,
   OcxComboDefaultEffort,
   OcxComboDefaultEffortMode,
@@ -106,6 +118,7 @@ export type {
   ResponsesItemIdRepairConfig,
   RateLimitRetryPolicy,
   TransientRetryPolicy,
+  ResetReplayPolicy,
   ProviderWebSearchBridgeBackend,
   ProviderWebSearchBridgeConfig,
   ProviderCostOverlay,

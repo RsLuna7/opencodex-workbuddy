@@ -1,10 +1,11 @@
-import type { QuotaFailureCode, WorkbuddyAccountActivity } from "../../../../src/providers/quota-types";
+import type { QuotaFailureCode, WorkbuddyAccountActivity, WorkbuddyAccountPoolView } from "../../../../src/providers/quota-types";
 /**
  * provider-workspace/types.ts — shared view-model types for the Providers
  * workspace shell/rail/detail (WP080a). Data shapes only; no React.
  */
 import type { ProviderSortMode, WorkspaceItem } from "../../provider-workspace/catalog";
 import type { AccountQuota } from "../../codex-quota-utils";
+import type { BrowserLaunch } from "../../oauth-browser-launch";
 
 export type { ProviderSortMode, WorkspaceItem };
 
@@ -51,6 +52,8 @@ export interface AccountQuotaReading {
   /** Client-owned enrichment state, never inferred from missing quota data. */
   quotaPending?: boolean;
   workbuddy?: WorkbuddyAccountActivity;
+  /** WorkBuddy pool cooldown/credit projection; server-owned, local read only. */
+  workbuddyPool?: WorkbuddyAccountPoolView;
 }
 
 export type OAuthAccountRow = AccountQuotaReading & {
@@ -59,11 +62,18 @@ export type OAuthAccountRow = AccountQuotaReading & {
   email?: string;
   active: boolean;
   needsReauth?: boolean;
+  autoSelectable?: boolean;
+  skipReason?: "needs_reauth" | "paused" | "suspended" | "cooldown" | "quota_exhausted";
+  paused?: boolean;
+  autoSwitchThresholdOverride?: number | null;
+  autoSwitchThreshold?: number;
+  effectiveAutoSwitchThreshold?: number;
   health?: { status: OAuthAccountHealthStatus; reason?: string; until?: string };
   healthLabel?: string;
   healthSummary?: string;
   healthAction?: string;
   workbuddy?: WorkbuddyAccountActivity;
+  workbuddyPool?: WorkbuddyAccountPoolView;
 };
 
 export type ApiKeyRow = AccountQuotaReading & {
@@ -78,16 +88,21 @@ export type LoginHint = {
   url?: string;
   instructions?: string;
   deviceCode?: string;
+  browserLaunch?: BrowserLaunch;
 };
 
 export type AccountLoadState = "idle" | "loading" | "ready" | "error";
 
 export interface ProviderAuthHandlers {
-  onLogin: (provider: string, addAccount?: boolean) => void | Promise<void>;
+  onLogin: (provider: string, addAccount?: boolean, realm?: "cn" | "global") => void | Promise<void>;
+  onNativeLoginSettled?: (provider: string, outcome: "added" | "ended" | "failed") => void | Promise<void>;
   onCancelLogin?: (provider: string) => void;
   onLogout: (provider: string) => void | Promise<void>;
   onReauth: (provider: string, accountId?: string) => void | Promise<void>;
   onSwitchAccount: (provider: string, account: OAuthAccountRow) => void | Promise<void>;
+  onPauseAccount: (provider: string, account: OAuthAccountRow, paused: boolean) => void | Promise<void>;
+  onAccountThreshold?: (provider: string, account: OAuthAccountRow, threshold: number | null) => Promise<boolean>;
+  onAccountPoolThreshold?: (provider: string, threshold: number) => void | Promise<boolean>;
   onRemoveAccount: (provider: string, account: OAuthAccountRow) => void | Promise<void>;
   onRetryAccounts?: (provider: string) => void | Promise<void>;
   onAddApiKey: (provider: string, key: string) => Promise<boolean>;
@@ -115,6 +130,7 @@ export type ProviderUpdatePatch = {
   note?: string;
   disabled?: boolean;
   allowPrivateNetwork?: boolean;
+  preserveResponsesReasoningContent?: boolean;
   liveModels?: boolean;
   upstreamHttpVersion?: "auto" | "http1.1" | "h1" | "http2" | "h2" | null;
   requestPacing?: WorkspaceItem["requestPacing"] | null;

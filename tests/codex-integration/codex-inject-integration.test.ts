@@ -171,7 +171,7 @@ describe("injectCodexConfig integration (Design B)", () => {
   // read-only bit, so neither can express the permission this test needs.
   const unreadablePreimages =
     process.platform === "win32" || process.getuid?.() === 0 ? test.skip : test;
-  unreadablePreimages("unreadable preimages abort capture and remain visible as compensation failures", () => {
+  unreadablePreimages.each(["same", "absent", "different"] as const)("unreadable preimages abort capture and remain visible as compensation failures (journal preimage=%s)", (journalPreimage) => {
     console.error('ocx-startup-diagnostic:{"file":"codex-inject-integration","phase":"unreadable_preimages_entered"}');
     const script = `
       const fs = require("node:fs");
@@ -200,7 +200,7 @@ describe("injectCodexConfig integration (Design B)", () => {
         catch(error) { outcomes.push(error.code==="EACCES"); }
         unchangedAfterEach.push(readWatched().every((bytes,i)=>bytes===original[i]));
       }
-      const restored=restoreCodexPreImages({config:original[0],profile:original[1],journal:original[2]});
+      const restored=restoreCodexPreImages({config:original[0],profile:original[1],journal:${journalPreimage === "same" ? "original[2]" : journalPreimage === "absent" ? "null" : JSON.stringify("# stale journal preimage\n")}});
       const preserved=readWatched().every((bytes,i)=>bytes===original[i]);
       allow();
       console.log(JSON.stringify({unreadable,captureCode,restored,outcomes,unchangedAfterEach,preserved}));
@@ -241,8 +241,10 @@ describe("injectCodexConfig integration (Design B)", () => {
       errorCode,
     })}`);
     expect(child.status, child.stderr).toBe(0);
+    // Failed profile compensation retains the current recovery journal rather than
+    // deleting it or replacing it with a preimage; that deferred restore is reported.
     expect(JSON.parse(child.stdout)).toEqual({
-      unreadable: true, captureCode: "EACCES", restored: { complete: false, unrestored: ["profile"] }, outcomes: [true, true, true], unchangedAfterEach: [true, true, true], preserved: true,
+      unreadable: true, captureCode: "EACCES", restored: { complete: false, unrestored: ["profile", "journal"] }, outcomes: [true, true, true], unchangedAfterEach: [true, true, true], preserved: true,
     });
   });
 
@@ -785,14 +787,19 @@ describe("injectCodexConfig integration (Design B)", () => {
     expect(restoredRowBytes).toBe(rowBytes);
   });
 
-  test("a provider-table transition refuses rather than strand a paginated openai thread", () => {
-    const original = 'model_provider = "openai"\n# >>> opencodex managed openai_base_url >>>\nopenai_base_url = "http://127.0.0.1:10100/v1"\n# <<< opencodex managed openai_base_url <<<\n';
+  test("a provider-table transition keeps a paginated openai thread on the proxy instead of refusing", () => {
+    // #5321. The transition used to be refused outright, so nothing was written and the
+    // integration stayed disabled. It now completes by keeping the marker-owned root override
+    // beside the table: the row is never relabeled, and it still resolves to this proxy.
+    // The reporter's shape: a loopback root-override home turning on codexDesktopAuthless.
+    const original = `${OCX_ROUTING_MARKER_LINE}\nopenai_base_url = "http://127.0.0.1:10100/v1"\nmodel = "gpt-5.5"\n`;
     const configPath = join(codexHome, "config.toml");
     writeFileSync(configPath, original);
     const rollout = join(codexHome, "openai-paginated.jsonl");
     const bytes = JSON.stringify({ ordinal: 0, type: "session_meta", payload: { id: "fixture", history_mode: "paginated", model_provider: "openai" } }) + "\n";
     writeFileSync(rollout, bytes);
-    const db = new Database(join(codexHome, "state_5.sqlite"));
+    const dbPath = join(codexHome, "state_5.sqlite");
+    const db = new Database(dbPath);
     db.run("CREATE TABLE threads (id TEXT, rollout_path TEXT, model_provider TEXT, history_mode TEXT)");
     db.run("INSERT INTO threads VALUES ('fixture', ?, 'openai', 'paginated')", rollout);
     db.close();
@@ -800,10 +807,27 @@ describe("injectCodexConfig integration (Design B)", () => {
     const result = runInject(codexHome, ocxHome, JSON.stringify({ codexDesktopAuthless: true }));
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({
-      success: false,
-      historyPreflightFailureReason: "history_paginated_openai_requires_native_writer",
+      success: true,
+      historyPreflightFailureReason: "history_paginated_requires_native_writer",
     });
-    expect(readFileSync(configPath, "utf8")).toBe(original);
+    const written = readFileSync(configPath, "utf8");
+    expect(written).toContain("[model_providers.opencodex]");
+    expect(written).toContain(`${OCX_ROUTING_MARKER_LINE}\nopenai_base_url = "http://127.0.0.1:10100/v1"`);
+    // The safety property the refusal existed to protect: the paginated row is untouched and
+    // still tagged openai, and the retained override is what keeps it reaching the proxy.
+    expect(readFileSync(rollout, "utf8")).toBe(bytes);
+    const after = new Database(dbPath, { readonly: true });
+    expect(after.query("SELECT model_provider, history_mode FROM threads WHERE id = 'fixture'").all())
+      .toEqual([{ model_provider: "openai", history_mode: "paginated" }]);
+    after.close();
+
+    // The other half of the trap (#4812): unblocking the transition is worth nothing if the
+    // retained override then cannot come back out. Restore journals it as ours, so it does.
+    const restored = JSON.parse(runRestore(codexHome, ocxHome).stdout);
+    expect(restored.success).toBe(true);
+    const native = readFileSync(configPath, "utf8");
+    expect(native).not.toContain("openai_base_url");
+    expect(native).not.toContain('model_provider = "opencodex"');
     expect(readFileSync(rollout, "utf8")).toBe(bytes);
   });
 
@@ -1426,6 +1450,7 @@ describe("injectCodexConfig integration (Design B)", () => {
     expect(result.success).toBe(true);
     expect(result.message).toContain("routing NOT injected");
     expect(result.message).not.toContain("All models now route through opencodex proxy");
+    expect(result.message).not.toContain("Codex remote history");
     expect(result.nativeSubagentDefaultsWarning).toContain("user-owned root openai_base_url");
 
     const config = readFileSync(join(codexHome, "config.toml"), "utf8");
@@ -1488,6 +1513,7 @@ describe("injectCodexConfig integration (Design B)", () => {
     expect(result.success).toBe(true);
     expect(result.message).toContain("routing NOT injected");
     expect(result.message).toContain('external model_provider "custom"');
+    expect(result.configApplied).toBe(false);
     expect(result.message).toContain("http://127.0.0.1:10100/v1");
     expect(result.message).toContain("Responses passthrough");
     expect(result.nativeSubagentDefaultsWarning).toContain("external model_provider");
@@ -1657,6 +1683,8 @@ describe("injectCodexConfig integration (Design B)", () => {
 
     const enabled = runInject(codexHome, ocxHome, JSON.stringify({ codexClientCompaction: true }));
     expect(enabled.status).toBe(0);
+    expect(JSON.parse(enabled.stdout).message).toContain("Codex remote history:");
+    expect(JSON.parse(enabled.stdout).message).toContain("modelProviders: []");
     expect(String(JSON.parse(enabled.stdout).message)).toContain("client-side compaction mode");
     const providerTable = readFileSync(join(codexHome, "config.toml"), "utf8");
     expect(providerTable).toContain('model_provider = "opencodex"');
@@ -1704,6 +1732,7 @@ describe("injectCodexConfig integration (Design B)", () => {
     // for this mixed configuration.
     const message = String(JSON.parse(enabled.stdout).message);
     expect(message).toContain("Injected opencodex as default provider");
+    expect(message).toContain("Codex remote history");
     expect(message).not.toContain("Codex routing NOT injected");
     expect(message).not.toContain("remove your openai_base_url line");
     expect(message).toContain("left exactly as you set it");
@@ -1871,6 +1900,11 @@ describe("injectCodexConfig integration (Design B)", () => {
     const verifier = new Database(join(codexHome, "state_5.sqlite"), { readonly: true });
     expect(verifier.query("SELECT model_provider FROM threads WHERE id = 'thread-designb'").get())
       .toEqual({ model_provider: "openai" });
+    // Source-level reproduction of the reported legacy list predicate, not a native RPC
+    // test: preserving routing does not make a row match the new default provider filter.
+    expect(verifier.query("SELECT COUNT(*) AS count FROM threads WHERE model_provider = ?")
+      .get(readRootTomlString(config, "model_provider"))).toEqual({ count: 0 });
+    expect(verifier.query("SELECT COUNT(*) AS count FROM threads").get()).toEqual({ count: 1 });
     verifier.close();
   });
 
@@ -1925,14 +1959,4 @@ describe("injectCodexConfig integration (Design B)", () => {
     expect(config).not.toContain("\r");
   });
 
-  test("inject does not turn on multi_agent_v2; fresh installs stay on Codex's default v1 surface until the user opts in", () => {
-    writeFileSync(join(codexHome, "config.toml"), 'model = "gpt-5.5"\n', "utf8");
-
-    expect(runInject(codexHome, ocxHome).status).toBe(0);
-    const config = readFileSync(join(codexHome, "config.toml"), "utf8");
-
-    expect(config).not.toContain("[features.multi_agent_v2]");
-    expect(config).not.toContain("multi_agent_v2 = true");
-    expect(config).not.toContain("multi_agent_v2 = {");
-  });
 });

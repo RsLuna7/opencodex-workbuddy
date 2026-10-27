@@ -226,8 +226,8 @@ metadata instead of an older-template approximation.
 | Codex login (explicit Daybreak forward row) | `openai/gpt-daybreak-blue-latest` only when the exact `customModels` row is configured on the canonical `openai` provider. It keeps the Daybreak wire id and uses the pinned Sol capability snapshot (922,000 context; 829,800 automatic compaction). |
 | OpenAI (API key) | Exactly ten namespaced rows: `gpt-5.5`, `gpt-5.6`, Sol/Terra/Luna, the three `*-pro` virtual ids, and the two Daybreak aliases (1,050,000 context; 922,000 max input for all ten) |
 | OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` (922,000) |
-| Cursor | Static fallback includes `cursor/gpt-5.6-sol`, `cursor/gpt-5.6-terra`, and `cursor/gpt-5.6-luna` (1,000,000), plus regular/Fast rows for Grok 4.5 and 4.6 (500,000); 4.6 adds `xhigh`, and live account discovery decides which rows remain visible. |
-| xAI | Live discovery is authoritative. The fallback catalog includes `xai/grok-4.6` and defaults to `xai/grok-4.5`; both have 500,000-token windows. Grok 4.6 exposes `low` / `medium` / `high` / `xhigh` (upstream default: `high`), while Grok 4.5 stops at `high`. |
+| Cursor | Static fallback includes `cursor/gpt-5.6-sol`, `cursor/gpt-5.6-terra`, and `cursor/gpt-5.6-luna` (1,000,000), plus regular/Fast rows for Grok 4.5, 4.6, and 4.7 (500,000); 4.6 and 4.7 add `xhigh`, and live account discovery decides which rows remain visible. |
+| xAI | Live discovery is authoritative. The fallback catalog includes `xai/grok-4.6` and `xai/grok-4.7` and defaults to `xai/grok-4.5`; all three have 500,000-token windows. Grok 4.6 and 4.7 expose `low` / `medium` / `high` / `xhigh` (upstream default: `high`), while Grok 4.5 stops at `high`. |
 
 The pinned GPT-5.6 entries preserve the exact upstream ladder. Sol and Terra expose `low` through
 `ultra`; Luna stops at `max`. Sol defaults to `low`, while Terra and Luna default to `medium`.
@@ -313,6 +313,44 @@ decision controls both catalog metadata and runtime injection, so the fast optio
 advertised where it cannot be honored. An `openai-chat` destination can authorize every otherwise
 eligible model with `chatServiceTier: true`, or authorize only exact models with
 `modelSupportsServiceTier`; Responses routes do not need that extra Chat wire authorization.
+
+### Selecting Ultra Fast in Codex Desktop
+
+For a provider that supports `service_tier: "ultrafast"`, declare that wire mapping once.
+opencodex then publishes **Ultra Fast** in the routed model's native Codex speed menu;
+there is no need to edit `opencodex-catalog.json` after every sync.
+For example, merge these fields into an API provider configured for GPT-6.1 Sol:
+
+```json
+{
+  "models": ["gpt-6.1-sol"],
+  "modelSupportsServiceTier": { "gpt-6.1-sol": true },
+  "fastWire": {
+    "kind": "service-tier",
+    "canonicalToWire": { "priority": "priority", "ultrafast": "ultrafast" },
+    "foreignCallerTiers": "verbatim"
+  }
+}
+```
+
+The mapping applies to every Fast-eligible model on that provider. Use a separate provider
+entry if only some of its models support Ultra Fast. Keep opencodex's Fast mode on **Auto**
+(omit `fastMode`) so the app's speed selection reaches the provider; forced Fast sends
+`priority`, and forced Default drops the tier. Refresh the model catalog, restart Codex
+Desktop if it still has the old list, select the routed model, then choose **Ultra Fast**
+in its speed menu. Standard remains the default.
+
+Only an eligible `service-tier` wire with an explicit `ultrafast → ultrafast` mapping adds
+this choice. Ordinary Fast support, a GPT-like name, native/account rows and combo aliases
+do not enable it. Removing the mapping or disabling that model's service-tier support
+removes the generated choice from both the catalog and cache on the next successful sync.
+The separate `ultraFastTier` setting still only retains hand-supplied catalog tiers.
+
+[OpenAI's API guide](https://developers.openai.com/api/docs/guides/ultrafast-mode) documents
+Ultrafast for GPT-6 Astra and GPT-6.1 Sol. API access and
+[Codex plan/workspace access](https://learn.chatgpt.com/docs/agent-configuration/speed)
+are separate. A menu choice does not grant provider access or guarantee measured speed;
+Ultra Fast increases usage/cost, and Codex's own feature requirements still apply.
 
 ## Subagent selection
 

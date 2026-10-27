@@ -86,7 +86,7 @@ describe("web-search loop 402 credential failover", () => {
         rotations++;
         seenRefusal = refusal;
         if (!retryParsed) throw new Error("the loop must pass the iteration request to on429");
-        return rotatedAdapter;
+        return { adapter: rotatedAdapter, recoveryKind: "oauth-account-429" };
       },
     });
     expect(response.status).toBe(200);
