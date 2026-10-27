@@ -159,6 +159,11 @@ function quotaText(row: AccountRow): string {
   // Kiro bills a monthly allowance and reports no shorter window, so without this arm a
   // perfectly healthy Kiro account prints "-" and reads as broken.
   if (typeof quota.monthlyPercent === "number") parts.push(`mo ${Math.round(quota.monthlyPercent)}%`);
+  if (row.provider === "zai-plan") {
+    for (const window of (quota.customWindows ?? []).slice(0, 2)) {
+      if (window.modelId && Number.isFinite(window.percent)) parts.push(`${window.modelId} ${Math.round(window.percent)}%`);
+    }
+  }
   return parts.length > 0 ? parts.join(" ") : "-";
 }
 

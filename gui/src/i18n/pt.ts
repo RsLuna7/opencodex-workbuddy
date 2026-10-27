@@ -1,3 +1,4 @@
+import { zaiPlanCopy } from "./zai-plan-copy";
 import { desktopCompatibilityCopy } from "./desktop-compatibility-copy";
 // Brazilian Portuguese — generated from en.ts. Must match TKey set (compile-checked).
 import type { TKey } from "./en";
@@ -7,6 +8,7 @@ import type { TKey } from "./en";
  * Technical terms and model identifiers intentionally remain English.
  */
 export const pt: Record<TKey, string> = {
+  ...zaiPlanCopy["pt"],
   ...desktopCompatibilityCopy("pt"),
   "claude.tierDefaults.unset": "Não definido (manter configuração Claude)",
   "claude.tierDefaults.recovery": "Aplicação interrompida; restauração automática falhou. Verifique o backup abaixo antes de tentar novamente.",
@@ -3951,6 +3953,7 @@ export const pt: Record<TKey, string> = {
   "pws.workbuddyPool.durationMinutes": "{m}m {s}s",
   "pws.workbuddyPool.durationSeconds": "{s}s",
   "pws.workbuddyPool.autoRefreshHint": "As contagens regressivas atualizam localmente a cada segundo; atualize para medir os créditos novamente.",
+  "pws.addCnAccount": "Adicionar conta da China",
   "pws.addGlobalAccount": "Adicionar conta Global",
   "insights.localSource": "Registros do proxy local",
   "insights.hubSource": "Registros do proxy Hub",
@@ -3994,4 +3997,3 @@ export const pt: Record<TKey, string> = {
   "claude.tabCode": "Code",
   "claude.tabDesktop": "Desktop",
 };
-

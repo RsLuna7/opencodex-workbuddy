@@ -337,6 +337,13 @@
       "documents": ["src/oauth/"]
     },
     {
+      "path": "providers/zcode.md",
+      "tier": 4,
+      "title": "ZCode Start Plan",
+      "scope": "ZCode request identity, public CAPTCHA policy, streaming transport and billing-plan continuity.",
+      "documents": ["src/adapters/", "src/oauth/", "src/providers/quota/zai-plan.ts", "src/codex/catalog/provider-models.ts"]
+    },
+    {
       "path": "providers-and-adapters.md",
       "tier": 4,
       "title": "Providers And Adapters",

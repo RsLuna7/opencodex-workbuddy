@@ -822,11 +822,12 @@ export function preferredInitialAccount(
 }
 
 /** Earliest remaining cooldown, for a client-facing Retry-After when every account is cooled. */
-export function genericFailoverRetryAfterSeconds(providerName: string, now = Date.now()): number | null {
+export function genericFailoverRetryAfterSeconds(providerName: string, now = Date.now(), accountId?: string): number | null {
   const prefix = `${providerName}\u0000`;
   let earliest: number | null = null;
   for (const [key, entry] of health) {
     if (!key.startsWith(prefix) || entry.cooldownUntil <= now) continue;
+    if (accountId && key !== `${prefix}${accountId}` && !key.startsWith(`${prefix}${accountId}\u0000`)) continue;
     if (earliest === null || entry.cooldownUntil < earliest) earliest = entry.cooldownUntil;
   }
   return earliest === null ? null : Math.max(1, Math.ceil((earliest - now) / 1000));

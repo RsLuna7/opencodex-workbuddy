@@ -1,3 +1,4 @@
+import { zaiPlanCopy } from "./zai-plan-copy";
 import { desktopCompatibilityCopy } from "./desktop-compatibility-copy";
 import type { TKey } from "./en";
 
@@ -5,6 +6,7 @@ import type { TKey } from "./en";
  * Chinese i18n catalog; must match the `TKey` set (compile-checked).
  */
 export const zh: Record<TKey, string> = {
+  ...zaiPlanCopy["zh"],
   ...desktopCompatibilityCopy("zh"),
   "claude.tierDefaults.unset": "未设置（保留现有 Claude 设置）",
   "claude.tierDefaults.recovery": "应用已停止，自动恢复失败。重试前请检查下方备份。",
@@ -2919,6 +2921,7 @@ export const zh: Record<TKey, string> = {
  "pws.noModelMatch": "没有匹配筛选的模型。",
   "pws.adapterBaseRequired": "适配器和基本 URL 为必填项。",
   "pws.addAccount": "添加账户",
+  "pws.addCnAccount": "添加国内版账号",
   "pws.addGlobalAccount": "添加国际站账号",
   "pws.addKey": "添加 API 密钥",
   "pws.apiKeys": "API 密钥",

@@ -1,4 +1,11 @@
 {
+  "zai-plan-transport.test.ts": "oauth",
+  "zai-plan-balance.test.ts": "oauth",
+  "zai-plan-health.test.ts": "oauth",
+  "zai-plan-management.test.ts": "server",
+  "zai-plan-proxy-pool.test.ts": "server",
+  "zai-plan-diagnostic.test.ts": "server",
+  "cli-zai-plan-quota.test.ts": "cli",
   "codex-history-pending-wal.test.ts": "codex-integration",
   "service-log.test.ts": "service",
   "service-health-sentinel-policy.test.ts": "service",

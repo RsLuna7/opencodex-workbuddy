@@ -12,7 +12,8 @@ export const ZAI_PLAN_PROVIDER_ID = "zai-plan";
 export const ZAI_PLAN_BASE_URL = "https://zcode.z.ai/api/v1/zcode-plan/anthropic";
 export const ZAI_PLAN_MESSAGES_URL = `${ZAI_PLAN_BASE_URL}/v1/messages`;
 export const ZAI_ULTRA_MESSAGES_URL = "https://zcode.z.ai/api/v1/ultra-zai/anthropic/v1/messages";
-export const ZAI_PLAN_APP_VERSION = "3.11.2";
+const versionOverride = process.env.OPENCODEX_ZCODE_APP_VERSION?.trim();
+export const ZAI_PLAN_APP_VERSION = versionOverride && /^\d+\.\d+\.\d+$/.test(versionOverride) ? versionOverride : "3.16.3";
 export const ZAI_ORIGIN = "https://zcode.z.ai";
 
 const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
@@ -66,6 +67,16 @@ export function jwtUserId(token: string): string | undefined {
   return raw != null ? String(raw) : undefined;
 }
 
+export function zaiPlanJwtExpiry(token: string): number | undefined {
+  const exp = jwtPayload(token)?.exp;
+  return typeof exp === "number" && Number.isFinite(exp * 1000) ? exp * 1000 : undefined;
+}
+
+export function assertZaiPlanJwtActive(token: string, now = Date.now()): void {
+  const expiry = zaiPlanJwtExpiry(token);
+  if (expiry !== undefined && expiry <= now) throw new Error("ZCode Start Plan login expired. Run ocx account login zai-plan to sign in again.");
+}
+
 function readDeviceMid(): string {
   const path = join(homedir(), ".zcode", "v2", "telemetry-state.json");
   try {
@@ -89,12 +100,13 @@ function readCodingPlanKey(): string | undefined {
 }
 
 function credentialFromJwt(access: string, source: OAuthCredentials["source"], extra?: { email?: string; refresh?: string; codingKey?: string }): OAuthCredentials {
+  assertZaiPlanJwtActive(access);
   const userId = jwtUserId(access);
   const codingKey = extra?.codingKey ?? readCodingPlanKey();
   const cred: OAuthCredentials = {
     access,
     refresh: extra?.refresh?.trim() || access,
-    expires: Date.now() + DEFAULT_TTL_MS,
+    expires: zaiPlanJwtExpiry(access) ?? Date.now() + DEFAULT_TTL_MS,
     source,
     zaiPlan: {
       deviceMid: readDeviceMid(),
@@ -138,6 +150,7 @@ export function importLocalZcodeJwt(): OAuthCredentials | null {
     } catch {
       return null;
     }
+    return null;
   }
 
   if (existsSync(cfgPath)) {
@@ -177,6 +190,7 @@ async function pasteJwt(ctrl: OAuthController): Promise<OAuthCredentials> {
       throw ctrl.signal.reason ?? new DOMException("Login cancelled", "AbortError");
     }
     const input = (await ctrl.onManualCodeInput?.())?.trim();
+    ctrl.signal?.throwIfAborted();
     if (!input) continue;
     const jwt = input.includes("code=") ? "" : input;
     const token = jwt.includes(".") && jwt.split(".").length === 3 ? jwt : "";
@@ -201,6 +215,7 @@ async function cliPollLogin(ctrl: OAuthController): Promise<OAuthCredentials> {
   const flowId = started.data?.flow_id;
   const authorizeUrl = started.data?.authorize_url;
   if (!flowId || !authorizeUrl) throw new Error("ZCode login did not return a flow");
+  ctrl.signal?.throwIfAborted();
 
   ctrl.onAuth?.({
     url: authorizeUrl,
@@ -233,19 +248,23 @@ async function cliPollLogin(ctrl: OAuthController): Promise<OAuthCredentials> {
 
 export async function loginZaiPlan(
   ctrl: OAuthController = {},
-  opts?: { importLocal?: LocalTokenImportMode },
+  opts?: { importLocal?: LocalTokenImportMode; forceLogin?: boolean },
 ): Promise<OAuthCredentials> {
-  const mode = opts?.importLocal ?? "fallback";
+  const mode = opts?.forceLogin ? "off" : opts?.importLocal ?? "fallback";
   if (mode !== "off") {
     const local = importLocalZcodeJwt();
-    if (local) {
+    if (local && (zaiPlanJwtExpiry(local.access) ?? Infinity) > Date.now()) {
       ctrl.onProgress?.("Imported ZCode desktop login");
       return local;
     }
     if (mode === "only") throw new Error("No ZCode desktop credentials at ~/.zcode/v2");
   }
   if (ctrl.onManualCodeInput) {
-    return await Promise.race([cliPollLogin(ctrl), pasteJwt(ctrl)]);
+    const complete = new AbortController();
+    const signal = ctrl.signal ? AbortSignal.any([ctrl.signal, complete.signal]) : complete.signal;
+    const controller = { ...ctrl, signal };
+    try { return await Promise.race([cliPollLogin(controller), pasteJwt(controller)]); }
+    finally { complete.abort(); }
   }
   return await cliPollLogin(ctrl);
 }
@@ -256,13 +275,16 @@ export async function refreshZaiPlanToken(
   credential?: OAuthCredentials,
 ): Promise<OAuthCredentials> {
   const local = importLocalZcodeJwt();
-  if (local) return local;
+  if (local && (!credential || local.access === credential.access ||
+    (jwtUserId(local.access) && jwtUserId(local.access) === jwtUserId(credential.access)))) {
+    assertZaiPlanJwtActive(local.access);
+    return local;
+  }
   const access = credential?.access?.trim();
   if (!access) throw new Error("ZCode Plan refresh requires a JWT");
-  return credentialFromJwt(access, credential?.source ?? "oauth", {
-    email: credential?.email,
-    refresh: credential?.refresh,
-  });
+  assertZaiPlanJwtActive(access);
+  // There is no remote JWT refresh protocol. Retain the original account and lifetime.
+  return { ...credential!, access };
 }
 
 export function zaiPlanOsRelease(): string {
@@ -285,11 +307,11 @@ export function buildZaiPlanIdentityHeaders(deviceMid: string): Record<string, s
     "X-ZCode-App-Version": n,
     "X-Title": "Z Code@electron",
     "X-ZCode-Agent": "glm",
-    "X-Platform": "win32-x64",
+    "X-Platform": `${platform()}-${process.arch}`,
     "X-Release-Channel": "production",
     "X-Client-Language": "zh-CN",
     "X-Client-Timezone": "Asia/Shanghai",
-    "X-Os-Category": "windows",
+    "X-Os-Category": platform() === "win32" ? "windows" : platform(),
     "X-Os-Version": zaiPlanOsRelease(),
     "X-Device-Mid": deviceMid,
   };
@@ -308,6 +330,7 @@ export function buildOfficialStartPlanHeaders(opts: {
     "content-type": "application/json",
     "anthropic-version": "2023-06-01",
     authorization: `Bearer ${opts.jwt}`,
+    "x-api-key": opts.jwt,
     "x-request-id": crypto.randomUUID(),
     "x-zcode-trace-id": crypto.randomUUID(),
     ...(opts.captcha
@@ -363,22 +386,10 @@ export const ZAI_PLAN_DESKTOP_CONTEXT = [
   "- Example: ::code-comment{title=\"[P2] Off-by-one\" body=\"Loop iterates past the end when length is 0.\" file=\"/path/to/foo.ts\" start=10 end=11 priority=2}",
 ].join("\n");
 
-export function buildStartPlanSystemBlocks(model?: string) {
-  const env = [
-    "# Environment",
-    "You have been invoked in the following environment:",
-    "- Primary working directory: unknown",
-    "- Is a git repository: no",
-    "- Platform: unknown",
-    "- Shell: unknown",
-    "- OS Version: unknown",
-    ...(model ? [`- You are powered by the model named ${model}.`] : []),
-  ].join("\n");
+export function buildStartPlanSystemBlocks(_model?: string) {
   return [
-    { type: "text", text: "You are ZCode, an interactive coding agent", cache_control: EPHEMERAL },
-    { type: "text", text: ZAI_PLAN_HARNESS, cache_control: EPHEMERAL },
-    { type: "text", text: ZAI_PLAN_DESKTOP_CONTEXT, cache_control: EPHEMERAL },
-    { type: "text", text: env, cache_control: EPHEMERAL },
+    { type: "text", text: "You are ZCode, an interactive coding agent" },
+    { type: "text", text: `${ZAI_PLAN_HARNESS}\n${ZAI_PLAN_DESKTOP_CONTEXT}`, cache_control: EPHEMERAL },
   ];
 }
 

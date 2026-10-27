@@ -73,7 +73,6 @@ export type OAuthAccountRow = AccountQuotaReading & {
   healthSummary?: string;
   healthAction?: string;
   workbuddy?: WorkbuddyAccountActivity;
-  /** WorkBuddy pool cooldown/credit projection; server-owned, local read only. */
   workbuddyPool?: WorkbuddyAccountPoolView;
 };
 
@@ -95,7 +94,7 @@ export type LoginHint = {
 export type AccountLoadState = "idle" | "loading" | "ready" | "error";
 
 export interface ProviderAuthHandlers {
-  onLogin: (provider: string, addAccount?: boolean) => void | Promise<void>;
+  onLogin: (provider: string, addAccount?: boolean, realm?: "cn" | "global") => void | Promise<void>;
   onNativeLoginSettled?: (provider: string, outcome: "added" | "ended" | "failed") => void | Promise<void>;
   onCancelLogin?: (provider: string) => void;
   onLogout: (provider: string) => void | Promise<void>;
@@ -146,4 +145,3 @@ export type ProviderUpdateResult = {
   error?: string;
   xaiResponsesOptInState?: WorkspaceItem["xaiResponsesOptInState"];
 };
-

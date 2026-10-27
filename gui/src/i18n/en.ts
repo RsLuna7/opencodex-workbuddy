@@ -1,3 +1,4 @@
+import { zaiPlanCopy } from "./zai-plan-copy";
 import { desktopCompatibilityCopy } from "./desktop-compatibility-copy";
 // English — source of truth. Its keys define the TKey type; de/fr/ko/zh/zh-TW/ru/ja/tr must match (compile-checked).
 // Strings with {cmd} render a <code> chip via <Trans>; {var} are plain interpolations.
@@ -7,6 +8,7 @@ import { desktopCompatibilityCopy } from "./desktop-compatibility-copy";
  * `{var}` are plain interpolations.
  */
 export const en = {
+  ...zaiPlanCopy["en"],
   ...desktopCompatibilityCopy("en"),
   "claude.tierDefaults.unset": "Unset (keep existing Claude setting)",
   "claude.tierDefaults.recovery": "Apply stopped and automatic restore failed. Check the backup below before retrying.",
@@ -1791,6 +1793,7 @@ export const en = {
  "pws.noModelMatch": "No models match the filter.",
   "pws.adapterBaseRequired": "Adapter and base URL are required.",
   "pws.addAccount": "Add account",
+  "pws.addCnAccount": "Add CN account",
   "pws.addGlobalAccount": "Add Global account",
   "pws.addKey": "Add API key",
   "pws.apiKeys": "API Keys",

@@ -580,7 +580,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   };
 
   const authHandlers: ProviderAuthHandlers = {
-    onLogin: requestLoginOAuth,
+    onLogin: (provider, addAccount, realm) => requestLoginOAuth(provider, addAccount, undefined, realm),
     onNativeLoginSettled,
     onCancelLogin: cancelLoginOAuth,
     onLogout: logoutOAuth,

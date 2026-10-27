@@ -1,3 +1,4 @@
+import { zaiPlanCopy } from "./zai-plan-copy";
 import { desktopCompatibilityCopy } from "./desktop-compatibility-copy";
 // Turkish — generated from en.ts. Must match TKey set (compile-checked).
 import type { TKey } from "./en";
@@ -6,6 +7,7 @@ import type { TKey } from "./en";
  * Turkish i18n catalog. Must match the `TKey` set (compile-checked).
  */
 export const tr: Record<TKey, string> = {
+  ...zaiPlanCopy["tr"],
   ...desktopCompatibilityCopy("tr"),
   "claude.tierDefaults.unset": "Belirtilmedi (mevcut Claude ayarını koru)",
   "claude.tierDefaults.recovery": "Uygulama durdu ve otomatik geri yükleme başarısız oldu. Yeniden denemeden önce aşağıdaki yedeği kontrol edin.",
@@ -1743,6 +1745,7 @@ export const tr: Record<TKey, string> = {
   "pws.noModelMatch": "Filtreyle eşleşen model yok.",
   "pws.adapterBaseRequired": "Adaptör ve taban URL gereklidir.",
   "pws.addAccount": "Hesap ekle",
+  "pws.addCnAccount": "Çin hesabı ekle",
   "pws.addGlobalAccount": "Küresel hesap ekle",
   "pws.addKey": "API anahtarı ekle",
   "pws.apiKeys": "API Anahtarları",

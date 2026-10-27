@@ -208,6 +208,7 @@ export default function ProviderAuthPanel({
   const kiroAddTriggerRef = useRef<HTMLButtonElement>(null);
   const openLogin = (addAccount: boolean) => {
     if (item.name === "kiro") setKiroChooser({ addAccount });
+    else if (item.name === "workbuddy") void authHandlers?.onLogin(item.name, addAccount, "cn");
     else void authHandlers?.onLogin(item.name, addAccount);
   };
   const [newKey, setNewKey] = useState("");
@@ -499,7 +500,13 @@ export default function ProviderAuthPanel({
                 ) : (
                   <button ref={item.name === "kiro" ? kiroLoginTriggerRef : undefined} type="button" className="btn btn-primary btn-sm" disabled={busy || (item.name === "kiro" && Boolean(kiroChooser))} onClick={() => openLogin(false)}>
                     {busy ? <span className="pwi-spin-inline" aria-hidden="true" /> : <IconLock style={{ width: 13, height: 13 }} aria-hidden="true" />}
-                    {busy ? t("prov.waitingBrowser") : t("prov.login")}
+                    {busy ? t("prov.waitingBrowser") : t(item.name === "workbuddy" ? "pws.addCnAccount" : "prov.login")}
+                  </button>
+                )}
+                {!loggedIn && item.name === "workbuddy" && (
+                  <button type="button" className="btn btn-ghost btn-sm" disabled={busy}
+                    onClick={() => void authHandlers.onLogin(item.name, true, "global")}>
+                    {t("pws.addGlobalAccount")}
                   </button>
                 )}
               </span>
@@ -684,8 +691,14 @@ export default function ProviderAuthPanel({
               <div className="pwi-auth-actions">
                 <button ref={item.name === "kiro" ? kiroAddTriggerRef : undefined} type="button" className="btn btn-ghost btn-sm"
                   onClick={() => openLogin(true)} disabled={busy || Boolean(switchingAccountId) || (item.name === "kiro" && Boolean(kiroChooser))}>
-                  {t("pws.addAccount")}
+                  {t(item.name === "workbuddy" ? "pws.addCnAccount" : "pws.addAccount")}
                 </button>
+                {item.name === "workbuddy" && (
+                  <button type="button" className="btn btn-ghost btn-sm" disabled={busy || Boolean(switchingAccountId)}
+                    onClick={() => void authHandlers.onLogin(item.name, true, "global")}>
+                    {t("pws.addGlobalAccount")}
+                  </button>
+                )}
                 {canRefreshQuota && (
                   <button
                     type="button"

@@ -30,6 +30,8 @@ export interface ProviderQuotaWindow {
    * provider-wide group named "Opus" there would otherwise be mistaken for a per-model window.
    */
   scope?: "model";
+  /** Exact upstream model selector, populated only by an account-bound entitlement reader. */
+  modelId?: string;
   /** Passive family readings have their own freshness clock, independent of active probes. */
   passiveObservedAt?: number;
   /** Upstream refusal evidence, distinct from a measured utilization counter. */

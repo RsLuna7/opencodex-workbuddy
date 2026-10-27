@@ -10,12 +10,34 @@ description: opencodex 进行身份验证并与 LLM 提供商通信的所有方�
 `workbuddy` 是 WorkBuddy 中国站和国际站的 OAuth 提供商。`codebuddy` 仍是它的别名；
 本分支不对外提供上游的 CodeBuddy CLI API 密钥预设。运行 `ocx account login workbuddy`
 添加中国站账户，或运行 `ocx account login workbuddy --realm global` 添加国际站账户。
+仪表盘 WorkBuddy 账户面板提供“添加国内版账号”和“添加国际站账号”，首次登录和追加账号都可选择。
 模型使用 `workbuddy/<model>`，故障换号只在同一站点内进行。6004 只冷却当前账户的当前模型，
 不会改动手动选中的账户；14018 冷却整个账户。仪表盘显示剩余额度，中国站账户还显示签到和每日任务状态。
 `ocx account checkin workbuddy --status` 只查询签到状态，不领取奖励。
 
 `zai-plan` 是 ZCode Plan 的 OAuth 提供商。运行 `ocx account login zai-plan` 登录，
 再选择 `zai-plan/<model>`。它与把 ZCode 客户端接入本地代理的 ZCode 集成功能不同。
+
+`GLM-5.3-Flash` 原生支持图片输入；`GLM-5.3` 是纯文本模型，图片附件需要代理的
+视觉 sidecar 转述，并配置可用的识图模型。更新后请刷新 harness 的模型配置，清除旧的仅文本声明。
+
+Start Plan 保留调用方的 system 指令；上游公开策略允许免模型验证码时，直接通过 HTTP 流式转发。
+明确的验证码挑战才触发有界浏览器回退，其他拒绝不会隐式切换计费套餐。默认客户端版本为
+`3.16.3`；可在启动代理前设置 `OPENCODEX_ZCODE_APP_VERSION` 为准确的 `x.y.z` 版本。
+登录成功和存在余额不代表模型请求已经可用。
+
+预设根据当前登录账户已生效的 Start Plan Token 权益发现模型。运行
+`ocx account list zai-plan --quota --refresh` 可通过现有账户接口查看各模型额度。
+耗尽状态只作用于对应模型，风控拒绝冷却实际请求的账户，认证过期需要重新登录。
+显式配置的静态模型目录仍可使用。账户检查接口 `/api/zai-plan/accounts?balance=1` 可返回套餐状态，
+追加 `&refresh=1` 可刷新。查询余额不会领取套餐；领取、遥测和设备标识轮换需在仪表盘手动执行。
+
+在本机仪表盘打开 `/zai-plan` 可预览并手动领取套餐，也可主动执行在线诊断。
+诊断通过正常 Responses 入口发送一条最多 64 个输出 Token 的测试请求，会使用额度，并遵守
+正常的网关鉴权和预算限制。请求记录用于确认实际账户与 Start Plan 路径，再显示观察到的余额变化；
+账户变化或无法验证路径时，余额归因保持未知。打开页面不会自动测试或领取。
+观察到的余额变化也可能包含其他并发请求，不是独立的计费收据。
+若数据接口要求鉴权，填写代理 API Key；不要在此填写上游 ZCode 登录令牌。
 
 ## OpenAI 账户模式
 
@@ -198,7 +220,7 @@ Kiro 登录需要 Kiro CLI：Unix 使用 `curl -fsSL https://cli.kiro.dev/instal
 
 ## 3. API 密钥目录
 
-opencodex 内置 104 个预设：85 个密钥预设、15 个 OAuth 预设、3 个本地预设，以及 1 个默认的
+opencodex 内置 104 个预设：83 个密钥预设、17 个 OAuth 预设、3 个本地预设，以及 1 个默认的
 ChatGPT 转发预设。仪表盘的 **Add provider** 选择器会打开密钥提供商的控制台，验证并保存密钥。
 验证因提供商而异。主要条目包括：
 

@@ -334,6 +334,15 @@ export async function fetchProviderModelsWithAuth(
       ? [...models, vertexDefaultSeed]
       : models
   );
+  if (prov.adapter === "zai-plan") {
+    if (!apiKey) return observed(configured, "degraded");
+    const { fetchZaiPlanUsableModels } = await import("../../adapters/zai-plan-models");
+    const live = await fetchZaiPlanUsableModels(apiKey);
+    if (!isCurrentCacheGeneration() || !live.ok) return observed(configured, "degraded");
+    return observed(live.models.map(id => ({ id, provider: name,
+      ...catalogHintsFromProviderConfig(name, prov, id, contextCap, metadataModelIdCaseFold, captured.effectiveAlias, metadataConfigDir),
+    })), "authoritative");
+  }
   if (prov.adapter === "codebuddy") {
     if (!apiKey) return observed(configured, "degraded");
     const resolvedProfile = resolveProfileByBaseUrl(CODEBUDDY_PROFILES, prov.baseUrl);

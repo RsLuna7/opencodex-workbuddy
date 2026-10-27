@@ -203,7 +203,7 @@ export function supportsPerAccountQuota(provider: string): boolean {
 
 export function explicitAccountReader(provider: string): boolean {
   return provider === "xai" || provider === "cursor" || provider === "kimi" || provider === "command-code"
-    || provider === "devin" || provider === "workbuddy";
+    || provider === "devin" || provider === "workbuddy" || provider === "zai-plan";
 }
 
 export function providerOAuthAccountQuotaMode(provider: string): AccountQuotaMode {
@@ -546,6 +546,7 @@ export function quotaCredentialIdentity(provider: string, accountId: string, cre
     // Only credentials that carry their own endpoint (Devin tenants) extend the identity, so
     // every other provider's existing cache keys stay valid.
     ...(provider === "devin" && credential.apiBaseUrl ? [credential.apiBaseUrl] : []),
+    ...(provider === "zai-plan" ? [credential.zaiPlan?.deviceMid] : []),
   ])).digest("hex");
 }
 
@@ -554,6 +555,7 @@ export function explicitQuotaDestination(provider: string, config: OcxProviderCo
   if (provider === "kimi") return isCanonicalKimiCodeBaseUrl(config.baseUrl);
   if (provider === "command-code") return isCanonicalCommandCodeBaseUrl(config.baseUrl);
   if (provider === "workbuddy") return isCanonicalWorkbuddyChatBase(config.baseUrl);
+  if (provider === "zai-plan") { try { return new URL(config.baseUrl).origin === "https://zcode.z.ai"; } catch { return false; } }
   // These readers use fixed canonical billing origins, never config.baseUrl. Devin reads
   // the credential's own allowlisted api-server host instead (fetchDevinQuota revalidates it).
   return provider === "xai" || provider === "cursor" || provider === "devin";

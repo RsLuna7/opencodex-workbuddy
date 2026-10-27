@@ -165,7 +165,7 @@ describe("workspace account integration seam", () => {
     // `requestLoginOAuth` is the warning-aware entry point and forwards the same
     // (provider, addAccount, accountId) triple.
     expect(page).toContain("requestLoginOAuth(provider, true, accountId)");
-    expect(page).toContain("void loginOAuth(pending.provider, pending.addAccount, pending.accountId)");
+    expect(page).toContain("void loginOAuth(pending.provider, pending.addAccount, pending.accountId, pending.realm)");
     expect(page).toContain("accountId: reauthTargetId, reauth: true");
     expect(page).toContain("prov.reauthIdentityMismatch");
     expect(page).toContain("oauthLoginGenerationRef");

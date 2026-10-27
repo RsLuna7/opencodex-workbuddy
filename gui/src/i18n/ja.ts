@@ -1,3 +1,4 @@
+import { zaiPlanCopy } from "./zai-plan-copy";
 import { desktopCompatibilityCopy } from "./desktop-compatibility-copy";
 import type { TKey } from "./en";
 
@@ -5,6 +6,7 @@ import type { TKey } from "./en";
  * Japanese i18n catalog; must match the `TKey` set (compile-checked).
  */
 export const ja: Record<TKey, string> = {
+  ...zaiPlanCopy["ja"],
   ...desktopCompatibilityCopy("ja"),
   "claude.tierDefaults.unset": "未指定（既存のClaude設定を維持）",
   "claude.tierDefaults.recovery": "適用が停止し、自動復元に失敗しました。再試行する前に以下のバックアップを確認してください。",
@@ -1625,6 +1627,7 @@ export const ja: Record<TKey, string> = {
   "pws.noModelMatch": "フィルタに一致するモデルがありません。",
   "pws.adapterBaseRequired": "アダプターとベース URL は必須です。",
   "pws.addAccount": "アカウントを追加",
+  "pws.addCnAccount": "中国版アカウントを追加",
   "pws.addGlobalAccount": "グローバルアカウントを追加",
   "pws.addKey": "API キーを追加",
   "pws.apiKeys": "API キー",

@@ -1,6 +1,6 @@
 # GUI And Management API
 
-Anthropic OAuth account DTOs include `autoSwitchThresholdOverride` (integer or null),
+ZCode account actions and opt-in balance summaries follow the [Start Plan contract](providers/zcode.md#refusal-and-account-continuity). Anthropic OAuth account DTOs include `autoSwitchThresholdOverride` (integer or null),
 `autoSwitchThreshold` (pool default) and `effectiveAutoSwitchThreshold`. The dedicated
 `PUT /api/oauth/accounts/auto-switch` accepts `{ provider: "anthropic", accountId, threshold }`;
 explicit null restores inheritance and missing/invalid values fail. Other providers are rejected.
@@ -62,7 +62,7 @@ full dashboard navigation. It reuses the existing API session and fetch wrapper;
 has no Tauri IPC capability. Companion settings control its sections and chart. Account
 limits use account-level management reads rather than attributing aggregate provider
 quotas to individual accounts. Missing usage is distinct from measured zero. The popup
-shares the existing timeline renderer with the companion settings preview. The WorkBuddy account DTO's `workbuddy` activity from `src/providers/quota/explicit-readers.ts` drives checked-in and daily-task badges only when measured, while Usage Insights keeps unknown prices and token totals distinct from measured zero.
+shares the existing timeline renderer with the companion settings preview. The WorkBuddy account DTO's `workbuddy` activity from `src/providers/quota/explicit-readers.ts` drives checked-in and daily-task badges only when measured, while Usage Insights keeps unknown prices and token totals distinct from measured zero. WorkBuddy's workspace authentication panel offers CN and Global login for both first and additional accounts; `ProviderAuthHandlers.onLogin` forwards the selected realm through the existing OAuth consent/start flow without treating it as an account ID.
 `gui/src/pages/tray.css` keeps the document/root within the viewport and gives the page its
 own vertical scroll area. Long account lists can reach Refresh and Dashboard in both opaque
 and vibrant web windows without scrolling a second outer document.

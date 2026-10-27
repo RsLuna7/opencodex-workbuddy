@@ -1,3 +1,4 @@
+import { zaiPlanCopy } from "./zai-plan-copy";
 import { desktopCompatibilityCopy } from "./desktop-compatibility-copy";
 // Vietnamese — generated from en.ts. Must match TKey set (compile-checked).
 import type { TKey } from "./en";
@@ -7,6 +8,7 @@ import type { TKey } from "./en";
  * Technical terms and model identifiers intentionally remain English.
  */
 export const vi: Record<TKey, string> = {
+  ...zaiPlanCopy["vi"],
   ...desktopCompatibilityCopy("vi"),
   "claude.tierDefaults.unset": "Chưa đặt (giữ cài đặt Claude hiện có)",
   "claude.tierDefaults.recovery": "Đã dừng áp dụng và khôi phục tự động thất bại. Kiểm tra bản sao lưu bên dưới trước khi thử lại.",
@@ -1761,6 +1763,7 @@ export const vi: Record<TKey, string> = {
   "pws.noModels": "Không phát hiện model nào cho provider này.",
   "pws.adapterBaseRequired": "Bắt buộc phải có Adapter và Base URL.",
   "pws.addAccount": "Thêm tài khoản",
+  "pws.addCnAccount": "Thêm tài khoản Trung Quốc",
   "pws.addGlobalAccount": "Thêm tài khoản quốc tế",
   "pws.addKey": "Thêm API key",
   "pws.apiKeys": "API Keys",

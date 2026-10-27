@@ -1,3 +1,4 @@
+import { zaiPlanCopy } from "./zai-plan-copy";
 import { desktopCompatibilityCopy } from "./desktop-compatibility-copy";
 import type { TKey } from "./en";
 
@@ -5,6 +6,7 @@ import type { TKey } from "./en";
  * Korean i18n catalog; must match the `TKey` set (compile-checked).
  */
 export const ko: Record<TKey, string> = {
+  ...zaiPlanCopy["ko"],
   ...desktopCompatibilityCopy("ko"),
   "claude.tierDefaults.unset": "미지정 (기존 Claude 설정 유지)",
   "claude.tierDefaults.recovery": "적용이 중단되었고 자동 복원에 실패했어요. 다시 시도하기 전에 아래 백업을 확인하세요.",
@@ -2912,6 +2914,7 @@ export const ko: Record<TKey, string> = {
  "pws.noModelMatch": "필터와 일치하는 모델이 없습니다.",
   "pws.adapterBaseRequired": "어댑터와 기본 URL은 필수입니다.",
   "pws.addAccount": "계정 추가",
+  "pws.addCnAccount": "중국 계정 추가",
   "pws.addGlobalAccount": "글로벌 계정 추가",
   "pws.addKey": "API 키 추가",
   "pws.apiKeys": "API 키",

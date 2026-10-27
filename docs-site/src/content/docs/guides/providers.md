@@ -18,7 +18,9 @@ account selection or defaults.
 `workbuddy` is the OAuth provider for WorkBuddy CN and Global. `codebuddy` remains an alias for
 this provider; the upstream CodeBuddy CLI key preset is not exposed. Add a CN account with
 `ocx account login workbuddy`, or a Global account with
-`ocx account login workbuddy --realm global`. Requests use `workbuddy/<model>` and account
+`ocx account login workbuddy --realm global`. The dashboard's WorkBuddy account panel offers
+**Add CN account** and **Add Global account** for both first login and additional accounts.
+Requests use `workbuddy/<model>` and account
 failover stays within the account's realm. A 6004 refusal cools only that account and model
 without changing the saved active account; a 14018 refusal cools the whole account. The
 dashboard shows remaining credits and, for CN accounts, check-in and daily-task status.
@@ -27,6 +29,33 @@ dashboard shows remaining credits and, for CN accounts, check-in and daily-task 
 `zai-plan` is the ZCode Plan OAuth provider. Use `ocx account login zai-plan` and select a
 `zai-plan/<model>` route. It is separate from the ZCode client integration, which configures
 ZCode to call the local proxy.
+
+`GLM-5.3-Flash` accepts images natively. `GLM-5.3` is text-only and uses the proxy's
+vision sidecar for image attachments; configure an available image-capable sidecar model.
+Refresh the harness's model configuration after updating older text-only catalog exports.
+
+Start Plan preserves the calling client's system instructions and streams directly over HTTP
+when ZCode's public policy skips model CAPTCHA. An explicit CAPTCHA challenge enables a bounded
+browser fallback. Other refusals are returned without changing the billing plan. The default client
+version is `3.16.3`; set `OPENCODEX_ZCODE_APP_VERSION` to an exact `x.y.z` version before starting
+the proxy to override it. Login and available balance alone do not prove a model request will succeed.
+
+The preset discovers models from the signed-in account's active Start Plan token entitlements.
+`ocx account list zai-plan --quota --refresh` reads per-model quota through the existing account
+interface. Exhaustion is scoped to the requested model; risk refusals cool the served account,
+and expired authentication requires login again. Static model catalogs remain available when
+explicitly configured. The account inspection endpoint `/api/zai-plan/accounts?balance=1` adds
+plan status; append `&refresh=1` for a fresh reading. Reading balances never claims a package.
+Claiming, telemetry and device rotation require a dashboard session and stay manual.
+
+Open `/zai-plan` on the local dashboard for package preview, manual claims and an opt-in
+online diagnostic. The diagnostic sends one normal Responses test with at most 64 output tokens,
+so it uses quota and obeys normal gateway admission and spend limits. It checks request-log
+provenance before reporting the served account and observed Start Plan balance change. If the
+account changed or the route cannot be verified, balance attribution remains unknown.
+Concurrent requests can also affect the observed balance delta; it is not a separate billing receipt.
+No test request or claim runs when the page opens. On an authenticated bind, supply a proxy API key for
+the data-plane test; never enter an upstream ZCode token in that field.
 
 ## OpenAI account modes
 
@@ -555,7 +584,7 @@ The account list marks Kiro accounts excluded from automatic selection with a re
 
 ## 3. API-key catalog
 
-opencodex ships 104 built-in presets: 85 key-based, 15 OAuth, three local, and one default
+opencodex ships 104 built-in presets: 83 key-based, 17 OAuth, three local, and one default
 ChatGPT-forward preset. The dashboard's **Add provider** picker opens a key provider's dashboard,
 validates the key, and stores it; validation is provider-specific. Notable entries:
 

@@ -24,12 +24,17 @@ async function flush(): Promise<void> {
   await Promise.resolve();
 }
 
-async function mountPanel(accounts: Array<Record<string, unknown>>): Promise<HTMLElement> {
+async function mountPanel(
+  accounts: Array<Record<string, unknown>>,
+  onLogin: (provider: string, addAccount?: boolean, realm?: "cn" | "global") => void = () => {},
+  loggedIn = true,
+  busyProvider?: string,
+): Promise<HTMLElement> {
   const host = testWindow.document.createElement("div");
   testWindow.document.body.appendChild(host as never);
   const { createRoot } = await import("react-dom/client");
   const handlers = {
-    onLogin: async () => {},
+    onLogin,
     onLogout: async () => {},
     onReauth: async () => {},
     onSwitchAccount: async () => {},
@@ -47,7 +52,8 @@ async function mountPanel(accounts: Array<Record<string, unknown>>): Promise<HTM
         <ProviderAuthPanel
           item={ITEM}
           apiBase="http://proxy"
-          oauth={{ loggedIn: true }}
+          oauth={{ loggedIn }}
+          busy={busyProvider === "workbuddy"}
           accounts={accounts as never}
           authHandlers={handlers}
         />
@@ -121,4 +127,32 @@ test("incomplete WorkBuddy days render muted square badges", async () => {
   expect(task).not.toBeNull();
   expect(checkin?.className).toContain("badge-muted");
   expect(task?.className).toContain("badge-muted");
+});
+
+for (const loggedIn of [false, true]) {
+  test(`WorkBuddy ${loggedIn ? "additional" : "first"} account offers explicit CN and Global login`, async () => {
+    const calls: unknown[][] = [];
+    const host = await mountPanel([], (...args) => { calls.push(args); }, loggedIn);
+    const buttons = Array.from(host.querySelectorAll("button"));
+    const cn = buttons.find(button => button.textContent === "Add CN account");
+    const global = buttons.find(button => button.textContent === "Add Global account");
+    expect(cn).toBeDefined();
+    expect(global).toBeDefined();
+    await act(async () => { cn!.click(); global!.click(); });
+    expect(calls).toEqual([
+      ["workbuddy", loggedIn, "cn"],
+      ["workbuddy", true, "global"],
+    ]);
+  });
+}
+
+test("both WorkBuddy login entries are disabled while login is pending", async () => {
+  const calls: unknown[][] = [];
+  const host = await mountPanel([], (...args) => { calls.push(args); }, true, "workbuddy");
+  for (const label of ["Add CN account", "Add Global account"]) {
+    const button = Array.from(host.querySelectorAll("button")).find(item => item.textContent === label);
+    expect(button?.disabled).toBe(true);
+    await act(async () => { button!.click(); });
+  }
+  expect(calls).toEqual([]);
 });

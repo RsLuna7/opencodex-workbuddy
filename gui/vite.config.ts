@@ -1,15 +1,25 @@
 import { readFileSync } from 'node:fs'
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
+import { zaiPlanCopy } from './src/i18n/zai-plan-copy.ts'
 
 // Bake the parent package version into the bundle as a fallback for moments when the runtime
 // `/healthz` version is not reachable yet.
 const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
 const proxyTarget = process.env.OPENCODEX_PROXY_TARGET
+const zcodeLocales: Plugin = {
+  name: 'zcode-panel-locales',
+  generateBundle() { this.emitFile({ type: 'asset', fileName: 'zai-plan-locales.json', source: JSON.stringify(zaiPlanCopy) }) },
+  configureServer(server) {
+    server.middlewares.use('/zai-plan-locales.json', (_req, res) => {
+      res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(zaiPlanCopy))
+    })
+  },
+}
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), zcodeLocales],
   define: { __APP_VERSION__: JSON.stringify(version) },
   /* [Decision Log]
   - 목적: 로컬 Vite GUI가 실행 중인 opencodex API를 same-origin으로 호출해 CORS 잡음 없이 실제 데이터를 보여준다.

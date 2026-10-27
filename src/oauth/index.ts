@@ -308,7 +308,7 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
     defaultRefreshPolicy: "lazy-only",
   },
   "zai-plan": {
-    login: (ctrl) => loginZaiPlan(ctrl, { importLocal: "fallback" }),
+    login: (ctrl, opts) => loginZaiPlan(ctrl, { importLocal: "fallback", forceLogin: opts?.forceLogin }),
     refresh: (rt, signal, credential) => refreshZaiPlanToken(rt, signal, credential),
     providerConfig: oauthConfig("zai-plan"),
     defaultModel: oauthDefaultModel("zai-plan"),

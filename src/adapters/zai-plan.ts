@@ -1,8 +1,13 @@
 import type { AdapterFetchContext, AdapterRequest, IncomingMeta, ProviderAdapter } from "./base";
 import type { OcxParsedRequest, OcxProviderConfig } from "../types";
-import { getCredential } from "../oauth/store";
+import { getAccountSet, getCredential } from "../oauth/store";
+import { createZaiPlanTransport } from "./zai-plan-transport";
+import { createAdapterPhysicalSend } from "./physical-send";
+import { captureConfigGeneration } from "../lib/state-store-sweeper";
+import type { ZaiPlanRequestAccount } from "../oauth/zai-plan-health";
 import {
   buildOfficialStartPlanHeaders,
+  assertZaiPlanJwtActive,
   buildStartPlanSystemBlocks,
   buildZaiPlanIdentityHeaders,
   canonicalZaiPlanModel,
@@ -13,16 +18,6 @@ import {
   ZAI_ULTRA_MESSAGES_URL,
 } from "../oauth/zai-plan";
 import {
-  getZaiPlanVerifyParam,
-  invalidateZaiPlanCaptcha,
-  isZaiPlanCdpError,
-  resetZaiPlanChrome,
-  ZAI_CAPTCHA_HEADER,
-  ZAI_CAPTCHA_REGION,
-  ZAI_CAPTCHA_REGION_HEADER,
-  zaiPlanBrowserFetch,
-} from "../oauth/zai-plan-captcha";
-import {
   applyZaiPlanSigning,
   isZaiPlanVerifyFailure,
   noteZaiPlanVerifyFailure,
@@ -31,7 +26,6 @@ import {
 import { createAnthropicAdapter } from "./anthropic";
 
 const MAX_TOKENS = 131_072;
-const CAPTCHA_RETRIES = 3;
 
 function isCanonical(baseUrl: string): boolean {
   try {
@@ -57,7 +51,10 @@ function rewriteBody(raw: string, opts?: {
   if (typeof body.model === "string") body.model = canonicalZaiPlanModel(body.model);
   if (typeof body.max_tokens === "number" && body.max_tokens > MAX_TOKENS) body.max_tokens = MAX_TOKENS;
   if (opts?.startPlanSystem !== false) {
-    body.system = buildStartPlanSystemBlocks(typeof body.model === "string" ? body.model : undefined);
+    const original = typeof body.system === "string" ? [{ type: "text", text: body.system }]
+      : Array.isArray(body.system) ? body.system : [];
+    const official = buildStartPlanSystemBlocks(typeof body.model === "string" ? body.model : undefined);
+    body.system = original[0]?.text === official[0].text ? original : [...official, ...original];
   }
   if (opts?.deviceMid) {
     const meta = body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata)
@@ -83,11 +80,6 @@ function rewriteBody(raw: string, opts?: {
     break;
   }
   return JSON.stringify(body);
-}
-
-function identityHeaders(jwt: string): Record<string, string> {
-  const mid = getCredential(ZAI_PLAN_PROVIDER_ID)?.zaiPlan?.deviceMid || crypto.randomUUID();
-  return buildZaiPlanIdentityHeaders(mid);
 }
 
 function dropClaudeHeaders(headers: Record<string, string>): Record<string, string> {
@@ -168,6 +160,8 @@ export function createZaiPlanAdapter(provider: OcxProviderConfig, cacheRetention
     baseUrl: ZAI_PLAN_BASE_URL,
   }, cacheRetention);
 
+  const fetchStartPlan = createZaiPlanTransport();
+  const requestAccounts = new WeakMap<AdapterRequest, ZaiPlanRequestAccount>();
   return {
     ...inner,
     name: "zai-plan",
@@ -181,11 +175,18 @@ export function createZaiPlanAdapter(provider: OcxProviderConfig, cacheRetention
 
     async buildRequest(parsed: OcxParsedRequest, incoming: IncomingMeta): Promise<AdapterRequest> {
       const baseReq = await inner.buildRequest(parsed, incoming);
-      const stored = getCredential(ZAI_PLAN_PROVIDER_ID);
-      const jwt = provider.apiKey?.trim() || stored?.access || "";
+      const jwt = provider.apiKey?.trim() || getCredential(ZAI_PLAN_PROVIDER_ID)?.access || "";
+      assertZaiPlanJwtActive(jwt);
+      const account = getAccountSet(ZAI_PLAN_PROVIDER_ID)?.accounts.find(account => account.credential.access === jwt || account.credential.zaiPlan?.codingKey === jwt);
+      const stored = account?.credential;
+      const bind = (request: AdapterRequest): AdapterRequest => {
+        if (account) requestAccounts.set(request, { id: account.id, credential: structuredClone(account.credential),
+          model: canonicalZaiPlanModel(parsed.modelId), writerGeneration: captureConfigGeneration() });
+        return request;
+      };
       const codingKey = stored?.zaiPlan?.codingKey?.trim();
       const sessionId = stored?.zaiPlan?.sessionId || crypto.randomUUID();
-      const identity = identityHeaders(jwt);
+      const identity = buildZaiPlanIdentityHeaders(stored?.zaiPlan?.deviceMid || crypto.randomUUID());
       const useStartPlan = jwt.split(".").length === 3;
       if (!useStartPlan && codingKey && parseTwoPartKey(codingKey)) {
         const headers = dropClaudeHeaders({
@@ -197,15 +198,15 @@ export function createZaiPlanAdapter(provider: OcxProviderConfig, cacheRetention
           "x-query-id": crypto.randomUUID(),
         });
         delete headers.Authorization;
-        return {
+        return bind({
           ...baseReq,
           url: ZAI_ULTRA_MESSAGES_URL,
           headers,
           body: rewriteBody(String(baseReq.body ?? ""), { startPlanSystem: false }),
-        };
+        });
       }
       const mid = stored?.zaiPlan?.deviceMid || crypto.randomUUID();
-      return {
+      return bind({
         ...baseReq,
         url: ZAI_PLAN_MESSAGES_URL,
         headers: buildOfficialStartPlanHeaders({ jwt, deviceMid: mid }),
@@ -214,107 +215,38 @@ export function createZaiPlanAdapter(provider: OcxProviderConfig, cacheRetention
           deviceMid: mid,
           sessionId,
         }),
-      };
+      });
     },
 
     async fetchResponse(request: AdapterRequest, ctx?: AdapterFetchContext): Promise<Response> {
-      const stored = getCredential(ZAI_PLAN_PROVIDER_ID);
-      const codingKey = stored?.zaiPlan?.codingKey?.trim();
-      if (codingKey && parseTwoPartKey(codingKey) && request.url.includes("/ultra")) {
-        const send = async (headers: Record<string, string>) => fetch(request.url, {
-          method: request.method,
-          headers,
-          body: String(request.body ?? ""),
-          signal: ctx?.abortSignal ?? AbortSignal.timeout(120_000),
+      if (!request.url.includes("/ultra")) {
+        const account = requestAccounts.get(request);
+        if (!account) return fetchStartPlan(request, ctx);
+        const { zaiPlanHealth } = await import("../oauth/zai-plan-health");
+        let local = false;
+        const response = await fetchStartPlan(request, ctx, () => {
+          const refused = zaiPlanHealth.before(account);
+          if (refused) local = true;
+          return refused;
         });
-        let headers = await applyZaiPlanSigning({
-          url: request.url,
-          headers: request.headers as Record<string, string>,
-          credential: codingKey,
+        if (!local) await zaiPlanHealth.observe(account, response, ctx?.abortSignal);
+        return response;
+      }
+      // Coding requests retain their selected key and never switch the billing plan implicitly.
+      const codingKey = request.headers["x-api-key"] ?? "";
+      const send = createAdapterPhysicalSend(ctx);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const headers = await applyZaiPlanSigning({ url: request.url, headers: request.headers, credential: codingKey });
+        const response = await send({ url: request.url, sendClass: attempt ? "auth-recovery" : "initial",
+          dispatch: executor => executor(request.url, {
+            method: request.method, headers, body: request.body, redirect: "error", signal: ctx?.abortSignal,
+          }),
         });
-        let resp = await send(headers);
-        if (await isZaiPlanVerifyFailure(resp)) {
-          const next = noteZaiPlanVerifyFailure();
-          if (next === "retry") {
-            headers = await applyZaiPlanSigning({
-              url: request.url,
-              headers: request.headers as Record<string, string>,
-              credential: codingKey,
-            });
-            resp = await send(headers);
-            if (await isZaiPlanVerifyFailure(resp)) noteZaiPlanVerifyFailure();
-          }
-        }
-        const text = await resp.text();
-        if (!isZaiPlanQuotaFail(resp.status, text)) {
-          return new Response(text, {
-            status: resp.status,
-            headers: { "content-type": resp.headers.get("content-type") ?? "application/json" },
-          });
-        }
-        // Coding-plan key has no quota (Start Plan only) — fall through to JWT+captcha.
-        const jwt = stored?.access || "";
-        const mid = stored?.zaiPlan?.deviceMid || crypto.randomUUID();
-        request = {
-          ...request,
-          url: ZAI_PLAN_MESSAGES_URL,
-          headers: buildOfficialStartPlanHeaders({
-            jwt,
-            deviceMid: mid,
-          }),
-          body: rewriteBody(String(request.body ?? ""), {
-            startPlanSystem: true,
-            deviceMid: mid,
-            sessionId: stored?.zaiPlan?.sessionId || crypto.randomUUID(),
-          }),
-        };
+        if (attempt || !await isZaiPlanVerifyFailure(response)) return response;
+        noteZaiPlanVerifyFailure();
+        await response.body?.cancel();
       }
-
-      let lastText = "";
-      let lastStatus = 0;
-      for (let attempt = 0; attempt < CAPTCHA_RETRIES; attempt++) {
-        try {
-          const param = await getZaiPlanVerifyParam(ctx?.abortSignal);
-          const headers = {
-            ...(request.headers as Record<string, string>),
-            [ZAI_CAPTCHA_HEADER]: param,
-            [ZAI_CAPTCHA_REGION_HEADER]: ZAI_CAPTCHA_REGION,
-          };
-          const viaChrome = await zaiPlanBrowserFetch({
-            url: request.url,
-            headers,
-            body: String(request.body ?? ""),
-            signal: ctx?.abortSignal,
-          });
-          lastStatus = viaChrome.status;
-          if (viaChrome.status >= 400) {
-            lastText = await new Response(viaChrome.body).text();
-            if (isCaptchaFail(viaChrome.status, lastText)) {
-              invalidateZaiPlanCaptcha();
-              continue;
-            }
-            if (isZaiPlanQuotaFail(viaChrome.status, lastText)) {
-              return jsonResponse(402, { error: { type: "insufficient_quota", message: "ZCode Plan quota exhausted" } });
-            }
-            return new Response(lastText, {
-              status: viaChrome.status,
-              headers: { "content-type": viaChrome.headers["content-type"] ?? "application/json" },
-            });
-          }
-          return new Response(viaChrome.body, {
-            status: viaChrome.status,
-            headers: { "content-type": viaChrome.headers["content-type"] ?? "application/json" },
-          });
-        } catch (err) {
-          if (ctx?.abortSignal?.aborted) throw err;
-          if (isZaiPlanCdpError(err) && attempt < CAPTCHA_RETRIES - 1) {
-            resetZaiPlanChrome();
-            continue;
-          }
-          throw err;
-        }
-      }
-      return new Response(lastText, { status: lastStatus || 400, headers: { "content-type": "application/json" } });
+      throw new Error("ZCode Plan signing recovery exhausted");
     },
   };
 }

@@ -1,8 +1,10 @@
+import { zaiPlanCopy } from "./zai-plan-copy";
 import { desktopCompatibilityCopy } from "./desktop-compatibility-copy";
 import type { TKey } from "./en";
 
 /** Traditional Chinese (Taiwan) UI strings — keys must match `en.ts` 1:1. */
 export const zhTW: Record<TKey, string> = {
+  ...zaiPlanCopy["zh-TW"],
   ...desktopCompatibilityCopy("zh-TW"),
   "claude.tierDefaults.unset": "未設定（保留現有 Claude 設定）",
   "claude.tierDefaults.recovery": "套用已停止，自動還原失敗。重試前請檢查下方備份。",
@@ -1462,6 +1464,7 @@ export const zhTW: Record<TKey, string> = {
   "pws.noModelMatch": "沒有符合篩選條件的模型。",
   "pws.adapterBaseRequired": "介面卡和基本 URL 為必填項。",
   "pws.addAccount": "新增帳號",
+  "pws.addCnAccount": "新增國內版帳號",
   "pws.addGlobalAccount": "新增國際站帳號",
   "pws.addKey": "新增 API 金鑰",
   "pws.apiKeys": "API 金鑰",

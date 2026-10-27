@@ -1,3 +1,4 @@
+import { zaiPlanCopy } from "./zai-plan-copy";
 import { desktopCompatibilityCopy } from "./desktop-compatibility-copy";
 // German — generated from en.ts. Must match TKey set (compile-checked).
 import type { TKey } from "./en";
@@ -6,6 +7,7 @@ import type { TKey } from "./en";
  * German i18n catalog, generated from en.ts. Must match the `TKey` set (compile-checked).
  */
 export const de: Record<TKey, string> = {
+  ...zaiPlanCopy["de"],
   ...desktopCompatibilityCopy("de"),
   "claude.tierDefaults.unset": "Nicht festgelegt (Claude-Einstellung beibehalten)",
   "claude.tierDefaults.recovery": "Anwendung gestoppt; automatische Wiederherstellung fehlgeschlagen. Prüfen Sie vor einem erneuten Versuch die Sicherung unten.",
@@ -2865,6 +2867,7 @@ export const de: Record<TKey, string> = {
  "pws.noModelMatch": "Keine Modelle entsprechen dem Filter.",
   "pws.adapterBaseRequired": "Adapter und Basis-URL sind erforderlich.",
   "pws.addAccount": "Konto hinzufügen",
+  "pws.addCnAccount": "CN-Konto hinzufügen",
   "pws.addGlobalAccount": "Globales Konto hinzufügen",
   "pws.addKey": "API-Schlüssel hinzufügen",
   "pws.apiKeys": "API-Schlüssel",

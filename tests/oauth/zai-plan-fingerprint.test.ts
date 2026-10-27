@@ -6,6 +6,7 @@ import {
   buildOfficialStartPlanHeaders,
   buildStartPlanSystemBlocks,
   officialMetadataUserId,
+  ZAI_PLAN_APP_VERSION,
 } from "../../src/oauth/zai-plan";
 import {
   ZAI_PLAN_CHROME_WINDOW,
@@ -27,7 +28,7 @@ describe("zai-plan official fingerprint", () => {
       jwt: "aaa.bbb.ccc",
       deviceMid: "device-mid-test",
     });
-    expect(headers["User-Agent"]).toBe("ZCode/3.11.2");
+    expect(headers["User-Agent"]).toBe(`ZCode/${ZAI_PLAN_APP_VERSION}`);
     expect(headers["X-Title"]).toBe("Z Code@electron");
     expect(headers["X-ZCode-Agent"]).toBe("glm");
     expect(headers["X-Device-Mid"]).toBeUndefined();
@@ -47,13 +48,13 @@ describe("zai-plan official fingerprint", () => {
     });
   });
 
-  test("system blocks include desktop context and powered-by inside Environment", () => {
+  test("product and stable desktop blocks do not invent a foreign runtime environment", () => {
     const blocks = buildStartPlanSystemBlocks("GLM-5.3-Flash");
     expect(blocks.map((b) => b.text).join("\n")).toContain("# ZCode Desktop Context");
-    const env = blocks.at(-1)?.text ?? "";
-    expect(env.startsWith("# Environment")).toBe(true);
-    expect(env).toContain("- You are powered by the model named GLM-5.3-Flash.");
-    expect(blocks.some((b) => b.text === "- You are powered by the model named GLM-5.3-Flash.")).toBe(false);
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0].cache_control).toBeUndefined();
+    expect(blocks[1].text).toContain("clickable.\n# ZCode Desktop Context");
+    expect(blocks[1].text).not.toContain("Primary working directory: unknown");
   });
 
   test("captcha Chrome stays headed and on-screen so Aliyun can paint", () => {
@@ -112,11 +113,9 @@ describe("zai-plan official fingerprint", () => {
     expect(source).not.toContain("await res.text()");
     expect(source).toContain("parkChromeWindowsForPid(slot.pid)");
     expect(source).toContain("ensureChrome({ reveal: false })");
-    const adapter = readFileSync(repoPath("src", "adapters", "zai-plan.ts"), "utf8");
-    expect(adapter).toContain("getZaiPlanVerifyParam(ctx?.abortSignal)");
-    expect(adapter).toContain("signal: ctx?.abortSignal");
-    expect(adapter).toContain("return new Response(viaChrome.body");
-    expect(adapter).toContain("isZaiPlanCdpError");
-    expect(adapter).toContain("resetZaiPlanChrome");
+    const adapter = readFileSync(repoPath("src", "adapters", "zai-plan-transport.ts"), "utf8");
+    expect(adapter).toContain("getZaiPlanVerifyParam(ctx.abortSignal)");
+    expect(adapter).toContain("signal: init?.signal ?? ctx.abortSignal");
+    expect(adapter).toContain("return new Response(result.body");
   });
 });

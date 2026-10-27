@@ -90,6 +90,13 @@ function headroomOf(provider: string, accountId: string, requestedModelId?: stri
     ? evidence?.quotaPercent === undefined ? null : { monthlyPercent: evidence.quotaPercent, updatedAt: Date.now() }
     : getCachedProviderAccountQuota(provider, accountId);
   if (!quota) return null;
+  if (provider === "zai-plan") {
+    if (!requestedModelId || Date.now() - quota.updatedAt >= 60_000) return null;
+    const model = requestedModelId.replace(/^zai-plan\//i, "").toLowerCase();
+    const windows = (quota.customWindows ?? []).filter(window => window.scope === "model"
+      && window.modelId?.toLowerCase() === model && (!window.resetAt || window.resetAt > Date.now()));
+    return windows.length ? 100 - Math.max(...windows.map(window => window.percent)) : null;
+  }
   // Null, not a low rank: this must reproduce "no evidence" so a stale roster degrades to
   // the unranked ring rather than to a differently wrong answer.
   if (hasPassiveAccountQuota(provider) && Date.now() - quota.updatedAt > PASSIVE_HEADROOM_MAX_AGE_MS) return null;
