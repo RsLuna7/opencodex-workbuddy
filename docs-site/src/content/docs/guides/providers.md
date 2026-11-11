@@ -26,6 +26,10 @@ without changing the saved active account; a 14018 refusal cools the whole accou
 dashboard shows remaining credits and, for CN accounts, check-in and daily-task status.
 `ocx account checkin workbuddy --status` reads check-in status without claiming it.
 
+WorkBuddy requests normalize fixed client prompt markers, including DeepSeek Harness's
+file-reference introduction, to avoid known `400 / 11128` channel-verification refusals.
+The file-reference instructions retain their meaning; unrelated upstream refusals are returned unchanged.
+
 `zai-plan` is the ZCode Plan OAuth provider. Use `ocx account login zai-plan` and select a
 `zai-plan/<model>` route. It is separate from the ZCode client integration, which configures
 ZCode to call the local proxy.
