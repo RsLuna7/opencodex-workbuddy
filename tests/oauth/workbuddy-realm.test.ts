@@ -179,6 +179,24 @@ describe("workbuddy payload", () => {
     expect(parsed.messages[0]?.role).toBe("system");
     expect(parsed.messages[1]?.content).toContain("CLI tool for Claude");
   });
+
+  test("normalizes the DSH file-reference opener rejected by channel verification", () => {
+    const opener = "Tokens prefixed with @ are paths the user explicitly referenced.";
+    const remainder = " Relative paths resolve from the workspace root; absolute paths identify files or directories on the host."
+      + " A trailing slash marks a directory: list it when its contents matter."
+      + " Anything else is a file: use the read tool when its contents are needed, and do not claim to have inspected it before reading."
+      + ' @"..." quotes a path containing spaces.';
+    const raw = JSON.stringify({
+      messages: [{ role: "system", content: opener + remainder }, { role: "user", content: "Inspect @src/index.ts" }],
+      tools: [{ type: "function", function: { name: "read", parameters: { type: "object" } } }],
+    });
+    const result = JSON.parse(prepareWorkbuddyChatBody(raw, { ensureSystem: false, sanitize: true }));
+    expect(result.messages[0].content).toBe("Paths prefixed with @ were explicitly referenced by the user." + remainder);
+    expect(result.messages[1]).toEqual(JSON.parse(raw).messages[1]);
+    expect(result.tools).toEqual(JSON.parse(raw).tools);
+    expect(prepareWorkbuddyChatBody(raw, { ensureSystem: false, sanitize: false })).toBe(raw);
+    expect(sanitizeWorkbuddyFingerprintText(result.messages[0].content)).toBe(result.messages[0].content);
+  });
 });
 
 describe("parseCodebuddyResetAtMs english 6004", () => {

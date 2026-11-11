@@ -19,11 +19,16 @@ const FINGERPRINT_NEEDLES = [
   "You are interacting with the user through the DeepSeek Harness Web GUI",
   "Current DeepSeek Harness implementation checkout:",
   "Current DeepSeek Harness Web GUI URL:",
+  "Tokens prefixed with @ are paths the user explicitly referenced.",
   "github.com/anthropics/",
   "11128",
 ];
 
 const FINGERPRINT_REWRITES: Array<[string, string]> = [
+  [
+    "Tokens prefixed with @ are paths the user explicitly referenced.",
+    "Paths prefixed with @ were explicitly referenced by the user.",
+  ],
   [
     "You are Claude Code, Anthropic's official CLI for Claude",
     "You are Claude Code, Anthropic's official CLI tool for Claude",
