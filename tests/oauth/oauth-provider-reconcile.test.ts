@@ -9,6 +9,7 @@ import {
   setPersistedConfigMutationBeforeCommitForTests,
 } from "../../src/config";
 import { OAUTH_PROVIDERS, reconcileOAuthProviders, upsertOAuthProvider } from "../../src/oauth";
+import { PROVIDER_REGISTRY } from "../../src/providers/registry";
 import { getCredential, saveCredential } from "../../src/oauth/store";
 import { routeModel } from "../../src/router";
 import { CURSOR_NO_VISION_MODELS, CURSOR_STATIC_MODELS, cursorModelIds } from "../../src/adapters/cursor/discovery";
@@ -262,12 +263,13 @@ describe("OAuth provider reconciliation", () => {
     expect(reconcileOAuthProviders(config)).toBe(true);
     const provider = config.providers["google-antigravity"];
     expect(provider.defaultModel).toBe("gemini-3.5-flash-low");
-    expect(provider.models).toEqual([
-      "gemini-3.8-flash",
-      "gemini-4-argon",
-      "claude-opus-5-5",
-      "claude-sonnet-5-5",
-    ]);
+    // Against the registry seed rather than a restated list: this used to spell out the lineup and
+    // went stale when Gemini 4 Hydrogen joined it, failing on a count instead of on the property
+    // under test (a saved row is refilled from the seed).
+    expect(provider.models).toEqual(
+      PROVIDER_REGISTRY.find(entry => entry.id === "google-antigravity")!.models,
+    );
+    expect(provider.models).toContain("gemini-4-hydrogen");
     expect(provider.models).not.toContain("gemini-3.5-flash-low");
     expect(provider.models).not.toContain("gemini-3.6-flash");
     expect(provider.models).not.toContain("gemini-3.6-flash-low");
@@ -324,7 +326,11 @@ describe("OAuth provider reconciliation", () => {
 
     upsertOAuthProvider(config, "google-antigravity");
     expect(config.providers["google-antigravity"].liveModels).toBe(true);
-    expect(config.providers["google-antigravity"].models).toHaveLength(4);
+    // Against the registry seed, not a restated count: the literal said 4 and went stale the
+    // moment Gemini 4 Hydrogen joined the lineup, while the property under test (the saved row
+    // is refilled from the seed) was still holding.
+    expect(config.providers["google-antigravity"].models)
+      .toHaveLength(PROVIDER_REGISTRY.find(entry => entry.id === "google-antigravity")!.models!.length);
   });
 
   test("an explicit 3.7 default survives the 3.8 launch while its capabilities refresh", () => {
