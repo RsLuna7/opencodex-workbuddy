@@ -482,6 +482,32 @@ export const ANTIGRAVITY_MODEL_INPUT_MODALITIES: Record<string, string[]> = {
   "gpt-oss-120b-medium": ["text"],
 };
 
+/**
+ * Output ceilings per picker model, from each model's own `:fetchAvailableModels` `maxOutputTokens`
+ * (measured 2026-11-14). Carried in the registry so every consumer — the catalog, the dashboard,
+ * and client exports — reads the same number the adapter clamps to.
+ *
+ * Two values differ sharply from what a family-name assumption produced: Gemini 4 Hydrogen allows
+ * 262,144 (4x the Flash ceiling), and Claude 5.5 allows 128,000 (2x the older Claude ids on this
+ * surface). Both were being truncated silently before they were measured.
+ *
+ * `gemini-4-carbon` is deliberately absent: it is plan-gated upstream (`disabled: true`), so it is
+ * never published and never routable. `gemini-3.1-pro` is absent for a different reason: it no
+ * longer appears in discovery at all, so its ceiling would be an invented number. Without an entry
+ * the adapter's existing Pro rule still applies, which is what it has always used.
+ */
+export const ANTIGRAVITY_MODEL_MAX_OUTPUT_TOKENS: Record<string, number> = {
+  [GEMINI_HYDROGEN]: 262_144,
+  [GEMINI_ARGON]: 65_536,
+  "gemini-3.8-flash": 65_536,
+  "gemini-3.7-flash": 65_536,
+  [CLAUDE_OPUS_55]: 128_000,
+  [CLAUDE_SONNET_55]: 128_000,
+  "claude-sonnet-4-6": 64_000,
+  "claude-opus-4-6-thinking": 64_000,
+  "gpt-oss-120b-medium": 32_768,
+};
+
 export interface AntigravityAvailableModel {
   id: string;
   /** CCA model id used by the agent envelope when `id` comes from display metadata. */

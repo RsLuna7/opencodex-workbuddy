@@ -136,10 +136,18 @@ function stripAntigravityBillingHeader(systemText: string): string {
 export function maxOutputTokensForGoogleModel(modelId: string): number | undefined {
   const lower = modelId.toLowerCase().trim();
   if (lower.startsWith("gemini")) {
+    // Gemini 4 Hydrogen publishes a 262,144 output ceiling, four times the Flash ceiling below —
+    // measured from its own `:fetchAvailableModels` maxOutputTokens on 2026-11-14, not inferred
+    // from the family name. Without this branch it inherited the 65,536 Flash default and silently
+    // truncated every long Hydrogen answer.
+    if (/^gemini-4-hydrogen(-|$)/.test(lower)) return 262144;
     // Pro tops out one token below the flash/other Gemini ceiling; both are documented values.
     return /(^|[-.])pro([-.]|$)/.test(lower) ? 65535 : 65536;
   }
-  if (lower.startsWith("claude")) return 64000;
+  // Claude on Cloud Code Assist reports 128,000 for the 5.5 generation, measured from its own
+  // `:fetchAvailableModels` on 2026-11-14. Older Claude ids on this surface keep the 64,000
+  // ceiling; only the generation that was measured gets the larger number.
+  if (lower.startsWith("claude")) return /-5-5(-|$)/.test(lower) ? 128000 : 64000;
   if (lower.startsWith("gpt-oss")) return 32768;
   return undefined;
 }

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createGoogleAdapter as createGoogleAdapterProduction } from "../../../src/adapters/google";
+import { maxOutputTokensForGoogleModel } from "../../../src/adapters/google";
 import { antigravityCliUserAgent } from "../../../src/adapters/client-fingerprint";
 import { antigravityFingerprintDecision } from "../../../src/adapters/google-antigravity-wire";
 import {
@@ -15,6 +16,7 @@ import {
   ANTIGRAVITY_MODEL_CONTEXT_WINDOWS,
   ANTIGRAVITY_MODEL_EFFORTS,
   ANTIGRAVITY_MODEL_INPUT_MODALITIES,
+  ANTIGRAVITY_MODEL_MAX_OUTPUT_TOKENS,
   canonicalAntigravityUsageModel,
   isAntigravitySuffixModelId,
   parseAntigravityAvailableModels,
@@ -230,6 +232,32 @@ describe("Antigravity static lineup (3.8 / 4 / 5.5 / 5.5)", () => {
     expect(ANTIGRAVITY_MODEL_EFFORTS["gemini-4-argon"]).toEqual(["low", "medium", "high"]);
     expect(resolveAntigravityEffortWireModel("gemini-4-argon", "xhigh"))
       .toEqual({ wireModelId: "gemini-4-argon-high" });
+  });
+
+  test("output ceilings match each model's own discovery metadata, not its family name", () => {
+    // Measured from :fetchAvailableModels maxOutputTokens on 2026-11-14. Two values are far from
+    // what a family-name rule produced: Hydrogen allows 4x the Flash ceiling, and Claude 5.5 twice
+    // the older Claude ids. Both were truncated silently before they were measured, so both the
+    // registry record and the adapter clamp are asserted against the same number here.
+    expect(ANTIGRAVITY_MODEL_MAX_OUTPUT_TOKENS["gemini-4-hydrogen"]).toBe(262_144);
+    expect(ANTIGRAVITY_MODEL_MAX_OUTPUT_TOKENS["claude-opus-5-5"]).toBe(128_000);
+    expect(ANTIGRAVITY_MODEL_MAX_OUTPUT_TOKENS["claude-sonnet-5-5"]).toBe(128_000);
+    expect(ANTIGRAVITY_MODEL_MAX_OUTPUT_TOKENS["gemini-3.8-flash"]).toBe(65_536);
+    expect(ANTIGRAVITY_MODEL_MAX_OUTPUT_TOKENS["claude-opus-4-6-thinking"]).toBe(64_000);
+    expect(ANTIGRAVITY_MODEL_MAX_OUTPUT_TOKENS["gpt-oss-120b-medium"]).toBe(32_768);
+    // The plan-gated model is absent because it is never published.
+    expect(ANTIGRAVITY_MODEL_MAX_OUTPUT_TOKENS["gemini-4-carbon"]).toBeUndefined();
+    // `gemini-3.1-pro` is absent because discovery no longer returns it, so a ceiling here would be
+    // invented; the adapter's existing Pro rule still applies.
+    expect(ANTIGRAVITY_MODEL_MAX_OUTPUT_TOKENS["gemini-3.1-pro"]).toBeUndefined();
+
+    for (const [modelId, ceiling] of Object.entries(ANTIGRAVITY_MODEL_MAX_OUTPUT_TOKENS)) {
+      // The adapter must agree with the registry, or a request the catalog says is allowed is
+      // silently clipped on the wire.
+      expect(maxOutputTokensForGoogleModel(modelId), modelId).toBe(ceiling);
+    }
+    const entry = PROVIDER_REGISTRY.find(candidate => candidate.id === "google-antigravity");
+    expect(entry?.modelMaxOutputTokens).toEqual(ANTIGRAVITY_MODEL_MAX_OUTPUT_TOKENS);
   });
 
   test("Claude 5.5 efforts ride their suffix wire ids on the IDE UA", async () => {
