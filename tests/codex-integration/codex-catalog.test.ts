@@ -4667,7 +4667,9 @@ describe("Codex catalog routed normalization", () => {
 
     expect(fetchCalls).toBe(0);
     expect(ids).toEqual([...(provider.models ?? [])].sort());
-    expect(ids).toHaveLength(4);
+    // Derived, not restated: this literal said 4 and went stale the moment Gemini 4 Hydrogen
+    // joined the static lineup. The lineup is asserted where it is owned.
+    expect(ids).toHaveLength(provider.models?.length ?? 0);
     expect(getProviderDiscoveryStatus(providerName)).toBeUndefined();
 
     markProviderDiscoveryFailed(providerName, { reason: "http", httpStatus: 404 });
