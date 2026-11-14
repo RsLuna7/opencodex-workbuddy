@@ -91,6 +91,7 @@
   "gui-pair-delivery.test.ts": "gui",
   "usage-antigravity-55.test.ts": "usage", "provider-antigravity-wire-snapshot.test.ts": "providers",
   "antigravity-discovered-families.test.ts": "adapters/google",
+  "antigravity-client-family-learning.test.ts": "adapters/google",
   "provider-antigravity-effort-families.test.ts": "providers",
   "provider-antigravity-family-catalog.test.ts": "providers",
   "claude-subagent-model-force.test.ts": "claude-integration",

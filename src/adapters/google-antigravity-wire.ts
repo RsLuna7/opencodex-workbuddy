@@ -27,9 +27,115 @@ export const ANTIGRAVITY_DISCOVERY_UA = ANTIGRAVITY_CLI_REQUEST_UA;
 /** Wire ids CCA serves only to the CLI client family (verified 2026-10-14). */
 const ANTIGRAVITY_CLI_ONLY_WIRE_MODEL = /^gemini-4-argon(?:-(?:low|medium|high))?$/;
 
+/**
+ * Client family a wire model needs, learned from what the backend actually answered.
+ *
+ * The static rules below cannot be complete, because the gate is Google's and it moves: Argon
+ * shipped after the `gemini-3.7-*` gate was pinned, and Hydrogen shipped after Argon was pinned to
+ * a literal id list. Each time, a model the account can legitimately call answers
+ * 404 NOT_FOUND under the family we guessed, which reads to the operator as "model not found"
+ * even though discovery had just listed it.
+ *
+ * So the guess is only a HINT. This store records what the wire said, and the next request takes
+ * the learned family directly. Entries are per base URL, process-scoped and bounded: a restart
+ * forgets them and the next request re-learns in one extra round trip. Persisting them to disk
+ * would make a stale guess outlive the backend change that invalidated it, which is the failure
+ * this exists to shorten, not to cache.
+ */
+type AntigravityClientFamily = "cli" | "ide";
+const ANTIGRAVITY_CLIENT_FAMILY_MAX = 512;
+const learnedClientFamily = new Map<string, AntigravityClientFamily>();
+
+/** Family a model was OBSERVED to need, or `undefined` when the wire never told us. */
+export function antigravityLearnedClientFamily(baseUrl: string | undefined, wireModelId: string): AntigravityClientFamily | undefined {
+  return learnedClientFamily.get(learnedClientFamilyKey(baseUrl, wireModelId));
+}
+
+function learnedClientFamilyKey(baseUrl: string | undefined, wireModelId: string): string {
+  return `${(baseUrl ?? "").trim().toLowerCase()}\u0000${wireModelId}`;
+}
+
+/** Record the family that actually served — or refused — this model. */
+export function learnAntigravityClientFamily(
+  baseUrl: string | undefined,
+  wireModelId: string,
+  family: AntigravityClientFamily,
+): void {
+  const key = learnedClientFamilyKey(baseUrl, wireModelId);
+  // Re-insert so the LRU order tracks recency rather than first sighting.
+  learnedClientFamily.delete(key);
+  if (learnedClientFamily.size >= ANTIGRAVITY_CLIENT_FAMILY_MAX) {
+    const oldest = learnedClientFamily.keys().next();
+    if (!oldest.done) learnedClientFamily.delete(oldest.value);
+  }
+  learnedClientFamily.set(key, family);
+}
+
+/** Drop one learned family, or all of them. For account changes and tests. */
+export function clearAntigravityLearnedClientFamilies(): void {
+  learnedClientFamily.clear();
+}
+
+/**
+ * The static guess for a wire model, refined by anything the wire already told us.
+ *
+ * Static rules, in order: an observed family always wins; then every `gemini-4-*` id goes to the
+ * CLI family, not just Argon — the whole generation is gated that way (verified 2026-11-14:
+ * `gemini-4-hydrogen-{low,medium,high,xhigh}` and every `gemini-4-argon-*` 404 under
+ * `antigravity/ide/2.5.5` and answer under `antigravity/cli/1.3.4`, across IDE versions 2.5.5
+ * through 3.0.0). A future `gemini-5-*` generation would need to be added here, and if it is not,
+ * the first request learns it instead of failing the turn.
+ */
+function staticAntigravityClientFamily(wireModelId: string): AntigravityClientFamily {
+  if (ANTIGRAVITY_CLI_ONLY_WIRE_MODEL.test(wireModelId)) return "cli";
+  // Narrow on purpose: `gemini-4-carbon-disabled` is 404 under BOTH families, so a family switch
+  // is not its remedy and must not be recorded as one. Only ids whose version is known to gate
+  // by family widen this.
+  if (/^gemini-4-/.test(wireModelId) && !wireModelId.endsWith("-disabled")) return "cli";
+  return "ide";
+}
+
+function userAgentForFamily(family: AntigravityClientFamily): string {
+  return family === "cli" ? ANTIGRAVITY_CLI_REQUEST_UA : ANTIGRAVITY_REQUEST_UA;
+}
+
 /** The User-Agent an Antigravity inference request for `wireModelId` must carry. */
-export function antigravityUserAgentForWireModel(wireModelId: string): string {
-  return ANTIGRAVITY_CLI_ONLY_WIRE_MODEL.test(wireModelId) ? ANTIGRAVITY_CLI_REQUEST_UA : ANTIGRAVITY_REQUEST_UA;
+export function antigravityUserAgentForWireModel(wireModelId: string, baseUrl?: string): string {
+  const learned = antigravityLearnedClientFamily(baseUrl, wireModelId);
+  return userAgentForFamily(learned ?? staticAntigravityClientFamily(wireModelId));
+}
+
+/** The other family, for a one-shot fingerprint replay. */
+function oppositeFamily(family: AntigravityClientFamily): AntigravityClientFamily {
+  return family === "cli" ? "ide" : "cli";
+}
+
+/**
+ * Decide what to do with a rejected Antigravity response, and remember the outcome.
+ *
+ * A 404 from Cloud Code Assist does not mean "no such model" — the body was never inspected,
+ * because the client family gate rejects before inference. So a 404 is treated as evidence about
+ * the FINGERPRINT: remember that this model is not served to the family we just used, and ask the
+ * caller to replay once with the other one. A success records the family that worked, which is
+ * what makes the replay a one-time cost per model per process.
+ *
+ * Every other status means the fingerprint was accepted, so the family is confirmed and nothing
+ * is replayed: a 400/429/500 for this model is about the request, not the client.
+ */
+export function antigravityFingerprintDecision(
+  baseUrl: string | undefined,
+  wireModelId: string,
+  status: number,
+): { retryUserAgent?: string; learned: AntigravityClientFamily } {
+  const attempted = antigravityLearnedClientFamily(baseUrl, wireModelId)
+    ?? staticAntigravityClientFamily(wireModelId);
+  if (status !== 404) {
+    learnAntigravityClientFamily(baseUrl, wireModelId, attempted);
+    return { learned: attempted };
+  }
+  const fallback = oppositeFamily(attempted);
+  learnAntigravityClientFamily(baseUrl, wireModelId, fallback);
+  return { retryUserAgent: userAgentForFamily(fallback), learned: fallback };
 }
 
 /**

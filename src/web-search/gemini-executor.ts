@@ -74,7 +74,7 @@ export async function runGeminiWebSearch(
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${token}`,
-          "User-Agent": antigravityUserAgentForWireModel(wireModelId),
+          "User-Agent": antigravityUserAgentForWireModel(wireModelId, base),
         },
         body: JSON.stringify(envelope),
         signal: linkedSignal.signal,

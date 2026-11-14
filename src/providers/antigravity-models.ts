@@ -25,6 +25,13 @@ const GEMINI_FLASH_CURRENT = "gemini-3.8-flash";
 const GEMINI_ARGON = "gemini-4-argon";
 
 /**
+ * Gemini 4 Hydrogen. Same per-tier suffix family as Argon and 3.8, but with FOUR rungs: it
+ * publishes `-low`, `-medium`, `-high` and `-xhigh` (verified against live CCA on 2026-11-14).
+ * Only the CLI client family serves it; see `antigravityUserAgentForWireModel`.
+ */
+const GEMINI_HYDROGEN = "gemini-4-hydrogen";
+
+/**
  * Claude 5.5 on Antigravity: one wire id per tier (`-low/-medium/-high`), each 1,000,000 tokens
  * with image input, observed in live CCA discovery on 2026-10-03
  * (devlog/_fin/261003_release_lane_c). They ride the IDE User-Agent like every non-Argon model.
@@ -114,11 +121,28 @@ const ANTIGRAVITY_WIRE_IDS_BY_PICKER_MODEL: Record<string, string[]> = Object.en
 }, {});
 
 const ANTIGRAVITY_DISCOVERY_EFFORTS = ["low", "medium", "high"] as const;
-type AntigravityDiscoveryEffort = typeof ANTIGRAVITY_DISCOVERY_EFFORTS[number];
+type AntigravityDiscoveryEffort = typeof ANTIGRAVITY_DISCOVERY_EFFORTS[number] | AntigravityOptionalEffort;
+
+/**
+ * Rungs beyond the standard low/medium/high ladder, published only by some families.
+ *
+ * Gemini 4 Hydrogen is the first: CCA serves `gemini-4-hydrogen-xhigh` beside the usual three.
+ * These are deliberately NOT part of `ANTIGRAVITY_DISCOVERY_EFFORTS`, because a collapsed family
+ * requires a COMPLETE ladder — folding `xhigh` into that list would make every family without it
+ * (3.8 Flash, Claude 5.5) fail the completeness test and shatter back into per-tier wire rows.
+ */
+const ANTIGRAVITY_OPTIONAL_EFFORTS = ["xhigh"] as const;
+type AntigravityOptionalEffort = typeof ANTIGRAVITY_OPTIONAL_EFFORTS[number];
+
+function isAntigravityOptionalEffort(value: string): value is AntigravityOptionalEffort {
+  return (ANTIGRAVITY_OPTIONAL_EFFORTS as readonly string[]).includes(value);
+}
+
 type AntigravityEffortWireModelIds = Partial<Record<AntigravityDiscoveryEffort, string>>;
 
 function isAntigravityDiscoveryEffort(value: string): value is AntigravityDiscoveryEffort {
-  return (ANTIGRAVITY_DISCOVERY_EFFORTS as readonly string[]).includes(value);
+  return (ANTIGRAVITY_DISCOVERY_EFFORTS as readonly string[]).includes(value)
+    || isAntigravityOptionalEffort(value);
 }
 
 function pickerModelIdForDiscoveredWireId(
@@ -144,7 +168,7 @@ function pickerModelIdForDiscoveredWireId(
     if (isKnownAntigravityPickerModelId(baseId)) return baseId;
   }
 
-  const effortMatch = /^(.*)-(low|medium|high)$/.exec(wireId);
+  const effortMatch = /^(.*)-(low|medium|high|xhigh)$/.exec(wireId);
   if (effortMatch) {
     const baseId = effortMatch[1]!;
     if (isValidModelDiscoveryModelId(baseId)
@@ -190,6 +214,10 @@ export const ANTIGRAVITY_MODEL_EFFORTS: Record<string, string[]> = {
   // No `minimal`: Google documents it as an error for this generation, and CCA exposes only
   // the three tiers. Argon documents the same ladder (`minimal` is an HTTP 400).
   [GEMINI_ARGON]: ["low", "medium", "high"],
+  // Hydrogen is the one family CCA publishes with a fourth rung. Kept as a literal because
+  // `ANTIGRAVITY_EFFORT_WIRE_MAP` is declared below it; the regression test asserts the two agree,
+  // so an advertised effort still cannot drift from a routable wire id.
+  [GEMINI_HYDROGEN]: ["low", "medium", "high", "xhigh"],
   "gemini-3.8-flash": ["low", "medium", "high"],
   [CLAUDE_OPUS_55]: ["low", "medium", "high"],
   [CLAUDE_SONNET_55]: ["low", "medium", "high"],
@@ -207,6 +235,15 @@ const ANTIGRAVITY_EFFORT_WIRE_MAP: Record<string, Record<string, string>> = {
     low: "gemini-4-argon-low",
     medium: "gemini-4-argon-medium",
     high: "gemini-4-argon-high",
+  },
+  // Hydrogen adds a fourth rung. Listing it here is what keeps the static path from silently
+  // dropping a user's `xhigh` selection to `high`, which is what `resolveAntigravityThinkingLevel`
+  // alone would have done.
+  [GEMINI_HYDROGEN]: {
+    low: "gemini-4-hydrogen-low",
+    medium: "gemini-4-hydrogen-medium",
+    high: "gemini-4-hydrogen-high",
+    xhigh: "gemini-4-hydrogen-xhigh",
   },
   // Claude 5.5 publishes the same per-tier suffix family.
   [CLAUDE_OPUS_55]: {
@@ -241,7 +278,7 @@ const ANTIGRAVITY_EFFORT_WIRE_MAP: Record<string, Record<string, string>> = {
  * `gemini-3.1-pro` is deliberately absent: its `high` rung is `gemini-pro-agent`, which carries
  * no tier suffix, so there the level is the only thing naming the effort.
  */
-const ANTIGRAVITY_SUFFIX_TIER_MODELS = new Set([GEMINI_ARGON, "gemini-3.8-flash", CLAUDE_OPUS_55, CLAUDE_SONNET_55]);
+const ANTIGRAVITY_SUFFIX_TIER_MODELS = new Set([GEMINI_ARGON, GEMINI_HYDROGEN, "gemini-3.8-flash", CLAUDE_OPUS_55, CLAUDE_SONNET_55]);
 
 function completeDiscoveredEffortWireModelIds(
   pickerId: string,
@@ -260,6 +297,12 @@ function completeDiscoveredEffortWireModelIds(
     if (!available.has(wireId)) return undefined;
     suffixEffortMap[effort] = wireId;
   }
+  // Extra rungs are added only when CCA actually published them. A family without them keeps the
+  // three-rung map, so an optional tier never becomes an advertised-but-dead effort.
+  for (const effort of ANTIGRAVITY_OPTIONAL_EFFORTS) {
+    const wireId = `${pickerId}-${effort}`;
+    if (available.has(wireId)) suffixEffortMap[effort] = wireId;
+  }
   return suffixEffortMap;
 }
 
@@ -267,6 +310,7 @@ function completeDiscoveredEffortWireModelIds(
 const ANTIGRAVITY_DEFAULT_EFFORT: Record<string, string> = {
   // Google's documented thinking_level default, and the tier CCA marks `recommended`.
   [GEMINI_ARGON]: "medium",
+  [GEMINI_HYDROGEN]: "medium",
   "gemini-3.8-flash": "medium",
   // Matches the discovered-family default (medium), so static and live resolution agree.
   [CLAUDE_OPUS_55]: "medium",
@@ -284,7 +328,7 @@ const ANTIGRAVITY_THINKING_LEVEL_MODELS: Record<string, string> = {
 
 // `minimal` is deliberately absent: Google documents it as unsupported for the current
 // Flash generation, where it is an error rather than a quieter tier.
-const ANTIGRAVITY_THINKING_LEVELS = new Set(["low", "medium", "high"]);
+const ANTIGRAVITY_THINKING_LEVELS = new Set(["low", "medium", "high", "xhigh"]);
 
 /**
  * Picker-visible model IDs whose CCA wire ID differs (the `-tiered` rename).
@@ -299,9 +343,23 @@ function pickerToWireId(pickerId: string): string {
   return ANTIGRAVITY_PICKER_TO_WIRE[pickerId] ?? pickerId;
 }
 
+/**
+ * Normalize a requested effort onto a thinkingLevel CCA understands.
+ *
+ * `xhigh` is deliberately NOT clamped here. It is a real rung for families that publish it
+ * (Hydrogen), and the clamp below is only correct for families that stop at `high`. Clamping at
+ * this layer is what made a Hydrogen `xhigh` selection silently run as `high`; callers decide,
+ * because only they know which family's ladder applies.
+ */
 function resolveAntigravityThinkingLevel(effort: string): string | undefined {
-  if (effort === "xhigh" || effort === "max" || effort === "ultra") return "high";
+  if (effort === "max" || effort === "ultra") return "high";
+  if (effort === "xhigh") return "xhigh";
   return ANTIGRAVITY_THINKING_LEVELS.has(effort) ? effort : undefined;
+}
+
+/** Clamp a normalized level onto a family whose ladder stops at `high`. */
+function clampToThreeRungLadder(level: string | undefined): string | undefined {
+  return level === "xhigh" ? "high" : level;
 }
 
 // ── Visible client aliases (kept for saved-config compat, not picker-visible) ──
@@ -337,6 +395,7 @@ export const ANTIGRAVITY_MODEL_ALIASES: Record<string, string> = {
 export const ANTIGRAVITY_MODELS = [
   GEMINI_FLASH_CURRENT,
   GEMINI_ARGON,
+  GEMINI_HYDROGEN,
   CLAUDE_OPUS_55,
   CLAUDE_SONNET_55,
 ];
@@ -389,6 +448,7 @@ const ANTIGRAVITY_WIRE_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 export const ANTIGRAVITY_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // Collapsed base IDs — explicit entries for the picker.
   [GEMINI_ARGON]: 1_048_576,
+  [GEMINI_HYDROGEN]: 1_048_576,
   "gemini-3.8-flash": 1_048_576,
   [CLAUDE_OPUS_55]: 1_000_000,
   [CLAUDE_SONNET_55]: 1_000_000,
@@ -406,6 +466,7 @@ export const ANTIGRAVITY_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 
 export const ANTIGRAVITY_MODEL_INPUT_MODALITIES: Record<string, string[]> = {
   [GEMINI_ARGON]: ["text", "image"],
+  [GEMINI_HYDROGEN]: ["text", "image"],
   [CLAUDE_OPUS_55]: ["text", "image"],
   [CLAUDE_SONNET_55]: ["text", "image"],
   // Google documents 3.7 Flash as also accepting video, audio and PDF, but this proxy
@@ -488,6 +549,10 @@ export function registerAntigravityDiscoveredWireModels(
     if (!isModelCacheGenerationCurrent(generation.provider, generation.cacheGeneration)) return;
     const families: Record<string, AntigravitySuffixMap> = Object.create(null);
     for (const model of models) {
+      // The persisted snapshot holds the three-rung form only. A fourth rung (Hydrogen's `xhigh`)
+      // is deliberately not stored: the snapshot is routing EVIDENCE for ids the static tables do
+      // not know, and Hydrogen's ladder is a static table entry, so `hasOwnEffortLadder` answers
+      // from the map above after a restart instead of from disk.
       if (ANTIGRAVITY_DISCOVERY_EFFORTS.every(effort => model.effortWireModelIds?.[effort] === `${model.id}-${effort}`)) {
         families[model.id] = { low: `${model.id}-low`, medium: `${model.id}-medium`, high: `${model.id}-high` };
       }
@@ -550,6 +615,12 @@ function discoveredAntigravityEffortWireModelId(
   const requestedEffort = effort ? resolveAntigravityThinkingLevel(effort) : undefined;
   if (requestedEffort && isAntigravityDiscoveryEffort(requestedEffort) && effortMap[requestedEffort]) {
     return effortMap[requestedEffort];
+  }
+  // The family may not publish `xhigh`. Clamp to its highest REAL rung instead of falling through
+  // to the default, which would silently answer `medium` for someone who asked for more thinking.
+  const clamped = clampToThreeRungLadder(requestedEffort);
+  if (clamped && clamped !== requestedEffort && isAntigravityDiscoveryEffort(clamped) && effortMap[clamped]) {
+    return effortMap[clamped];
   }
 
   const defaultEffort = ANTIGRAVITY_DEFAULT_EFFORT[modelId]
@@ -667,6 +738,13 @@ export function parseAntigravityAvailableModels(
       ? ANTIGRAVITY_MODEL_ALIASES[wireId]
       : undefined;
     if (alias && alias !== wireId) continue;
+    // A model the account is not entitled to still appears in `agentModelSorts`: CCA lists it with
+    // `disabled: true` plus a tag describing the plan it needs ("Gemini 4 Carbon is currently
+    // available to Ultra plan subscribers"). Publishing it offers the operator a row that answers
+    // 404 NOT_FOUND to every request, under BOTH client families, so no fingerprint replay can
+    // rescue it. Absence from the picker is the honest representation — and unlike a name
+    // deny-list it retires itself the moment Google enables the model for this account.
+    if (info.disabled === true) continue;
     available.set(wireId, info);
   }
 
@@ -789,9 +867,13 @@ export function resolveAntigravityEffortWireModel(
   // this the model falls to rule 5 and silently loses reasoning control entirely.
   const defaultLevel = ANTIGRAVITY_THINKING_LEVEL_MODELS[modelId];
   if (defaultLevel) {
+    // These families ride `thinkingLevel` on ONE wire id and stop at `high`, so the fourth rung
+    // must be clamped — unlike a suffix-tiered family, where a published `-xhigh` id exists.
     return {
       wireModelId: pickerToWireId(modelId),
-      thinkingLevel: effort ? resolveAntigravityThinkingLevel(effort) ?? defaultLevel : defaultLevel,
+      thinkingLevel: effort
+        ? clampToThreeRungLadder(resolveAntigravityThinkingLevel(effort)) ?? defaultLevel
+        : defaultLevel,
     };
   }
 
@@ -799,12 +881,16 @@ export function resolveAntigravityEffortWireModel(
   const effortMap = ANTIGRAVITY_EFFORT_WIRE_MAP[modelId];
   if (effortMap) {
     const suffixTiered = ANTIGRAVITY_SUFFIX_TIER_MODELS.has(modelId);
-    // Normalize FIRST for suffix-tiered models. The discovery path clamps max/xhigh/ultra to
-    // `high` before its own lookup, so a static path that skipped the clamp answered `medium`
+    // Normalize FIRST for suffix-tiered models. The discovery path normalizes max/xhigh/ultra
+    // before its own lookup, so a static path that skipped the normalization answered `medium`
     // for the same request: one input, two tiers, decided by whether discovery happened to run.
-    const requested = suffixTiered && effort
-      ? resolveAntigravityThinkingLevel(effort) ?? effort
-      : effort;
+    //
+    // `xhigh` survives normalization only for a family that publishes that rung (Hydrogen); for
+    // every three-rung family it is clamped, or it would miss the map and land on the default.
+    const normalized = suffixTiered && effort ? resolveAntigravityThinkingLevel(effort) ?? effort : effort;
+    const requested = normalized !== undefined && normalized in effortMap
+      ? normalized
+      : clampToThreeRungLadder(normalized);
     if (requested && requested in effortMap) {
       const wireModelId = effortMap[requested]!;
       // The suffix already names the tier; see ANTIGRAVITY_SUFFIX_TIER_MODELS.
@@ -815,9 +901,10 @@ export function resolveAntigravityEffortWireModel(
   }
 
   // Rule 4: Claude models — effort via thinkingConfig only (no suffix variants).
-  // CCA validates this field as Google's ThinkingLevel enum, whose highest value is `high`.
+  // CCA validates this field as Google's ThinkingLevel enum, whose highest value is `high`, so a
+  // fourth rung must never leave this branch.
   if (/^claude-/.test(modelId) && effort) {
-    return { wireModelId: modelId, thinkingLevel: resolveAntigravityThinkingLevel(effort) };
+    return { wireModelId: modelId, thinkingLevel: clampToThreeRungLadder(resolveAntigravityThinkingLevel(effort)) };
   }
 
   // Rule 5: everything else.

@@ -21,7 +21,7 @@ import { getVertexAccessToken } from "../lib/gcp-adc";
 import { fetchAntigravityWithRetry, fetchVertexWithRetry } from "./google-http";
 import { safeAntigravityHttpErrorMessage, safeVertexHttpErrorMessage } from "./google-errors";
 import { isVertexTruncatedTurn, vertexTruncationErrorEvent } from "./google-truncation";
-import { antigravitySessionAnchor, antigravityUserAgentForWireModel, antigravitySessionId, isLikelyRealThoughtSignature, sanitizeAntigravityClaudeSignatures } from "./google-antigravity-wire";
+import { antigravityFingerprintDecision, antigravitySessionAnchor, antigravityUserAgentForWireModel, antigravitySessionId, isLikelyRealThoughtSignature, sanitizeAntigravityClaudeSignatures } from "./google-antigravity-wire";
 import { summarizeGoogleWireShape } from "./google-wire-shape";
 import { compileGoogleWireBody } from "./google-wire-compiler";
 import type { GoogleToolSchemaLossReport, GoogleToolSchemaProfile } from "./google-tool-schema";
@@ -934,12 +934,26 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
     // 429 rotation and raw error formatting.
     ...(provider.googleMode === "vertex" || provider.googleMode === "cloud-code-assist"
       ? {
-          fetchResponse: (request: AdapterRequest, ctx?: AdapterFetchContext): Promise<Response> =>
-            (provider.googleMode === "cloud-code-assist" ? fetchAntigravityWithRetry : fetchVertexWithRetry)(
-              request,
-              ctx,
-              { toolSchemaProfile, toolSchemaPolicy },
-            ),
+          fetchResponse: (request: AdapterRequest, ctx?: AdapterFetchContext): Promise<Response> => {
+            if (provider.googleMode === "cloud-code-assist") {
+              return fetchAntigravityWithRetry(request, ctx, {
+                toolSchemaProfile,
+                toolSchemaPolicy,
+                // Cloud Code Assist gates a model by client family, so a 404 here is often a
+                // rejected fingerprint rather than a bad request. The wire model is read off the
+                // built request (never off `parsed.modelId`, which is the picker id), and the
+                // verdict feeds back so the NEXT request for this model starts on the family that
+                // actually serves it.
+                observeResponse: (_attempt: AdapterRequest, status: number) => {
+                  const wireModelId = request.providerWireModelId;
+                  if (!wireModelId) return undefined;
+                  const decision = antigravityFingerprintDecision(provider.baseUrl, wireModelId, status);
+                  return decision.retryUserAgent ? { retryUserAgent: decision.retryUserAgent } : undefined;
+                },
+              });
+            }
+            return fetchVertexWithRetry(request, ctx, { toolSchemaProfile, toolSchemaPolicy });
+          },
           formatErrorBody: (status: number, _headers: Headers, payloadText: string): string =>
             (provider.googleMode === "cloud-code-assist" ? safeAntigravityHttpErrorMessage : safeVertexHttpErrorMessage)(status, payloadText),
         }
@@ -1155,9 +1169,11 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
           requestId: `agent-${crypto.randomUUID()}`,
           request,
         };
-        headers["User-Agent"] = antigravityUserAgentForWireModel(wireModelId);
+        headers["User-Agent"] = antigravityUserAgentForWireModel(wireModelId, base);
         headers["Authorization"] = `Bearer ${token}`;
-        return { url, method: "POST", headers, body: JSON.stringify(envelope) };
+        // The transport needs the wire id to interpret a 404 as a fingerprint verdict; see
+        // `observeResponse` in the cloud-code-assist fetchResponse above.
+        return { url, method: "POST", headers, body: JSON.stringify(envelope), providerWireModelId: wireModelId };
       }
 
       if (provider.googleMode === "vertex") {

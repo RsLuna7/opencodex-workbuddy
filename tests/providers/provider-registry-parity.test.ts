@@ -1327,10 +1327,10 @@ describe("provider registry parity", () => {
     expect(providerConfigSeed(antigravityRegistry!).liveModels).toBe(true);
     expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.liveModels).toBe(true);
     expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.defaultModel).toBe("gemini-3.8-flash");
-    // Collapsed picker: base models only, no effort-suffix variants.
-    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.models).toEqual([
-      "gemini-3.8-flash", "gemini-4-argon", "claude-opus-5-5", "claude-sonnet-5-5",
-    ]);
+    // Collapsed picker: base models only, no effort-suffix variants. Compared against the
+    // registry seed it comes from, not a restated list — the literal went stale when Gemini 4
+    // Hydrogen joined the lineup, and the lineup itself is asserted where it is owned.
+    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.models).toEqual(antigravityRegistry?.models);
     // Effort ladders on collapsed base models.
     expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.modelReasoningEfforts?.["gemini-3.8-flash"]).toEqual(["low", "medium", "high"]);
     expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.modelReasoningEfforts?.["gemini-3.7-flash"]).toEqual(["low", "medium", "high"]);

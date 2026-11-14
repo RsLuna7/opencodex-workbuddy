@@ -1046,6 +1046,7 @@ export const ja: Record<TKey, string> = {
   "logs.detail.attempt.recovery.opaqueBlobRejection": "古い暗号化状態を破棄",
   "logs.detail.attempt.recovery.reasoningEffortDowngrade": "推論強度を下げて再試行",
   "logs.detail.attempt.recovery.anthropicFastDowngrade": "高速モードが拒否され、標準速度で再試行",
+  "logs.detail.attempt.recovery.clientFingerprint": "クライアント指紋が拒否されたため、一致する指紋で再試行",
   "logs.detail.outcome.label": "結果",
   "logs.detail.outcome.completed": "完了",
   "logs.detail.outcome.failed": "失敗",

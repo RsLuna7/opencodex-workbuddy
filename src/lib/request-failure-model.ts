@@ -233,6 +233,9 @@ const RECOVERY_KIND_CAUSE = {
   // Anthropic refused `speed: "fast"` (no usage credits, org not enabled, model outside the
   // lane); the same turn succeeds once the parameter is dropped.
   "anthropic-fast-downgrade": "parameter-rejected",
+  // Cloud Code Assist refused to serve the model to the requesting client family. The payload and
+  // the credential were both fine; the User-Agent is the parameter the replay changes.
+  "client-fingerprint": "parameter-rejected",
 } as const satisfies Record<AttemptRecoveryKind, RequestFailureCause>;
 
 export function causeForRecoveryKind(kind: AttemptRecoveryKind): RequestFailureCause {
