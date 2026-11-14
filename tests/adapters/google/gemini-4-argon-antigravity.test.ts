@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createGoogleAdapter as createGoogleAdapterProduction } from "../../../src/adapters/google";
 import { antigravityCliUserAgent } from "../../../src/adapters/client-fingerprint";
+import { antigravityFingerprintDecision } from "../../../src/adapters/google-antigravity-wire";
 import {
   ANTIGRAVITY_CLI_REQUEST_UA,
   ANTIGRAVITY_DISCOVERY_UA,
@@ -119,8 +120,20 @@ describe("Antigravity User-Agent selection", () => {
     expect(ANTIGRAVITY_REQUEST_UA).toBe(IDE_UA);
   });
 
-  test("only Argon wire ids take the CLI UA", () => {
-    for (const wire of ["gemini-4-argon", "gemini-4-argon-low", "gemini-4-argon-medium", "gemini-4-argon-high"]) {
+  test("every gemini-4 wire id takes the CLI UA, and nothing older does", () => {
+    // Widened from Argon-only on 2026-11-14: the whole Gemini 4 generation is gated by client
+    // family, and Hydrogen shipped with the same gate while this rule still named Argon alone.
+    // Live matrix for the record — ide/2.5.5 → 404, cli/1.3.4 → 200 for every id below.
+    for (const wire of [
+      "gemini-4-argon",
+      "gemini-4-argon-low",
+      "gemini-4-argon-medium",
+      "gemini-4-argon-high",
+      "gemini-4-hydrogen-low",
+      "gemini-4-hydrogen-medium",
+      "gemini-4-hydrogen-high",
+      "gemini-4-hydrogen-xhigh",
+    ]) {
       expect(antigravityUserAgentForWireModel(wire)).toBe(CLI_UA);
     }
     for (const wire of [
@@ -132,14 +145,24 @@ describe("Antigravity User-Agent selection", () => {
       "claude-sonnet-4-6",
       "claude-opus-4-6-thinking",
       "gpt-oss-120b-medium",
-      // Near misses must not widen the CLI gate.
-      "gemini-4-argon-max",
-      "gemini-4-argon-tiered",
-      "gemini-4-argonaut",
+      // Plan-gated, not family-gated: 404 under BOTH families, so it must not be switched.
+      "gemini-4-carbon-disabled",
+      // Prefix must stay anchored, so a foreign id cannot borrow the family.
       "x-gemini-4-argon-high",
     ]) {
       expect(antigravityUserAgentForWireModel(wire)).toBe(IDE_UA);
     }
+  });
+
+  test("a near miss is a guess that the wire corrects, not a permanent wrong family", () => {
+    // `gemini-4-argon-max` is not a real wire id, but the static rule is family-wide, so it starts
+    // on the CLI fingerprint. The learning layer is what keeps that from being permanent: the
+    // 404 flips it back, and the NEXT request no longer guesses.
+    const nearMiss = "gemini-4-argon-max";
+    expect(antigravityUserAgentForWireModel(nearMiss, "https://near-miss.example.test")).toBe(CLI_UA);
+    const decision = antigravityFingerprintDecision("https://near-miss.example.test", nearMiss, 404);
+    expect(decision.retryUserAgent).toBe(IDE_UA);
+    expect(antigravityUserAgentForWireModel(nearMiss, "https://near-miss.example.test")).toBe(IDE_UA);
   });
 
   test("an Argon inference request carries the CLI UA and the suffix wire id", async () => {
@@ -182,10 +205,31 @@ describe("Antigravity User-Agent selection", () => {
 });
 
 describe("Antigravity static lineup (3.8 / 4 / 5.5 / 5.5)", () => {
-  test("is exactly the four confirmed base models", () => {
-    expect(ANTIGRAVITY_MODELS).toEqual(["gemini-3.8-flash", "gemini-4-argon", "claude-opus-5-5", "claude-sonnet-5-5"]);
+  test("is exactly the confirmed base models", () => {
+    // Hydrogen joined on 2026-11-14 after live CCA discovery returned
+    // gemini-4-hydrogen-{low,medium,high,xhigh} to this account.
+    expect(ANTIGRAVITY_MODELS).toEqual([
+      "gemini-3.8-flash",
+      "gemini-4-argon",
+      "gemini-4-hydrogen",
+      "claude-opus-5-5",
+      "claude-sonnet-5-5",
+    ]);
     const entry = PROVIDER_REGISTRY.find(candidate => candidate.id === "google-antigravity");
     expect(entry?.models).toEqual(ANTIGRAVITY_MODELS);
+  });
+
+  test("Hydrogen advertises a fourth rung that resolves to a real wire id", () => {
+    expect(ANTIGRAVITY_MODEL_EFFORTS["gemini-4-hydrogen"]).toEqual(["low", "medium", "high", "xhigh"]);
+    for (const effort of ["low", "medium", "high", "xhigh"] as const) {
+      expect(resolveAntigravityEffortWireModel("gemini-4-hydrogen", effort))
+        .toEqual({ wireModelId: `gemini-4-hydrogen-${effort}` });
+    }
+    expect(resolveAntigravityEffortWireModel("gemini-4-hydrogen")).toEqual({ wireModelId: "gemini-4-hydrogen-medium" });
+    // A family with three rungs still clamps the fourth request instead of advertising it.
+    expect(ANTIGRAVITY_MODEL_EFFORTS["gemini-4-argon"]).toEqual(["low", "medium", "high"]);
+    expect(resolveAntigravityEffortWireModel("gemini-4-argon", "xhigh"))
+      .toEqual({ wireModelId: "gemini-4-argon-high" });
   });
 
   test("Claude 5.5 efforts ride their suffix wire ids on the IDE UA", async () => {
