@@ -361,6 +361,7 @@ const RECOVERY_KIND_KEYS = {
   "opaque-blob-rejection": "logs.detail.attempt.recovery.opaqueBlobRejection",
   "reasoning-effort-downgrade": "logs.detail.attempt.recovery.reasoningEffortDowngrade",
   "anthropic-fast-downgrade": "logs.detail.attempt.recovery.anthropicFastDowngrade",
+  "client-fingerprint": "logs.detail.attempt.recovery.clientFingerprint",
 } as const satisfies Record<AttemptRecoveryKind, string>;
 
 /** Map a metric-unavailable reason to its i18n key. */

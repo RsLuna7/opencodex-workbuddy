@@ -150,6 +150,16 @@ export interface AdapterRequest {
      * create one session entry per request, so the adapter reports the real seed here instead.
      */
     workbuddySessionKey?: string;
+    /**
+     * The exact upstream model id this request targets, when the adapter's wire model differs from
+     * the routed one (Cloud Code Assist maps a picker id onto a tier wire id).
+     *
+     * The transport needs it: CCA gates a model by client family as well as by version, and which
+     * family serves a given model is a property of that MODEL. A 404 can therefore be a fingerprint
+     * rejection rather than a bad request, and answering that question requires knowing the model
+     * at the point where the response arrives, long after `buildRequest` returned.
+     */
+    providerWireModelId?: string;
     /** Exact reasoning parameter emitted by the adapter, for request-log diagnostics only. */
     reasoningLog?:
       | {

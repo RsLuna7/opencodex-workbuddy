@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  logWorkbuddyInvalidParams,
+  normalizeWorkbuddyInvalidParams,
   summarizeWorkbuddyRequestShape,
 } from "../../src/oauth/codebuddy-diagnostics";
 
@@ -43,19 +43,69 @@ describe("workbuddy 11133 request shape", () => {
     expect(summarizeWorkbuddyRequestShape("nope")).toBe("unparseable bytes=4");
   });
 
+  test("reports UTF-8 bytes for multilingual history", () => {
+    const raw = body([{ role: "user", content: "路径 📁" }]);
+    expect(summarizeWorkbuddyRequestShape(raw)).toStartWith("bytes=" + Buffer.byteLength(raw) + " ");
+  });
+
   test("logs only for 400 with code 11133 and leaves the response readable", async () => {
     const lines: string[] = [];
     const warn = (line: string) => lines.push(line);
     const hit = new Response(JSON.stringify({ code: 11133, msg: "Invalid request parameters", requestId: "rid1" }), { status: 400 });
-    await logWorkbuddyInvalidParams(hit, body([{ role: "user", content: SECRET }]), { warn });
+    expect(await normalizeWorkbuddyInvalidParams(hit, body([{ role: "user", content: SECRET }]), { warn })).toBe(hit);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("400/11133 request shape");
     expect(lines[0]).toContain("upstreamRequestId=rid1");
     expect(lines[0]).not.toContain(SECRET);
     expect(await hit.text()).toContain("11133");
 
-    await logWorkbuddyInvalidParams(new Response(JSON.stringify({ code: 11102 }), { status: 400 }), "{}", { warn });
-    await logWorkbuddyInvalidParams(new Response(JSON.stringify({ code: 11133 }), { status: 500 }), "{}", { warn });
+    await normalizeWorkbuddyInvalidParams(new Response(JSON.stringify({ code: 11102 }), { status: 400 }), "{}", { warn });
+    await normalizeWorkbuddyInvalidParams(new Response(JSON.stringify({ code: 11133 }), { status: 500 }), "{}", { warn });
     expect(lines).toHaveLength(1);
   });
 });
+
+test("11129 emits only structural diagnostics and preserves the response", async () => {
+  const lines: string[] = [];
+  const response = new Response(JSON.stringify({ code: 11129, requestId: "rid2" }), { status: 400 });
+  expect(await normalizeWorkbuddyInvalidParams(
+    response, body([{ role: "user", content: SECRET }]), { warn: line => lines.push(line) },
+  )).toBe(response);
+  expect(lines).toHaveLength(1);
+  expect(lines[0]).toContain("400/11129 request shape");
+  expect(lines[0]).not.toContain(SECRET);
+  expect(await response.json()).toEqual({ code: 11129, requestId: "rid2" });
+});
+
+test.each(["invalid_parameter_value", "400001", "invalid_request_error"])(
+  "generic 11133 (%s) retains the upstream request ID and HTTP 400 without echoing the envelope",
+  async extCode => {
+    const rejection = {
+      code: 11133,
+      requestId: "request-123",
+      retry_policy: { retry: false },
+      extError: {
+        code: extCode,
+        message: "the request parameters were rejected by the model provider",
+        param: "",
+        Request: SECRET,
+      },
+    };
+    const warn = () => {};
+    const original = Response.json(rejection, { status: 400 });
+    const result = await normalizeWorkbuddyInvalidParams(original, "{}", { warn });
+    expect(result.status).toBe(400);
+    expect(result.headers.has("Retry-After")).toBe(false);
+    expect(await result.json()).toEqual({
+      code: "11133",
+      message: "WorkBuddy (11133): the model provider rejected the request without identifying a parameter. Request ID: request-123.",
+      type: "invalid_request_error",
+    });
+
+    const withParameter = Response.json({
+      ...rejection,
+      extError: { ...rejection.extError, param: "tools" },
+    }, { status: 400 });
+    expect(await normalizeWorkbuddyInvalidParams(withParameter, "{}", { warn })).toBe(withParameter);
+  },
+);

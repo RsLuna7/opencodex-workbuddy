@@ -215,6 +215,7 @@
     "anthropic-tool-declaration-constraints.test.ts": "adapters/anthropic",
     "anthropic-tool-schema.test.ts": "adapters/anthropic",
     "antigravity-baseurl-override.test.ts": "adapters/google",
+    "antigravity-client-family-learning.test.ts": "adapters/google",
     "antigravity-refusal.test.ts": "adapters/google",
     "antigravity-static-catalog.test.ts": "adapters/google",
     "api-access-endpoints.test.ts": "server",

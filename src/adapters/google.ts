@@ -21,7 +21,7 @@ import { getVertexAccessToken } from "../lib/gcp-adc";
 import { fetchAntigravityWithRetry, fetchVertexWithRetry } from "./google-http";
 import { safeAntigravityHttpErrorMessage, safeVertexHttpErrorMessage } from "./google-errors";
 import { isVertexTruncatedTurn, vertexTruncationErrorEvent } from "./google-truncation";
-import { antigravitySessionAnchor, antigravityUserAgentForWireModel, antigravitySessionId, isLikelyRealThoughtSignature, sanitizeAntigravityClaudeSignatures } from "./google-antigravity-wire";
+import { antigravityFingerprintDecision, antigravitySessionAnchor, antigravityUserAgentForWireModel, antigravitySessionId, isLikelyRealThoughtSignature, sanitizeAntigravityClaudeSignatures } from "./google-antigravity-wire";
 import { summarizeGoogleWireShape } from "./google-wire-shape";
 import { compileGoogleWireBody } from "./google-wire-compiler";
 import type { GoogleToolSchemaLossReport, GoogleToolSchemaProfile } from "./google-tool-schema";
@@ -136,10 +136,18 @@ function stripAntigravityBillingHeader(systemText: string): string {
 export function maxOutputTokensForGoogleModel(modelId: string): number | undefined {
   const lower = modelId.toLowerCase().trim();
   if (lower.startsWith("gemini")) {
+    // Gemini 4 Hydrogen publishes a 262,144 output ceiling, four times the Flash ceiling below —
+    // measured from its own `:fetchAvailableModels` maxOutputTokens on 2026-11-14, not inferred
+    // from the family name. Without this branch it inherited the 65,536 Flash default and silently
+    // truncated every long Hydrogen answer.
+    if (/^gemini-4-hydrogen(-|$)/.test(lower)) return 262144;
     // Pro tops out one token below the flash/other Gemini ceiling; both are documented values.
     return /(^|[-.])pro([-.]|$)/.test(lower) ? 65535 : 65536;
   }
-  if (lower.startsWith("claude")) return 64000;
+  // Claude on Cloud Code Assist reports 128,000 for the 5.5 generation, measured from its own
+  // `:fetchAvailableModels` on 2026-11-14. Older Claude ids on this surface keep the 64,000
+  // ceiling; only the generation that was measured gets the larger number.
+  if (lower.startsWith("claude")) return /-5-5(-|$)/.test(lower) ? 128000 : 64000;
   if (lower.startsWith("gpt-oss")) return 32768;
   return undefined;
 }
@@ -934,12 +942,26 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
     // 429 rotation and raw error formatting.
     ...(provider.googleMode === "vertex" || provider.googleMode === "cloud-code-assist"
       ? {
-          fetchResponse: (request: AdapterRequest, ctx?: AdapterFetchContext): Promise<Response> =>
-            (provider.googleMode === "cloud-code-assist" ? fetchAntigravityWithRetry : fetchVertexWithRetry)(
-              request,
-              ctx,
-              { toolSchemaProfile, toolSchemaPolicy },
-            ),
+          fetchResponse: (request: AdapterRequest, ctx?: AdapterFetchContext): Promise<Response> => {
+            if (provider.googleMode === "cloud-code-assist") {
+              return fetchAntigravityWithRetry(request, ctx, {
+                toolSchemaProfile,
+                toolSchemaPolicy,
+                // Cloud Code Assist gates a model by client family, so a 404 here is often a
+                // rejected fingerprint rather than a bad request. The wire model is read off the
+                // built request (never off `parsed.modelId`, which is the picker id), and the
+                // verdict feeds back so the NEXT request for this model starts on the family that
+                // actually serves it.
+                observeResponse: (_attempt: AdapterRequest, status: number) => {
+                  const wireModelId = request.providerWireModelId;
+                  if (!wireModelId) return undefined;
+                  const decision = antigravityFingerprintDecision(provider.baseUrl, wireModelId, status);
+                  return decision.retryUserAgent ? { retryUserAgent: decision.retryUserAgent } : undefined;
+                },
+              });
+            }
+            return fetchVertexWithRetry(request, ctx, { toolSchemaProfile, toolSchemaPolicy });
+          },
           formatErrorBody: (status: number, _headers: Headers, payloadText: string): string =>
             (provider.googleMode === "cloud-code-assist" ? safeAntigravityHttpErrorMessage : safeVertexHttpErrorMessage)(status, payloadText),
         }
@@ -1155,9 +1177,11 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
           requestId: `agent-${crypto.randomUUID()}`,
           request,
         };
-        headers["User-Agent"] = antigravityUserAgentForWireModel(wireModelId);
+        headers["User-Agent"] = antigravityUserAgentForWireModel(wireModelId, base);
         headers["Authorization"] = `Bearer ${token}`;
-        return { url, method: "POST", headers, body: JSON.stringify(envelope) };
+        // The transport needs the wire id to interpret a 404 as a fingerprint verdict; see
+        // `observeResponse` in the cloud-code-assist fetchResponse above.
+        return { url, method: "POST", headers, body: JSON.stringify(envelope), providerWireModelId: wireModelId };
       }
 
       if (provider.googleMode === "vertex") {

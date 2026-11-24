@@ -25,6 +25,8 @@ import {
   sanitizeWorkbuddyFingerprintText,
 } from "../../src/oauth/codebuddy-payload";
 import { parseCodebuddyResetAtMs } from "../../src/oauth/codebuddy";
+import { createCodebuddyAdapter } from "../../src/adapters/codebuddy";
+import { createTestTranslatorBudget } from "../helpers/translator-budget";
 
 describe("workbuddy realm", () => {
   test("domain suffix workbuddy.ai is global", () => {
@@ -179,6 +181,24 @@ describe("workbuddy payload", () => {
     expect(parsed.messages[0]?.role).toBe("system");
     expect(parsed.messages[1]?.content).toContain("CLI tool for Claude");
   });
+
+  test("normalizes the DSH file-reference opener rejected by channel verification", () => {
+    const opener = "Tokens prefixed with @ are paths the user explicitly referenced.";
+    const remainder = " Relative paths resolve from the workspace root; absolute paths identify files or directories on the host."
+      + " A trailing slash marks a directory: list it when its contents matter."
+      + " Anything else is a file: use the read tool when its contents are needed, and do not claim to have inspected it before reading."
+      + ' @"..." quotes a path containing spaces.';
+    const raw = JSON.stringify({
+      messages: [{ role: "system", content: opener + remainder }, { role: "user", content: "Inspect @src/index.ts" }],
+      tools: [{ type: "function", function: { name: "read", parameters: { type: "object" } } }],
+    });
+    const result = JSON.parse(prepareWorkbuddyChatBody(raw, { ensureSystem: false, sanitize: true }));
+    expect(result.messages[0].content).toBe("Paths prefixed with @ were explicitly referenced by the user." + remainder);
+    expect(result.messages[1]).toEqual(JSON.parse(raw).messages[1]);
+    expect(result.tools).toEqual(JSON.parse(raw).tools);
+    expect(prepareWorkbuddyChatBody(raw, { ensureSystem: false, sanitize: false })).toBe(raw);
+    expect(sanitizeWorkbuddyFingerprintText(result.messages[0].content)).toBe(result.messages[0].content);
+  });
 });
 
 describe("parseCodebuddyResetAtMs english 6004", () => {
@@ -190,4 +210,77 @@ describe("parseCodebuddyResetAtMs english 6004", () => {
     );
     expect(ms).toBe(Date.parse("2026-09-19T04:23:04+08:00"));
   });
+});
+
+test("WorkBuddy normalizes function schemas only when requested", () => {
+  const raw = JSON.stringify({ messages: [{ role: "user", content: "hello" }], tools: [
+    { type: "function", function: { name: "lookup", parameters: { anyOf: [{ properties: { x: { enum: [1, "one"] }, y: { items: [{ type: "String" }, false] } } }], default: { type: "String" } } } },
+    { type: "other", value: "unchanged" },
+  ] });
+  const body = JSON.parse(prepareWorkbuddyChatBody(raw, { ensureSystem: false, sanitize: false, normalizeTools: true }));
+  const schema = body.tools[0].function.parameters;
+  expect(schema.type).toBe("object");
+  expect(schema.default).toEqual({ type: "String" });
+  expect(schema.properties.x.allOf[0].anyOf).toHaveLength(2);
+  expect(schema.properties.y.items.anyOf).toEqual([{ type: "string" }, { not: {} }]);
+  expect(body.tools[1]).toEqual({ type: "other", value: "unchanged" });
+  expect(JSON.parse(prepareWorkbuddyChatBody(raw, { ensureSystem: false, sanitize: false })).tools[0].function.parameters.anyOf).toBeDefined();
+});
+
+test("WorkBuddy adapter sends normalized tool schemas", async () => {
+  const adapter = createCodebuddyAdapter({ adapter: "codebuddy", baseUrl: WORKBUDDY_CN_CHAT_BASE, authMode: "oauth", apiKey: "test-key" } as never);
+  const request = await adapter.buildRequest({
+    modelId: "deepseek-v4.1-flash", stream: true, options: {},
+    context: { messages: [{ role: "user", content: "hello", timestamp: 0 }], tools: [{ name: "lookup", parameters: { anyOf: [{ properties: { query: { type: "String" } } }] } }] },
+  } as never, { headers: new Headers(), translatorBudget: createTestTranslatorBudget() });
+  const parameters = JSON.parse(request.body).tools[0].function.parameters;
+  expect(parameters.type).toBe("object");
+  expect(parameters.properties.query.type).toBe("string");
+  expect(parameters.anyOf).toBeUndefined();
+});
+
+test.each(["^[^\\uD800-\\uDFFF]*$", "^[^\\uD800-\\uDFFF]{0,}$", "^[^\\ud800-\\udfff]*$"])("WorkBuddy strips REA's redundant surrogate-exclusion pattern %s", pattern => {
+  const parameters = {
+    type: "object", additionalProperties: false,
+    properties: { expected_server_path: { type: "string", minLength: 1, allOf: [
+      { pattern: "^[^\\x00]*$" }, { pattern }, { pattern: "^\\/" },
+    ] } },
+    default: { pattern }, examples: [{ pattern }],
+  };
+  const raw = JSON.stringify({ tools: [{ type: "function", function: { name: "probe", parameters } }] });
+  const result = JSON.parse(prepareWorkbuddyChatBody(raw, { ensureSystem: false, sanitize: false, normalizeTools: true })).tools[0].function.parameters;
+  expect(result.properties.expected_server_path.allOf).toEqual([
+    { pattern: "^[^\\x00]*$" }, { pattern: "^\\/" },
+  ]);
+  expect(result.additionalProperties).toBe(false);
+  expect(result.default).toEqual({ pattern });
+  expect(result.examples).toEqual([{ pattern }]);
+  expect(parameters.properties.expected_server_path.allOf[1]).toEqual({ pattern });
+});
+
+test("WorkBuddy strips direct/non-empty surrogate patterns and cleans up emptied allOf", () => {
+  const raw = JSON.stringify({
+    tools: [{
+      type: "function",
+      function: {
+        name: "probe",
+        parameters: {
+          type: "object",
+          properties: {
+            direct: { type: "string", minLength: 1, pattern: "^[^\\uD800-\\uDFFF]*$" },
+            soleAllOf: { type: "string", allOf: [{ pattern: "^[^\\uD800-\\uDFFF]*$" }] },
+            nonEmptyPlus: { type: "string", pattern: "^[^\\uD800-\\uDFFF]+$" },
+            nonEmptyBrace: { type: "string", minLength: 3, pattern: "^[^\\uD800-\\uDFFF]{1,}$" },
+            union: { anyOf: [{ pattern: "^[^\\uD800-\\uDFFF]*$" }, { type: "null" }] },
+          },
+        },
+      },
+    }],
+  });
+  const props = JSON.parse(prepareWorkbuddyChatBody(raw, { ensureSystem: false, sanitize: false, normalizeTools: true })).tools[0].function.parameters.properties;
+  expect(props.direct).toEqual({ type: "string", minLength: 1 });
+  expect(props.soleAllOf).toEqual({ type: "string" });
+  expect(props.nonEmptyPlus).toEqual({ type: "string", minLength: 1 });
+  expect(props.nonEmptyBrace).toEqual({ type: "string", minLength: 3 });
+  expect(props.union).toEqual({ anyOf: [{}, { type: "null" }] });
 });

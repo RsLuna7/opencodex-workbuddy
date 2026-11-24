@@ -27,6 +27,15 @@ export interface GoogleRetryOptions {
   repairInvalid400?: boolean;
   toolSchemaProfile?: GoogleToolSchemaProfile;
   toolSchemaPolicy?: GoogleToolSchemaPolicy;
+  /**
+   * Observe each attempt's status and optionally supply a changed-request replay.
+   *
+   * Cloud Code Assist answers 404 NOT_FOUND to a model whose client family does not match the
+   * requesting User-Agent — the body was never the problem. The caller therefore gets to see the
+   * outcome (so it can learn which family a model needs) and to name a replacement User-Agent for
+   * one replay. Returned without a `retryUserAgent`, nothing is re-sent.
+   */
+  observeResponse?: (request: AdapterRequest, status: number) => { retryUserAgent?: string } | undefined;
 }
 
 async function normalizeFinalGoogleError(label: string, res: Response, signal?: AbortSignal): Promise<Response> {
@@ -70,6 +79,7 @@ export async function fetchGoogleWithRetry(
   let lastError: unknown;
   let activeRequest = request;
   let compatibilityReplayUsed = false;
+  let clientFamilyReplayUsed = false;
   let pendingResponse: Response | undefined;
   let retryDelayMs = 0;
   let sendClass: SendClass = "transient";
@@ -120,6 +130,24 @@ export async function fetchGoogleWithRetry(
         }
       }
       if (!retryableGoogleStatus(res.status) || attempt === TRANSIENT_RETRY_MAX_ATTEMPTS - 1) {
+        // Before the ladder gives up: a 404 may be a client-family rejection rather than a bad
+        // request. The caller names the alternate fingerprint, and the replay is charged as a
+        // recovery so the changed request cannot hide inside one nominal send.
+        const fingerprintReplay = res.status === 404 && !clientFamilyReplayUsed
+          ? opts.observeResponse?.(activeRequest, res.status)?.retryUserAgent
+          : undefined;
+        if (fingerprintReplay) {
+          clientFamilyReplayUsed = true;
+          activeRequest = {
+            ...activeRequest,
+            headers: { ...activeRequest.headers, "User-Agent": fingerprintReplay },
+          };
+          pendingResponse = res;
+          sendClass = "repair";
+          recovery = "client-fingerprint";
+          attempt -= 1; // A changed fingerprint is a recovery, not a transient retry.
+          continue;
+        }
         return ctx.returnRawErrors ? res : normalizeFinalGoogleError(label, res, ctx.abortSignal);
       }
       // A 429 may be a transient rate limit (retry) or hard quota exhaustion (do NOT retry —
@@ -204,7 +232,7 @@ export function fetchVertexWithRetry(
 export function fetchAntigravityWithRetry(
   request: AdapterRequest,
   ctx: AdapterFetchContext = {},
-  schemaPolicy: Pick<GoogleRetryOptions, "toolSchemaProfile" | "toolSchemaPolicy"> = {},
+  schemaPolicy: Pick<GoogleRetryOptions, "toolSchemaProfile" | "toolSchemaPolicy" | "observeResponse"> = {},
 ): Promise<Response> {
   return fetchGoogleWithRetry("Antigravity", request, ctx, {
     toolSchemaProfile: { endpointClass: "cloud-code-assist" },

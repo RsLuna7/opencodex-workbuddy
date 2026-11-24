@@ -26,6 +26,15 @@ without changing the saved active account; a 14018 refusal cools the whole accou
 dashboard shows remaining credits and, for CN accounts, check-in and daily-task status.
 `ocx account checkin workbuddy --status` reads check-in status without claiming it.
 
+WorkBuddy requests normalize fixed client prompt markers, including DeepSeek Harness's
+file-reference introduction, to avoid known `400 / 11128` channel-verification refusals.
+The file-reference instructions retain their meaning.
+OpenCodex strips REA's redundant UTF-16 surrogate-exclusion path pattern (already guaranteed by
+valid UTF-8 JSON) to prevent both `400 / 11129` and `400 / 11133` schema rejections while
+retaining support for characters such as emoji.
+When the model provider returns a generic `400 / 11133`, the error shows the WorkBuddy request ID
+when available for upstream investigation.
+
 `zai-plan` is the ZCode Plan OAuth provider. Use `ocx account login zai-plan` and select a
 `zai-plan/<model>` route. It is separate from the ZCode client integration, which configures
 ZCode to call the local proxy.
@@ -194,20 +203,38 @@ Gemini 4 Argon (`gemini-4-argon`) is listed on the `google` preset with low, med
 default), and high thinking levels. Google offers it on the paid Gemini API tier only, not the free
 tier. On `google-antigravity`, Argon is listed with the same three levels, which map to the
 `gemini-4-argon-low`, `-medium`, and `-high` wire models. Google limits it there to AI Ultra and
-eligible Enterprise accounts. Cloud Code Assist serves Argon only to the Antigravity CLI client, so
-OpenCodex sends Argon requests and model discovery with the CLI User-Agent
-(`antigravity/cli/1.3.4`) and keeps the IDE User-Agent for every other model.
+eligible Enterprise accounts.
+
+Cloud Code Assist serves a model to one client family only, so the User-Agent is chosen per model.
+Every `gemini-4-*` model — Argon and Hydrogen alike — is served only to the Antigravity CLI client,
+while the models it serves to both families keep the IDE User-Agent. Raising the pinned IDE version
+does not change this: versions 2.5.5 through 3.0.0 all answered the same way when measured. If a
+model is refused for the family that was guessed, OpenCodex replays once with the other family,
+records the answer for that model, and starts later requests on the family that worked, so a newly
+published generation corrects itself instead of failing.
+
+Gemini 4 Hydrogen (`gemini-4-hydrogen`) is the one model with a fourth effort level: low, medium
+(the default), high, and xhigh, which map to `gemini-4-hydrogen-low`, `-medium`, `-high`, and
+`-xhigh`. Families with three levels clamp an `xhigh` request to their highest real level rather
+than dropping it.
 
 The built-in `google-antigravity` model list is Gemini 3.8 Flash (`gemini-3.8-flash`), Gemini 4 Argon
-(`gemini-4-argon`), Claude Opus 5.5 (`claude-opus-5-5`), and Claude Sonnet 5.5
-(`claude-sonnet-5-5`), each with low, medium, and high efforts. What you actually see is your
+(`gemini-4-argon`), Gemini 4 Hydrogen (`gemini-4-hydrogen`), Claude Opus 5.5 (`claude-opus-5-5`), and
+Claude Sonnet 5.5 (`claude-sonnet-5-5`). What you actually see is your
 account's own model discovery, because Google enables models per account: some accounts list
 Claude Sonnet 4.6 and Claude Opus 4.6 (Thinking), others only Claude Opus and Sonnet 5.5 (directly
-billed, non-trial Pro or Ultra plans), and Gemini 4 Argon only on Ultra and Enterprise. Both Claude
+billed, non-trial Pro or Ultra plans), and Gemini 4 models only on eligible plans. Both Claude
 generations map: 4.6 takes its effort as a thinking level, 5.5 as its `-low`, `-medium`, or
 `-high` model. With several Antigravity accounts and `oauthAccountFailover.enabled`, a request
 prefers an account whose discovery lists the requested model. Saved selections of models that left
 the list keep routing as before.
+
+Each model carries the context window and output ceiling its own discovery entry reports, and they
+differ sharply within one generation: Gemini 4 Hydrogen allows 262,144 output tokens where Gemini 3.8
+Flash allows 65,536, and Claude 5.5 allows 128,000 where older Claude ids on this surface allow
+64,000. A model your account cannot use is not published at all — Cloud Code Assist lists plan-gated
+models with a `disabled` flag, and offering one would produce a request that fails for a reason the
+operator cannot fix from this side.
 
 To check which mode a provider is actually using, open it on the Providers page: the **Connection**
 block's **Authentication** row reads `OAuth`, `API key`, `ChatGPT passthrough`, `Local`, or

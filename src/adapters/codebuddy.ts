@@ -11,7 +11,7 @@ import {
 } from "../oauth/codebuddy";
 import { applyWorkbuddyChatHeaders } from "../oauth/codebuddy-headers";
 import { isCanonicalWorkbuddyChatBase, workbuddyChatCompletionsUrl } from "../oauth/codebuddy-hosts";
-import { logWorkbuddyInvalidParams } from "../oauth/codebuddy-diagnostics";
+import { normalizeWorkbuddyInvalidParams } from "../oauth/codebuddy-diagnostics";
 import { inspectWorkbuddyCredentialRejection } from "../oauth/workbuddy-credential-guard";
 import { oauthAccountLogLabel } from "../codex/account-label";
 import { prepareWorkbuddyChatBody } from "../oauth/codebuddy-payload";
@@ -242,8 +242,8 @@ export function createCodebuddyAdapter(provider: OcxProviderConfig): ProviderAda
           body: request.body,
           signal: ctx?.abortSignal,
         });
-        const rewritten = await rewriteCodebuddyQuotaResponse(response, ctx?.abortSignal);
-        await logWorkbuddyInvalidParams(rewritten, request.body, { signal: ctx?.abortSignal });
+        const quotaResponse = await rewriteCodebuddyQuotaResponse(response, ctx?.abortSignal);
+        const rewritten = await normalizeWorkbuddyInvalidParams(quotaResponse, request.body, { signal: ctx?.abortSignal });
         if (accountId && rewritten.ok) {
           noteWorkbuddyPoolSuccess({ accountId });
           if (sessionKey) bindWorkbuddySession(sessionKey, accountId);
@@ -285,6 +285,7 @@ export function createCodebuddyAdapter(provider: OcxProviderConfig): ProviderAda
       const body = prepareWorkbuddyChatBody(streamed, {
         ensureSystem: realm === "global",
         sanitize: true,
+        normalizeTools: true,
       });
       const meta = conversationMeta(parsed);
       return {
