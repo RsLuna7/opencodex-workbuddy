@@ -16,7 +16,10 @@ description: opencodex 进行身份验证并与 LLM 提供商通信的所有方�
 `ocx account checkin workbuddy --status` 只查询签到状态，不领取奖励。
 
 WorkBuddy 请求会对固定的客户端提示词标识进行兼容处理，包括 DeepSeek Harness 的文件引用开场说明，
-以避免已知的 `400 / 11128` 渠道校验拒绝。文件引用说明的含义保持不变，其他上游拒绝仍按原样返回。
+以避免已知的 `400 / 11128` 渠道校验拒绝。文件引用说明的含义保持不变。
+OpenCodex 会移除 REA 中冗余的 UTF-16 代理项排除路径正则（合法的 UTF-8 JSON 本身不包含孤立代理项），
+同时避免已知的 `400 / 11129` 与 `400 / 11133` 工具定义拒绝，并保留对表情符号等字符的支持。
+如果模型供应商返回未指出具体参数的 `400 / 11133`，错误信息会在请求 ID 可用时显示该 ID，便于上游排查。
 
 `zai-plan` 是 ZCode Plan 的 OAuth 提供商。运行 `ocx account login zai-plan` 登录，
 再选择 `zai-plan/<model>`。它与把 ZCode 客户端接入本地代理的 ZCode 集成功能不同。

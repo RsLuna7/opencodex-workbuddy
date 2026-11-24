@@ -6,6 +6,8 @@
  * The Claude Code / Codex entries follow Sliverkiss/workbuddy2api sanitize.go (MIT).
  */
 
+import { workBuddyToolParameters } from "./workbuddy-tool-schema";
+
 const DEFAULT_SYSTEM = "You are a helpful assistant.";
 
 const FINGERPRINT_NEEDLES = [
@@ -141,7 +143,7 @@ function rewriteJsonStrings(value: unknown): unknown {
 
 export function prepareWorkbuddyChatBody(
   raw: string,
-  opts: { ensureSystem: boolean; sanitize: boolean },
+  opts: { ensureSystem: boolean; sanitize: boolean; normalizeTools?: boolean },
 ): string {
   let body: Record<string, unknown>;
   try {
@@ -156,6 +158,15 @@ export function prepareWorkbuddyChatBody(
     if (rewritten && typeof rewritten === "object" && !Array.isArray(rewritten)) {
       body = rewritten as Record<string, unknown>;
     }
+  }
+  if (opts.normalizeTools && Array.isArray(body.tools)) {
+    body.tools = body.tools.map(tool => {
+      if (!tool || typeof tool !== "object" || Array.isArray(tool)) return tool;
+      const row = tool as Record<string, unknown>;
+      if (row.type !== "function" || !row.function || typeof row.function !== "object" || Array.isArray(row.function)) return tool;
+      const fn = row.function as Record<string, unknown>;
+      return { ...row, function: { ...fn, parameters: workBuddyToolParameters(fn.parameters) } };
+    });
   }
   if (opts.ensureSystem) ensureLeadingSystemMessage(body);
   return JSON.stringify(body);

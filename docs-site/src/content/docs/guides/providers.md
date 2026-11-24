@@ -28,7 +28,12 @@ dashboard shows remaining credits and, for CN accounts, check-in and daily-task 
 
 WorkBuddy requests normalize fixed client prompt markers, including DeepSeek Harness's
 file-reference introduction, to avoid known `400 / 11128` channel-verification refusals.
-The file-reference instructions retain their meaning; unrelated upstream refusals are returned unchanged.
+The file-reference instructions retain their meaning.
+OpenCodex strips REA's redundant UTF-16 surrogate-exclusion path pattern (already guaranteed by
+valid UTF-8 JSON) to prevent both `400 / 11129` and `400 / 11133` schema rejections while
+retaining support for characters such as emoji.
+When the model provider returns a generic `400 / 11133`, the error shows the WorkBuddy request ID
+when available for upstream investigation.
 
 `zai-plan` is the ZCode Plan OAuth provider. Use `ocx account login zai-plan` and select a
 `zai-plan/<model>` route. It is separate from the ZCode client integration, which configures
